@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "wargame-native://scenario/1.0",
+  "title": "Native simplified-rules scenario",
+  "type": "object",
+  "required": ["schema_version", "scenario_id", "map", "sides", "operators", "deployment", "terminal_rules"],
+  "properties": {
+    "schema_version": {"const": "native-scenario/1.0"},
+    "scenario_id": {"type": "string", "minLength": 1},
+    "map": {"type": "object"},
+    "sides": {"type": "array", "minItems": 2, "items": {"type": "string"}},
+    "operators": {"type": "array", "minItems": 2, "items": {"type": "object"}},
+    "objectives": {"type": "array", "items": {"type": "object"}},
+    "deployment": {"type": "object"},
+    "terminal_rules": {"type": "object"},
+    "metadata": {"type": "object"}
+  },
+  "additionalProperties": false
+}

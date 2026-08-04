@@ -1,0 +1,76 @@
+{
+  "schema_version": "native-scenario/1.0",
+  "scenario_id": "minimal-duel",
+  "map": {
+    "map_id": "minimal-open-field",
+    "width": 10.0,
+    "height": 6.0,
+    "distance_unit": "m",
+    "blocked_positions": []
+  },
+  "sides": ["red", "blue"],
+  "operators": [
+    {
+      "operator_id": 101,
+      "side": "red",
+      "operator_type": "ground_unit",
+      "subtype": "native_demo_red",
+      "x": 1.0,
+      "y": 3.0,
+      "altitude": 0.0,
+      "heading": 90.0,
+      "health": 40.0,
+      "max_health": 40.0,
+      "speed": 0.0,
+      "max_speed": 1.5,
+      "move_range": 1.5,
+      "sensor_range": 10.0,
+      "state": "ready",
+      "alive": true,
+      "weapon_ids": [1001],
+      "attack_range": 2.2,
+      "attack_damage": 10.0,
+      "raw_attributes": {"source": "synthetic_example"}
+    },
+    {
+      "operator_id": 201,
+      "side": "blue",
+      "operator_type": "ground_unit",
+      "subtype": "native_demo_blue",
+      "x": 6.0,
+      "y": 3.0,
+      "altitude": 0.0,
+      "heading": 270.0,
+      "health": 30.0,
+      "max_health": 30.0,
+      "speed": 0.0,
+      "max_speed": 1.5,
+      "move_range": 1.5,
+      "sensor_range": 10.0,
+      "state": "ready",
+      "alive": true,
+      "weapon_ids": [2001],
+      "attack_range": 2.2,
+      "attack_damage": 10.0,
+      "raw_attributes": {"source": "synthetic_example"}
+    }
+  ],
+  "objectives": [
+    {"objective_id": 1, "x": 3.5, "y": 3.0, "radius": 0.25, "value": 1}
+  ],
+  "deployment": {
+    "positions": {
+      "red": {"101": [1.0, 3.0]},
+      "blue": {"201": [6.0, 3.0]}
+    }
+  },
+  "terminal_rules": {
+    "max_ticks": 50,
+    "elimination": true,
+    "objective_score_to_win": null
+  },
+  "metadata": {
+    "rules_label": "Native simplified rules",
+    "description": "Synthetic two-unit CI scenario; no restricted data"
+  }
+}

@@ -1,0 +1,52 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Protocol, Sequence
+
+from wargame_native_engine.core.action import EngineAction, ValidAction
+from wargame_native_engine.core.observation import SideObservation
+from wargame_native_engine.core.world import Stage
+
+
+@dataclass(frozen=True, slots=True)
+class AgentResetContext:
+    session_id: str
+    scenario_id: str
+    side: str
+    seed: int
+    ruleset_version: str
+
+
+@dataclass(frozen=True, slots=True)
+class AgentStepContext:
+    session_id: str
+    side: str
+    tick: int
+    stage: Stage
+    seed: int
+
+
+@dataclass(frozen=True, slots=True)
+class AgentAction:
+    action: EngineAction
+    valid_action_id: str
+
+    @classmethod
+    def from_valid_action(cls, value: ValidAction) -> "AgentAction":
+        return cls(value.action, value.action_id)
+
+    def to_dict(self) -> dict[str, object]:
+        return {"valid_action_id": self.valid_action_id,
+                "action": self.action.to_dict()}
+
+
+class Agent(Protocol):
+    agent_id: str
+
+    def reset(self, context: AgentResetContext) -> None: ...
+
+    def act(self, *, observation: SideObservation,
+            valid_actions: Sequence[ValidAction],
+            context: AgentStepContext) -> AgentAction | None: ...
+
+    def close(self) -> None: ...
