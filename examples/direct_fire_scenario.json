@@ -1,0 +1,76 @@
+{
+  "schema_version": "native-direct-fire-scenario/1.0",
+  "scenario_id": "direct-fire-transparent-smoke",
+  "description": "Synthetic Native direct-fire fixture; contains no source scenario data",
+  "map": {
+    "encoding": "row_times_100_plus_col",
+    "cells": [
+      {"hex_id": 101, "elevation": 1, "terrain": "OPEN"},
+      {"hex_id": 102, "elevation": 1, "terrain": "OPEN"},
+      {"hex_id": 103, "elevation": 1, "terrain": "OPEN"},
+      {"hex_id": 104, "elevation": 1, "terrain": "OPEN"},
+      {"hex_id": 105, "elevation": 1, "terrain": "OPEN"},
+      {"hex_id": 106, "elevation": 1, "terrain": "OPEN"},
+      {"hex_id": 107, "elevation": 1, "terrain": "OPEN"}
+    ]
+  },
+  "operators": [
+    {
+      "operator_id": 101,
+      "side": "red",
+      "operator_type": "VEHICLE",
+      "subtype": "synthetic_fire_support_vehicle",
+      "x": 1, "y": 1, "altitude": 0, "heading": 90,
+      "health": 100, "max_health": 100,
+      "blood": 3, "max_blood": 3,
+      "speed": 0, "max_speed": 1, "move_range": 1,
+      "sensor_range": 25, "state": "STOPPED", "alive": true,
+      "weapon_ids": [9101], "deployed": true,
+      "raw_attributes": {
+        "hex_id": 101, "armor_class": "MEDIUM",
+        "ammunition": {"0": 10}, "weapon_cooldown": 0,
+        "weapon_unfolded": true
+      }
+    },
+    {
+      "operator_id": 201,
+      "side": "blue",
+      "operator_type": "PERSONNEL",
+      "subtype": "synthetic_infantry",
+      "x": 4, "y": 1, "altitude": 0, "heading": 270,
+      "health": 100, "max_health": 100,
+      "blood": 3, "max_blood": 3,
+      "speed": 0, "max_speed": 1, "move_range": 1,
+      "sensor_range": 10, "state": "STOPPED", "alive": true,
+      "weapon_ids": [9201], "deployed": true,
+      "raw_attributes": {"hex_id": 104, "armor_class": "NONE"}
+    },
+    {
+      "operator_id": 202,
+      "side": "blue",
+      "operator_type": "VEHICLE",
+      "subtype": "synthetic_medium_vehicle",
+      "x": 7, "y": 1, "altitude": 0, "heading": 270,
+      "health": 100, "max_health": 100,
+      "blood": 3, "max_blood": 3,
+      "speed": 0, "max_speed": 1, "move_range": 1,
+      "sensor_range": 25, "state": "STOPPED", "alive": true,
+      "weapon_ids": [9202], "deployed": true,
+      "raw_attributes": {
+        "hex_id": 107, "armor_class": "MEDIUM",
+        "passenger_ids": []
+      }
+    }
+  ],
+  "weapons": [
+    {
+      "weapon_id": 9101,
+      "weapon_class": "large_direct_fire_gun",
+      "maximum_range": 10,
+      "target_domains": ["PERSONNEL", "VEHICLE"],
+      "ammunition_key": "0",
+      "requires_unfolded": true,
+      "can_fire_while_moving": false
+    }
+  ]
+}

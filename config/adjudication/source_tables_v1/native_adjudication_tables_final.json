@@ -1,0 +1,3379 @@
+{
+  "metadata": {
+    "table_set_id": "native-source-adjudication-final",
+    "schema_version": "native-adjudication-tables/1.2",
+    "language": "zh-CN",
+    "source_document": {
+      "name": "推演规则.pdf",
+      "sha256": "ce1c6ad55fc38bc5f1d78ad165bb7ab387e549dadd71fba5d1b86a5c7ec709fc",
+      "table_pages": [
+        27,
+        28,
+        29,
+        30,
+        31,
+        32,
+        33,
+        34,
+        35,
+        36,
+        37,
+        38,
+        39,
+        40
+      ]
+    },
+    "source_frame": {
+      "name": "96.json",
+      "sha256": "10022073edb19596387cf4d75ecde9c60dc06fb140555fb2ff07c2db32f60c62",
+      "scenario_id": "XGD-003",
+      "terrain_id": 221,
+      "stage": 2,
+      "cur_step": 80
+    },
+    "transcription": {
+      "method": "PDF page image visual verification + PDF vector table extraction",
+      "blank_attack_level_cell": {
+        "infantry_light_weapon_within_declared_range": 0,
+        "beyond_declared_weapon_range": "OUT_OF_RANGE"
+      },
+      "blank_combat_result_cell": "ZERO_LOSS_OR_NO_EFFECT",
+      "dash_correction_cell": 0,
+      "no_interpolation": true,
+      "human_confirmed_revision": true
+    },
+    "revision": "1.2.1-final",
+    "source_text": {
+      "name": "推演规则_完整纯文本_Codex版.md",
+      "sha256": "77002ef3ac64dcd44d3dd87a785b0f476b35ccae13532300cd23a95b9754a12e",
+      "line_count": 612,
+      "role": "human-readable complete rule source supplied by user"
+    },
+    "design_basis": "UPLOADED_COMPLETE_RULE_TEXT",
+    "source_priority_policy": [
+      "uploaded_complete_rule_text",
+      "user_confirmed_table_corrections",
+      "explicit_native_implementation_conventions",
+      "pdf_ocr_or_parsed_text"
+    ],
+    "release_status": "FINAL_FOR_CODEX_IMPLEMENTATION",
+    "knowledge_base_files": {
+      "primary_guide": "Native兵棋裁决知识库_Final.md",
+      "machine_tables": "native_adjudication_tables_final.json",
+      "complete_source_text": "推演规则_完整纯文本_Final.md",
+      "manifest": "knowledge_base_manifest.json"
+    },
+    "usage_contract": {
+      "read_order": [
+        "Native兵棋裁决知识库_Final.md",
+        "native_adjudication_tables_final.json",
+        "推演规则_完整纯文本_Final.md"
+      ],
+      "primary_machine_source": "native_adjudication_tables_final.json",
+      "context_source": "推演规则_完整纯文本_Final.md",
+      "pdf_reading_required": false,
+      "rules": [
+        "Do not use Lanchester factors in adjudication.",
+        "Do not replace table lookup with continuous damage formulas.",
+        "Do not interpolate, smooth, fit, or silently fill table cells.",
+        "Unknown source numeric codes remain UNKNOWN until mapped.",
+        "Every roll and lookup must be recorded in replay evidence."
+      ]
+    },
+    "content_sha256": "2d0d03fa7ac5f1072b550378c20347b3e35e088a1348b459ae05967c0bab11d6"
+  },
+  "runtime_rules": {
+    "direct_fire": {
+      "weapon_unfold_required": true,
+      "weapon_cooldown_seconds": 75,
+      "ground_unit_must_be_stopped": true,
+      "moving_fire_exception": [
+        "large_direct_fire_gun",
+        "medium_direct_fire_gun"
+      ],
+      "air_unit_must_hover": true,
+      "target_must_be_observed": true,
+      "target_must_be_in_range": true
+    },
+    "outcome_semantics": {
+      "integer": "loss of N vehicle/squad strength points",
+      "SUPPRESS": "apply suppression without direct strength loss",
+      "NO_EFFECT": "no loss and no suppression",
+      "vehicle_numeric_loss_also_suppresses": true,
+      "personnel_already_suppressed_and_suppressed_again": "lose 1 squad and remain suppressed",
+      "vehicle_losses_propagate_to_carried_personnel": "same number of squad losses"
+    },
+    "close_combat": {
+      "distance": 0,
+      "auto_select_highest_attack_level_weapon": true,
+      "target_priority": [
+        "tank",
+        "combat_vehicle",
+        "other_vehicle",
+        "personnel"
+      ],
+      "repeat_interval_seconds": 25,
+      "first_shot_immediate": true
+    },
+    "timing": {
+      "move_to_stop_seconds": 75,
+      "air_move_to_hover_seconds": 75,
+      "weapon_lock_seconds": 75,
+      "weapon_unfold_seconds": 75,
+      "direct_fire_cooldown_seconds": 75,
+      "boarding_seconds": 75,
+      "disembarking_seconds": 75,
+      "concealment_transition_seconds": 75,
+      "guided_fire_recovery_seconds": 75,
+      "indirect_fire_flight_seconds": 150,
+      "indirect_fire_explosion_seconds": 300,
+      "indirect_fire_cooldown_seconds": 300,
+      "close_combat_repeat_seconds": 25
+    },
+    "suppression": {
+      "effective_duration_seconds": 150,
+      "effective_value_source": "UPLOADED_COMPLETE_RULE_TEXT",
+      "source_text_location": "三、推演规则 / 8.8.e",
+      "conflict_status": "RESOLVED_BY_SOURCE_PRIORITY",
+      "refresh_policy_on_reapplication": "RESET_TO_FULL_DURATION",
+      "repeated_personnel_suppression": {
+        "additional_squad_loss": 1,
+        "remain_suppressed": true,
+        "timer_policy": "RESET_TO_FULL_DURATION",
+        "duration_seconds_after_reapplication": 150
+      },
+      "vehicle_suppression": {
+        "duration_seconds": 150,
+        "carried_personnel_inherit_suppression": false,
+        "carried_personnel_disembark_forbidden_while_vehicle_suppressed": true
+      }
+    },
+    "execution_model": {
+      "mode": "REAL_TIME_EVENT_QUEUE",
+      "command_resolution_order": "FIRST_ARRIVAL_FIRST_ADJUDICATION"
+    }
+  },
+  "direct_fire": {
+    "personnel_attack_levels": {
+      "large_direct_fire_gun": {
+        "source_name": "大号直瞄炮",
+        "range": 10,
+        "by_strength": {
+          "1": [
+            2,
+            2,
+            2,
+            2,
+            2,
+            2,
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "2": [
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3
+          ],
+          "3": [
+            5,
+            5,
+            5,
+            5,
+            5,
+            5,
+            5,
+            5,
+            5,
+            5,
+            5
+          ],
+          "4": [
+            7,
+            7,
+            7,
+            7,
+            7,
+            7,
+            7,
+            7,
+            7,
+            7,
+            7
+          ]
+        }
+      },
+      "medium_direct_fire_gun": {
+        "source_name": "中号直瞄炮",
+        "range": 10,
+        "by_strength": {
+          "1": [
+            2,
+            2,
+            2,
+            2,
+            2,
+            2,
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "2": [
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3
+          ],
+          "3": [
+            5,
+            5,
+            5,
+            5,
+            5,
+            5,
+            5,
+            5,
+            5,
+            5,
+            5
+          ],
+          "4": [
+            7,
+            7,
+            7,
+            7,
+            7,
+            7,
+            7,
+            7,
+            7,
+            7,
+            7
+          ]
+        }
+      },
+      "small_direct_fire_gun": {
+        "source_name": "小号直瞄炮",
+        "range": 10,
+        "by_strength": {
+          "1": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "2": [
+            2,
+            2,
+            2,
+            2,
+            2,
+            2,
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "3": [
+            4,
+            4,
+            4,
+            4,
+            4,
+            4,
+            4,
+            4,
+            4,
+            4,
+            4
+          ],
+          "4": [
+            5,
+            5,
+            5,
+            5,
+            5,
+            5,
+            5,
+            5,
+            5,
+            5,
+            5
+          ]
+        }
+      },
+      "rapid_fire_gun_ground": {
+        "source_name": "速射炮（对地）",
+        "range": 10,
+        "by_strength": {
+          "1": [
+            4,
+            4,
+            4,
+            4,
+            4,
+            4,
+            3,
+            3,
+            3,
+            2,
+            2
+          ],
+          "2": [
+            6,
+            6,
+            6,
+            6,
+            6,
+            6,
+            5,
+            5,
+            4,
+            4,
+            3
+          ],
+          "3": [
+            8,
+            8,
+            8,
+            8,
+            8,
+            8,
+            7,
+            7,
+            6,
+            6,
+            5
+          ],
+          "4": [
+            9,
+            9,
+            9,
+            9,
+            9,
+            9,
+            8,
+            8,
+            7,
+            7,
+            6
+          ]
+        }
+      },
+      "infantry_light_weapon": {
+        "source_name": "步兵轻武器",
+        "range": 3,
+        "by_strength": {
+          "1": [
+            2,
+            1,
+            0,
+            0
+          ],
+          "2": [
+            4,
+            2,
+            1,
+            0
+          ],
+          "3": [
+            6,
+            4,
+            2,
+            1
+          ],
+          "4": [
+            8,
+            5,
+            3,
+            1
+          ]
+        },
+        "blank_cell_semantics": "ATTACK_LEVEL_0_WITHIN_DECLARED_RANGE"
+      },
+      "vehicle_light_weapon": {
+        "source_name": "车载轻武器",
+        "range": 10,
+        "by_strength": {
+          "1": [
+            2,
+            2,
+            2,
+            2,
+            2,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "2": [
+            3,
+            3,
+            3,
+            3,
+            3,
+            2,
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "3": [
+            4,
+            4,
+            4,
+            4,
+            4,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3
+          ],
+          "4": [
+            5,
+            5,
+            5,
+            5,
+            5,
+            4,
+            4,
+            4,
+            4,
+            4,
+            4
+          ]
+        }
+      },
+      "medium_missile": {
+        "source_name": "中型导弹",
+        "range": 10,
+        "by_strength": {
+          "1": [
+            4,
+            5,
+            5,
+            5,
+            5,
+            5,
+            5,
+            5,
+            5,
+            5,
+            5
+          ],
+          "2": [
+            5,
+            6,
+            6,
+            6,
+            6,
+            6,
+            6,
+            6,
+            6,
+            6,
+            6
+          ],
+          "3": [
+            7,
+            8,
+            8,
+            8,
+            8,
+            8,
+            8,
+            8,
+            8,
+            8,
+            8
+          ],
+          "4": [
+            8,
+            9,
+            9,
+            9,
+            9,
+            9,
+            9,
+            9,
+            9,
+            9,
+            9
+          ]
+        }
+      },
+      "small_missile": {
+        "source_name": "小型导弹",
+        "range": 5,
+        "by_strength": {
+          "1": [
+            4,
+            5,
+            5,
+            5,
+            5,
+            5
+          ],
+          "2": [
+            5,
+            6,
+            6,
+            6,
+            6,
+            6
+          ],
+          "3": [
+            7,
+            8,
+            8,
+            8,
+            8,
+            8
+          ],
+          "4": [
+            8,
+            9,
+            9,
+            9,
+            9,
+            9
+          ]
+        }
+      },
+      "loitering_munition": {
+        "source_name": "巡飞弹",
+        "range": 2,
+        "by_strength": {
+          "1": [
+            4,
+            5,
+            5
+          ],
+          "2": [
+            5,
+            6,
+            6
+          ],
+          "3": [
+            7,
+            8,
+            8
+          ],
+          "4": [
+            8,
+            9,
+            9
+          ]
+        }
+      }
+    },
+    "vehicle_attack_levels": {
+      "large_direct_fire_gun": {
+        "source_name": "大号直瞄炮",
+        "range": 18,
+        "by_distance": [
+          10,
+          10,
+          10,
+          10,
+          10,
+          9,
+          9,
+          9,
+          9,
+          8,
+          8,
+          8,
+          7,
+          7,
+          6,
+          5,
+          4,
+          3,
+          2
+        ]
+      },
+      "medium_direct_fire_gun": {
+        "source_name": "中号直瞄炮",
+        "range": 15,
+        "by_distance": [
+          10,
+          10,
+          10,
+          9,
+          9,
+          9,
+          8,
+          8,
+          7,
+          7,
+          7,
+          6,
+          5,
+          5,
+          2,
+          2
+        ]
+      },
+      "small_direct_fire_gun": {
+        "source_name": "小号直瞄炮",
+        "range": 13,
+        "by_distance": [
+          10,
+          10,
+          9,
+          9,
+          8,
+          8,
+          7,
+          6,
+          6,
+          5,
+          5,
+          2,
+          2,
+          2
+        ]
+      },
+      "rapid_fire_gun": {
+        "source_name": "速射炮",
+        "range": 10,
+        "by_distance": [
+          5,
+          5,
+          4,
+          4,
+          3,
+          3,
+          3,
+          2,
+          2,
+          2,
+          2
+        ]
+      },
+      "rocket_launcher": {
+        "source_name": "火箭筒",
+        "range": 4,
+        "by_distance": [
+          6,
+          6,
+          6,
+          4,
+          2
+        ]
+      },
+      "portable_missile": {
+        "source_name": "便携导弹",
+        "range": 10,
+        "by_distance": [
+          7,
+          7,
+          7,
+          8,
+          8,
+          8,
+          8,
+          8,
+          8,
+          8,
+          8
+        ]
+      },
+      "vehicle_missile_gun_launched": {
+        "source_name": "车载导弹（炮射导弹）",
+        "range": 20,
+        "by_distance": [
+          0,
+          0,
+          5,
+          5,
+          6,
+          8,
+          8,
+          8,
+          8,
+          8,
+          8,
+          8,
+          8,
+          8,
+          8,
+          8,
+          8,
+          8,
+          8,
+          8,
+          8
+        ]
+      },
+      "heavy_missile": {
+        "source_name": "重型导弹",
+        "range": 20,
+        "by_distance": [
+          0,
+          0,
+          5,
+          5,
+          6,
+          8,
+          8,
+          8,
+          8,
+          8,
+          8,
+          8,
+          8,
+          8,
+          8,
+          8,
+          8,
+          8,
+          8,
+          8,
+          8
+        ]
+      },
+      "medium_missile_standard": {
+        "source_name": "中型导弹（标准）",
+        "range": 20,
+        "by_distance": [
+          7,
+          7,
+          7,
+          8,
+          8,
+          8,
+          8,
+          8,
+          8,
+          8,
+          8,
+          8,
+          8,
+          8,
+          8,
+          8,
+          8,
+          8,
+          8,
+          8,
+          8
+        ]
+      },
+      "medium_missile_portable": {
+        "source_name": "中型导弹（便携）",
+        "range": 10,
+        "by_distance": [
+          7,
+          7,
+          7,
+          8,
+          8,
+          8,
+          8,
+          8,
+          8,
+          8,
+          8
+        ]
+      },
+      "small_missile": {
+        "source_name": "小型导弹",
+        "range": 5,
+        "by_distance": [
+          3,
+          3,
+          4,
+          4,
+          4,
+          4
+        ]
+      },
+      "loitering_munition": {
+        "source_name": "巡飞弹",
+        "range": 2,
+        "by_distance": [
+          5,
+          5,
+          5
+        ]
+      },
+      "infantry_light_weapon": {
+        "source_name": "步兵轻武器",
+        "lookup": "infantry_vs_vehicle_attack_levels"
+      }
+    },
+    "infantry_vs_vehicle_attack_levels": {
+      "source_name": "步兵轻武器对车辆攻击等级表",
+      "range": 3,
+      "by_strength": {
+        "1": [
+          2,
+          1,
+          0,
+          0
+        ],
+        "2": [
+          4,
+          2,
+          1,
+          0
+        ],
+        "3": [
+          6,
+          4,
+          2,
+          1
+        ],
+        "4": [
+          8,
+          5,
+          3,
+          1
+        ]
+      },
+      "blank_cell_semantics": "ATTACK_LEVEL_0_WITHIN_DECLARED_RANGE"
+    },
+    "elevation_attack_level_modifiers": {
+      "source_name": "攻击等级高度差修正",
+      "distance_columns": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12
+      ],
+      "by_height_difference": {
+        "1": [
+          -2,
+          -2,
+          -1,
+          -1,
+          -1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "2": [
+          -2,
+          -2,
+          -2,
+          -1,
+          -1,
+          -1,
+          -1,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "3": [
+          -3,
+          -2,
+          -2,
+          -2,
+          -1,
+          -1,
+          -1,
+          -1,
+          -1,
+          0,
+          0,
+          0
+        ],
+        "4": [
+          -3,
+          -3,
+          -3,
+          -2,
+          -2,
+          -1,
+          -1,
+          -1,
+          -1,
+          -1,
+          -1,
+          0
+        ],
+        "5": [
+          -4,
+          -3,
+          -3,
+          -3,
+          -2,
+          -2,
+          -2,
+          -1,
+          -1,
+          -1,
+          -1,
+          -1
+        ],
+        "6": [
+          -4,
+          -4,
+          -4,
+          -3,
+          -3,
+          -2,
+          -2,
+          -2,
+          -1,
+          -1,
+          -1,
+          -1
+        ],
+        "7": [
+          -5,
+          -4,
+          -4,
+          -4,
+          -3,
+          -2,
+          -2,
+          -2,
+          -2,
+          -1,
+          -1,
+          -1
+        ],
+        "8": [
+          -5,
+          -5,
+          -5,
+          -4,
+          -3,
+          -3,
+          -2,
+          -2,
+          -2,
+          -2,
+          -2,
+          -1
+        ]
+      },
+      "application_policy": {
+        "shooter_lower_than_target": "USE_TABLE_VALUE_AS_NEGATIVE_ATTACK_LEVEL_MODIFIER",
+        "shooter_higher_than_target": 0,
+        "same_elevation": 0,
+        "blank_cell": 0,
+        "height_difference": "ABSOLUTE_ELEVATION_LEVEL_DIFFERENCE_FOR_TABLE_INDEX",
+        "out_of_table_range": "REJECT_UNLESS_RULESET_EXPLICITLY_EXTENDS"
+      },
+      "manual_corrections": [
+        {
+          "height_difference": 7,
+          "distance": 12,
+          "old_value": 1,
+          "new_value": -1,
+          "source": "USER_MANUAL_CONFIRMATION"
+        }
+      ]
+    },
+    "vehicle_base_combat_result_chart": {
+      "source_name": "对车辆单位战斗结果",
+      "dice": "2d6",
+      "column_map_by_target_strength_and_attack_level": {
+        "1": {
+          "1": 1,
+          "2": 3,
+          "3": 4,
+          "4": 5,
+          "5": 6,
+          "6": 7,
+          "7": 8,
+          "8": 9,
+          "9": 11,
+          "10": 12
+        },
+        "2": {
+          "1": 2,
+          "2": 4,
+          "3": 6,
+          "4": 7,
+          "5": 8,
+          "6": 9,
+          "7": 10,
+          "8": 12,
+          "9": 13,
+          "10": 14
+        },
+        "3": {
+          "1": 3,
+          "2": 5,
+          "3": 7,
+          "4": 8,
+          "5": 10,
+          "6": 12,
+          "7": 13,
+          "8": 14,
+          "9": 15,
+          "10": 16
+        },
+        "4": {
+          "1": 3,
+          "2": 5,
+          "3": 7,
+          "4": 9,
+          "5": 11,
+          "6": 13,
+          "7": 14,
+          "8": 15,
+          "9": 17,
+          "10": 18
+        },
+        "5": {
+          "1": 3,
+          "2": 5,
+          "3": 9,
+          "4": 11,
+          "5": 14,
+          "6": 15,
+          "7": 16,
+          "8": 18,
+          "9": 19,
+          "10": 20
+        }
+      },
+      "raw_result_matrix_by_roll_columns_1_to_20": {
+        "2": [
+          1,
+          null,
+          null,
+          null,
+          null,
+          null,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          2,
+          3,
+          3,
+          2,
+          3,
+          5
+        ],
+        "3": [
+          null,
+          null,
+          null,
+          1,
+          null,
+          null,
+          1,
+          null,
+          null,
+          1,
+          1,
+          1,
+          1,
+          1,
+          2,
+          3,
+          3,
+          2,
+          1,
+          1
+        ],
+        "4": [
+          null,
+          1,
+          null,
+          1,
+          1,
+          null,
+          null,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "5": [
+          null,
+          null,
+          null,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "6": [
+          null,
+          null,
+          null,
+          null,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          3,
+          5
+        ],
+        "7": [
+          null,
+          null,
+          1,
+          null,
+          null,
+          1,
+          1,
+          1,
+          2,
+          2,
+          2,
+          2,
+          2,
+          3,
+          3,
+          3,
+          4,
+          3,
+          4,
+          3
+        ],
+        "8": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          1,
+          1,
+          1,
+          null,
+          null,
+          2,
+          2,
+          2,
+          2,
+          2,
+          4,
+          4,
+          4
+        ],
+        "9": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          1,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          4,
+          3,
+          4
+        ],
+        "10": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          1,
+          2,
+          2,
+          2,
+          2,
+          2,
+          4,
+          4,
+          4
+        ],
+        "11": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          2,
+          2,
+          null,
+          null,
+          2,
+          3,
+          3,
+          2,
+          2,
+          3
+        ],
+        "12": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          1,
+          2,
+          3,
+          3,
+          3,
+          2,
+          4
+        ]
+      },
+      "resolved_losses_by_target_strength_attack_level_roll": {
+        "1": {
+          "1": {
+            "2": 1,
+            "3": 0,
+            "4": 0,
+            "5": 0,
+            "6": 0,
+            "7": 0,
+            "8": 0,
+            "9": 0,
+            "10": 0,
+            "11": 0,
+            "12": 0
+          },
+          "2": {
+            "2": 0,
+            "3": 0,
+            "4": 0,
+            "5": 0,
+            "6": 0,
+            "7": 1,
+            "8": 0,
+            "9": 0,
+            "10": 0,
+            "11": 0,
+            "12": 0
+          },
+          "3": {
+            "2": 0,
+            "3": 1,
+            "4": 1,
+            "5": 1,
+            "6": 0,
+            "7": 0,
+            "8": 0,
+            "9": 0,
+            "10": 0,
+            "11": 0,
+            "12": 0
+          },
+          "4": {
+            "2": 0,
+            "3": 0,
+            "4": 1,
+            "5": 1,
+            "6": 1,
+            "7": 0,
+            "8": 0,
+            "9": 0,
+            "10": 0,
+            "11": 0,
+            "12": 0
+          },
+          "5": {
+            "2": 0,
+            "3": 0,
+            "4": 0,
+            "5": 1,
+            "6": 1,
+            "7": 1,
+            "8": 0,
+            "9": 0,
+            "10": 0,
+            "11": 0,
+            "12": 0
+          },
+          "6": {
+            "2": 1,
+            "3": 1,
+            "4": 0,
+            "5": 1,
+            "6": 1,
+            "7": 1,
+            "8": 0,
+            "9": 0,
+            "10": 0,
+            "11": 0,
+            "12": 0
+          },
+          "7": {
+            "2": 1,
+            "3": 0,
+            "4": 1,
+            "5": 1,
+            "6": 1,
+            "7": 1,
+            "8": 1,
+            "9": 0,
+            "10": 0,
+            "11": 0,
+            "12": 0
+          },
+          "8": {
+            "2": 1,
+            "3": 0,
+            "4": 1,
+            "5": 1,
+            "6": 1,
+            "7": 2,
+            "8": 1,
+            "9": 0,
+            "10": 0,
+            "11": 0,
+            "12": 0
+          },
+          "9": {
+            "2": 1,
+            "3": 1,
+            "4": 1,
+            "5": 1,
+            "6": 1,
+            "7": 2,
+            "8": 0,
+            "9": 2,
+            "10": 0,
+            "11": 2,
+            "12": 0
+          },
+          "10": {
+            "2": 1,
+            "3": 1,
+            "4": 1,
+            "5": 1,
+            "6": 1,
+            "7": 2,
+            "8": 0,
+            "9": 2,
+            "10": 1,
+            "11": 2,
+            "12": 0
+          }
+        },
+        "2": {
+          "1": {
+            "2": 0,
+            "3": 0,
+            "4": 1,
+            "5": 0,
+            "6": 0,
+            "7": 0,
+            "8": 0,
+            "9": 0,
+            "10": 0,
+            "11": 0,
+            "12": 0
+          },
+          "2": {
+            "2": 0,
+            "3": 1,
+            "4": 1,
+            "5": 1,
+            "6": 0,
+            "7": 0,
+            "8": 0,
+            "9": 0,
+            "10": 0,
+            "11": 0,
+            "12": 0
+          },
+          "3": {
+            "2": 0,
+            "3": 0,
+            "4": 0,
+            "5": 1,
+            "6": 1,
+            "7": 1,
+            "8": 0,
+            "9": 0,
+            "10": 0,
+            "11": 0,
+            "12": 0
+          },
+          "4": {
+            "2": 1,
+            "3": 1,
+            "4": 0,
+            "5": 1,
+            "6": 1,
+            "7": 1,
+            "8": 0,
+            "9": 0,
+            "10": 0,
+            "11": 0,
+            "12": 0
+          },
+          "5": {
+            "2": 1,
+            "3": 0,
+            "4": 1,
+            "5": 1,
+            "6": 1,
+            "7": 1,
+            "8": 1,
+            "9": 0,
+            "10": 0,
+            "11": 0,
+            "12": 0
+          },
+          "6": {
+            "2": 1,
+            "3": 0,
+            "4": 1,
+            "5": 1,
+            "6": 1,
+            "7": 2,
+            "8": 1,
+            "9": 0,
+            "10": 0,
+            "11": 0,
+            "12": 0
+          },
+          "7": {
+            "2": 1,
+            "3": 1,
+            "4": 1,
+            "5": 1,
+            "6": 1,
+            "7": 2,
+            "8": 1,
+            "9": 1,
+            "10": 0,
+            "11": 0,
+            "12": 0
+          },
+          "8": {
+            "2": 1,
+            "3": 1,
+            "4": 1,
+            "5": 1,
+            "6": 1,
+            "7": 2,
+            "8": 0,
+            "9": 2,
+            "10": 1,
+            "11": 2,
+            "12": 0
+          },
+          "9": {
+            "2": 1,
+            "3": 1,
+            "4": 1,
+            "5": 1,
+            "6": 1,
+            "7": 2,
+            "8": 2,
+            "9": 2,
+            "10": 2,
+            "11": 0,
+            "12": 0
+          },
+          "10": {
+            "2": 1,
+            "3": 1,
+            "4": 1,
+            "5": 1,
+            "6": 1,
+            "7": 3,
+            "8": 2,
+            "9": 2,
+            "10": 2,
+            "11": 0,
+            "12": 1
+          }
+        },
+        "3": {
+          "1": {
+            "2": 0,
+            "3": 0,
+            "4": 0,
+            "5": 0,
+            "6": 0,
+            "7": 1,
+            "8": 0,
+            "9": 0,
+            "10": 0,
+            "11": 0,
+            "12": 0
+          },
+          "2": {
+            "2": 0,
+            "3": 0,
+            "4": 1,
+            "5": 1,
+            "6": 1,
+            "7": 0,
+            "8": 0,
+            "9": 0,
+            "10": 0,
+            "11": 0,
+            "12": 0
+          },
+          "3": {
+            "2": 1,
+            "3": 1,
+            "4": 0,
+            "5": 1,
+            "6": 1,
+            "7": 1,
+            "8": 0,
+            "9": 0,
+            "10": 0,
+            "11": 0,
+            "12": 0
+          },
+          "4": {
+            "2": 1,
+            "3": 0,
+            "4": 1,
+            "5": 1,
+            "6": 1,
+            "7": 1,
+            "8": 1,
+            "9": 0,
+            "10": 0,
+            "11": 0,
+            "12": 0
+          },
+          "5": {
+            "2": 1,
+            "3": 1,
+            "4": 1,
+            "5": 1,
+            "6": 1,
+            "7": 2,
+            "8": 1,
+            "9": 1,
+            "10": 0,
+            "11": 0,
+            "12": 0
+          },
+          "6": {
+            "2": 1,
+            "3": 1,
+            "4": 1,
+            "5": 1,
+            "6": 1,
+            "7": 2,
+            "8": 0,
+            "9": 2,
+            "10": 1,
+            "11": 2,
+            "12": 0
+          },
+          "7": {
+            "2": 1,
+            "3": 1,
+            "4": 1,
+            "5": 1,
+            "6": 1,
+            "7": 2,
+            "8": 2,
+            "9": 2,
+            "10": 2,
+            "11": 0,
+            "12": 0
+          },
+          "8": {
+            "2": 1,
+            "3": 1,
+            "4": 1,
+            "5": 1,
+            "6": 1,
+            "7": 3,
+            "8": 2,
+            "9": 2,
+            "10": 2,
+            "11": 0,
+            "12": 1
+          },
+          "9": {
+            "2": 2,
+            "3": 2,
+            "4": 1,
+            "5": 1,
+            "6": 1,
+            "7": 3,
+            "8": 2,
+            "9": 2,
+            "10": 2,
+            "11": 2,
+            "12": 2
+          },
+          "10": {
+            "2": 3,
+            "3": 3,
+            "4": 1,
+            "5": 1,
+            "6": 1,
+            "7": 3,
+            "8": 2,
+            "9": 2,
+            "10": 2,
+            "11": 3,
+            "12": 3
+          }
+        },
+        "4": {
+          "1": {
+            "2": 0,
+            "3": 0,
+            "4": 0,
+            "5": 0,
+            "6": 0,
+            "7": 1,
+            "8": 0,
+            "9": 0,
+            "10": 0,
+            "11": 0,
+            "12": 0
+          },
+          "2": {
+            "2": 0,
+            "3": 0,
+            "4": 1,
+            "5": 1,
+            "6": 1,
+            "7": 0,
+            "8": 0,
+            "9": 0,
+            "10": 0,
+            "11": 0,
+            "12": 0
+          },
+          "3": {
+            "2": 1,
+            "3": 1,
+            "4": 0,
+            "5": 1,
+            "6": 1,
+            "7": 1,
+            "8": 0,
+            "9": 0,
+            "10": 0,
+            "11": 0,
+            "12": 0
+          },
+          "4": {
+            "2": 1,
+            "3": 0,
+            "4": 1,
+            "5": 1,
+            "6": 1,
+            "7": 2,
+            "8": 1,
+            "9": 0,
+            "10": 0,
+            "11": 0,
+            "12": 0
+          },
+          "5": {
+            "2": 1,
+            "3": 1,
+            "4": 1,
+            "5": 1,
+            "6": 1,
+            "7": 2,
+            "8": 0,
+            "9": 2,
+            "10": 0,
+            "11": 2,
+            "12": 0
+          },
+          "6": {
+            "2": 1,
+            "3": 1,
+            "4": 1,
+            "5": 1,
+            "6": 1,
+            "7": 2,
+            "8": 2,
+            "9": 2,
+            "10": 2,
+            "11": 0,
+            "12": 0
+          },
+          "7": {
+            "2": 1,
+            "3": 1,
+            "4": 1,
+            "5": 1,
+            "6": 1,
+            "7": 3,
+            "8": 2,
+            "9": 2,
+            "10": 2,
+            "11": 0,
+            "12": 1
+          },
+          "8": {
+            "2": 2,
+            "3": 2,
+            "4": 1,
+            "5": 1,
+            "6": 1,
+            "7": 3,
+            "8": 2,
+            "9": 2,
+            "10": 2,
+            "11": 2,
+            "12": 2
+          },
+          "9": {
+            "2": 3,
+            "3": 3,
+            "4": 1,
+            "5": 1,
+            "6": 1,
+            "7": 4,
+            "8": 2,
+            "9": 2,
+            "10": 2,
+            "11": 3,
+            "12": 3
+          },
+          "10": {
+            "2": 2,
+            "3": 2,
+            "4": 1,
+            "5": 1,
+            "6": 1,
+            "7": 3,
+            "8": 4,
+            "9": 4,
+            "10": 4,
+            "11": 2,
+            "12": 3
+          }
+        },
+        "5": {
+          "1": {
+            "2": 0,
+            "3": 0,
+            "4": 0,
+            "5": 0,
+            "6": 0,
+            "7": 1,
+            "8": 0,
+            "9": 0,
+            "10": 0,
+            "11": 0,
+            "12": 0
+          },
+          "2": {
+            "2": 0,
+            "3": 0,
+            "4": 1,
+            "5": 1,
+            "6": 1,
+            "7": 0,
+            "8": 0,
+            "9": 0,
+            "10": 0,
+            "11": 0,
+            "12": 0
+          },
+          "3": {
+            "2": 1,
+            "3": 0,
+            "4": 1,
+            "5": 1,
+            "6": 1,
+            "7": 2,
+            "8": 1,
+            "9": 0,
+            "10": 0,
+            "11": 0,
+            "12": 0
+          },
+          "4": {
+            "2": 1,
+            "3": 1,
+            "4": 1,
+            "5": 1,
+            "6": 1,
+            "7": 2,
+            "8": 0,
+            "9": 2,
+            "10": 0,
+            "11": 2,
+            "12": 0
+          },
+          "5": {
+            "2": 1,
+            "3": 1,
+            "4": 1,
+            "5": 1,
+            "6": 1,
+            "7": 3,
+            "8": 2,
+            "9": 2,
+            "10": 2,
+            "11": 0,
+            "12": 1
+          },
+          "6": {
+            "2": 2,
+            "3": 2,
+            "4": 1,
+            "5": 1,
+            "6": 1,
+            "7": 3,
+            "8": 2,
+            "9": 2,
+            "10": 2,
+            "11": 2,
+            "12": 2
+          },
+          "7": {
+            "2": 3,
+            "3": 3,
+            "4": 1,
+            "5": 1,
+            "6": 1,
+            "7": 3,
+            "8": 2,
+            "9": 2,
+            "10": 2,
+            "11": 3,
+            "12": 3
+          },
+          "8": {
+            "2": 2,
+            "3": 2,
+            "4": 1,
+            "5": 1,
+            "6": 1,
+            "7": 3,
+            "8": 4,
+            "9": 4,
+            "10": 4,
+            "11": 2,
+            "12": 3
+          },
+          "9": {
+            "2": 3,
+            "3": 1,
+            "4": 1,
+            "5": 1,
+            "6": 3,
+            "7": 4,
+            "8": 4,
+            "9": 3,
+            "10": 4,
+            "11": 2,
+            "12": 2
+          },
+          "10": {
+            "2": 5,
+            "3": 1,
+            "4": 1,
+            "5": 1,
+            "6": 5,
+            "7": 3,
+            "8": 4,
+            "9": 4,
+            "10": 4,
+            "11": 3,
+            "12": 4
+          }
+        }
+      },
+      "blank_cell_semantics": "ZERO_LOSS",
+      "application": "base_losses = resolved chart value; blank/raw null cells resolve to 0 losses"
+    },
+    "vehicle_result_modifiers": {
+      "source_name": "车辆战损结果修正",
+      "base_result_dice": "2d6",
+      "correction_dice": "2d6",
+      "roll_modifiers": {
+        "shooter_state": {
+          "suppressed": -1,
+          "moving": -1,
+          "tank_on_water": -1
+        },
+        "target_terrain": {
+          "residential_or_fort": -1,
+          "forest": -2,
+          "water": -2
+        },
+        "target_state": {
+          "concealed": -2,
+          "moving": -2,
+          "stacked": 2,
+          "marching": 4
+        }
+      },
+      "armor_loss_correction_by_modified_roll": [
+        {
+          "condition": "<=-3",
+          "composite": -3,
+          "heavy": -3,
+          "medium": -2,
+          "light": -1,
+          "none": 0
+        },
+        {
+          "condition": "-2..-1",
+          "composite": -3,
+          "heavy": -2,
+          "medium": -1,
+          "light": 0,
+          "none": 0
+        },
+        {
+          "condition": "0",
+          "composite": -3,
+          "heavy": -1,
+          "medium": 0,
+          "light": 0,
+          "none": 0
+        },
+        {
+          "condition": "1",
+          "composite": -2,
+          "heavy": -1,
+          "medium": 0,
+          "light": 0,
+          "none": 0
+        },
+        {
+          "condition": "2",
+          "composite": -2,
+          "heavy": 0,
+          "medium": 0,
+          "light": 0,
+          "none": 0
+        },
+        {
+          "condition": "3..5",
+          "composite": -1,
+          "heavy": 0,
+          "medium": 0,
+          "light": 0,
+          "none": 1
+        },
+        {
+          "condition": "6..8",
+          "composite": 0,
+          "heavy": 0,
+          "medium": 0,
+          "light": 1,
+          "none": 1
+        },
+        {
+          "condition": "9",
+          "composite": 0,
+          "heavy": 0,
+          "medium": 1,
+          "light": 1,
+          "none": 1
+        },
+        {
+          "condition": "10",
+          "composite": 0,
+          "heavy": 1,
+          "medium": 1,
+          "light": 2,
+          "none": 2
+        },
+        {
+          "condition": "11",
+          "composite": 1,
+          "heavy": 2,
+          "medium": 2,
+          "light": 2,
+          "none": 2
+        },
+        {
+          "condition": ">=12",
+          "composite": 2,
+          "heavy": 2,
+          "medium": 3,
+          "light": 3,
+          "none": 3
+        }
+      ],
+      "application": "final_losses = clamp(base_losses + armor_loss_correction, 0, target_strength)",
+      "application_status": "USER_CONFIRMED"
+    },
+    "personnel_and_infantry_vs_vehicle_results": {
+      "source_name": "直瞄武器对人员/步兵轻武器对车辆战斗结果表",
+      "dice": "2d6",
+      "attack_levels": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10
+      ],
+      "by_roll": {
+        "2": [
+          "SUPPRESS",
+          "SUPPRESS",
+          "SUPPRESS",
+          "SUPPRESS",
+          1,
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "3": [
+          "NO_EFFECT",
+          "SUPPRESS",
+          "SUPPRESS",
+          "SUPPRESS",
+          "SUPPRESS",
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "4": [
+          "NO_EFFECT",
+          "NO_EFFECT",
+          "SUPPRESS",
+          "SUPPRESS",
+          "SUPPRESS",
+          "SUPPRESS",
+          "SUPPRESS",
+          1,
+          1,
+          1
+        ],
+        "5": [
+          "NO_EFFECT",
+          "NO_EFFECT",
+          "NO_EFFECT",
+          "NO_EFFECT",
+          "SUPPRESS",
+          "SUPPRESS",
+          "SUPPRESS",
+          "SUPPRESS",
+          1,
+          1
+        ],
+        "6": [
+          "NO_EFFECT",
+          "NO_EFFECT",
+          "NO_EFFECT",
+          "NO_EFFECT",
+          "NO_EFFECT",
+          "SUPPRESS",
+          "SUPPRESS",
+          "SUPPRESS",
+          "SUPPRESS",
+          "SUPPRESS"
+        ],
+        "7": [
+          "NO_EFFECT",
+          "NO_EFFECT",
+          "NO_EFFECT",
+          "NO_EFFECT",
+          "NO_EFFECT",
+          "NO_EFFECT",
+          "SUPPRESS",
+          "SUPPRESS",
+          "SUPPRESS",
+          "SUPPRESS"
+        ],
+        "8": [
+          "NO_EFFECT",
+          "NO_EFFECT",
+          "NO_EFFECT",
+          "NO_EFFECT",
+          "NO_EFFECT",
+          "NO_EFFECT",
+          "SUPPRESS",
+          "SUPPRESS",
+          "SUPPRESS",
+          "SUPPRESS"
+        ],
+        "9": [
+          "NO_EFFECT",
+          "NO_EFFECT",
+          "NO_EFFECT",
+          "NO_EFFECT",
+          "NO_EFFECT",
+          "SUPPRESS",
+          "SUPPRESS",
+          "SUPPRESS",
+          "SUPPRESS",
+          1
+        ],
+        "10": [
+          "NO_EFFECT",
+          "NO_EFFECT",
+          "NO_EFFECT",
+          "SUPPRESS",
+          "SUPPRESS",
+          "SUPPRESS",
+          "SUPPRESS",
+          "SUPPRESS",
+          1,
+          1
+        ],
+        "11": [
+          "NO_EFFECT",
+          "SUPPRESS",
+          "SUPPRESS",
+          "SUPPRESS",
+          "SUPPRESS",
+          "SUPPRESS",
+          "SUPPRESS",
+          1,
+          1,
+          2
+        ],
+        "12": [
+          "SUPPRESS",
+          "SUPPRESS",
+          "SUPPRESS",
+          "SUPPRESS",
+          "SUPPRESS",
+          1,
+          2,
+          2,
+          2,
+          2
+        ]
+      },
+      "use_for": [
+        "direct_fire_vs_personnel",
+        "infantry_light_weapon_vs_vehicle"
+      ]
+    },
+    "personnel_result_modifiers": {
+      "source_name": "人员战损结果修正",
+      "correction_dice": "1d6",
+      "roll_modifiers": {
+        "shooter_state": {
+          "suppressed": -1,
+          "moving": -1
+        },
+        "target_terrain": {
+          "residential": -1,
+          "forest": -2,
+          "fort": -1
+        },
+        "target_state": {
+          "concealed": -2,
+          "moving": -2,
+          "stacked": 2,
+          "marching": 4
+        }
+      },
+      "result_correction_by_modified_roll": [
+        {
+          "condition": "<=0",
+          "correction": -1
+        },
+        {
+          "condition": "1..7",
+          "correction": 0
+        },
+        {
+          "condition": ">=8",
+          "correction": 1
+        }
+      ],
+      "unresolved": "How a numeric correction applies to SUPPRESS/NO_EFFECT cells is not explicitly stated; implementation must preserve an explicit policy and tests.",
+      "application_status": "RESOLVED_BY_SOURCE_TEXT",
+      "execution_policy": "APPLY_CORRECTION_TO_BASE_RESULT",
+      "symbolic_outcome_policy": {
+        "NO_EFFECT": "UNRESOLVED_FOR_PLUS_MINUS_CORRECTION",
+        "SUPPRESS": "UNRESOLVED_FOR_PLUS_MINUS_CORRECTION"
+      },
+      "application": {
+        "numeric_base_result": "final_losses = clamp(base_numeric_losses + correction, 0, target_strength)",
+        "numeric_examples": [
+          {
+            "base_losses": 2,
+            "correction": -1,
+            "final_losses": 1
+          },
+          {
+            "base_losses": 2,
+            "correction": 0,
+            "final_losses": 2
+          },
+          {
+            "base_losses": 2,
+            "correction": 1,
+            "final_losses": 3
+          }
+        ],
+        "symbolic_base_result": {
+          "ordered_outcomes": [
+            "NO_EFFECT",
+            "SUPPRESS",
+            "LOSS_1",
+            "LOSS_2",
+            "LOSS_3",
+            "LOSS_4"
+          ],
+          "operation": "shift by correction steps and clamp to available range",
+          "status": "NATIVE_IMPLEMENTATION_CONVENTION",
+          "source_support": "uploaded text defines a result correction of -1/0/+1 but does not explicitly spell out symbolic ordering",
+          "examples": [
+            {
+              "base": "NO_EFFECT",
+              "correction": 1,
+              "final": "SUPPRESS"
+            },
+            {
+              "base": "SUPPRESS",
+              "correction": -1,
+              "final": "NO_EFFECT"
+            },
+            {
+              "base": "SUPPRESS",
+              "correction": 1,
+              "final": "LOSS_1"
+            },
+            {
+              "base": "LOSS_1",
+              "correction": -1,
+              "final": "SUPPRESS"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "indirect_fire": {
+    "unobserved_dispersion": {
+      "source_name": "无校射火力散布裁决",
+      "dice": "2d6",
+      "distance_bands": [
+        "1-20",
+        "21-40",
+        "41-60",
+        "61+"
+      ],
+      "by_roll": {
+        "2": [
+          "SCATTER_1",
+          "SCATTER_2",
+          "SCATTER_3",
+          "SCATTER_4"
+        ],
+        "3": [
+          "SCATTER_1",
+          "SCATTER_1",
+          "SCATTER_2",
+          "SCATTER_3"
+        ],
+        "4": [
+          "HIT",
+          "SCATTER_1",
+          "SCATTER_1",
+          "SCATTER_2"
+        ],
+        "5": [
+          "SCATTER",
+          "SCATTER",
+          "SCATTER_1",
+          "SCATTER_1"
+        ],
+        "6": [
+          "SCATTER",
+          "SCATTER",
+          "SCATTER",
+          "SCATTER_1"
+        ],
+        "7": [
+          "HIT",
+          "SCATTER",
+          "SCATTER",
+          "SCATTER"
+        ],
+        "8": [
+          "SCATTER",
+          "SCATTER",
+          "SCATTER",
+          "SCATTER_1"
+        ],
+        "9": [
+          "SCATTER",
+          "SCATTER",
+          "SCATTER_1",
+          "SCATTER_1"
+        ],
+        "10": [
+          "HIT",
+          "SCATTER_1",
+          "SCATTER_1",
+          "SCATTER_2"
+        ],
+        "11": [
+          "SCATTER_1",
+          "SCATTER_1",
+          "SCATTER_2",
+          "SCATTER_3"
+        ],
+        "12": [
+          "SCATTER_1",
+          "SCATTER_2",
+          "SCATTER_3",
+          "SCATTER_4"
+        ]
+      }
+    },
+    "grid_corrected_dispersion": {
+      "source_name": "格内校射火力散布裁决",
+      "dice": "2d6",
+      "distance_bands": [
+        "1-20",
+        "21-40",
+        "41-60",
+        "61+"
+      ],
+      "by_roll": {
+        "2": [
+          "SCATTER",
+          "SCATTER",
+          "SCATTER_1",
+          "SCATTER_3"
+        ],
+        "3": [
+          "SCATTER",
+          "SCATTER",
+          "SCATTER_1",
+          "SCATTER_2"
+        ],
+        "4": [
+          "SCATTER",
+          "SCATTER",
+          "SCATTER",
+          "SCATTER_1"
+        ],
+        "5": [
+          "HIT",
+          "SCATTER",
+          "SCATTER",
+          "SCATTER_1"
+        ],
+        "6": [
+          "HIT",
+          "HIT",
+          "SCATTER",
+          "SCATTER"
+        ],
+        "7": [
+          "HIT",
+          "HIT",
+          "HIT",
+          "SCATTER"
+        ],
+        "8": [
+          "HIT",
+          "HIT",
+          "SCATTER",
+          "SCATTER"
+        ],
+        "9": [
+          "HIT",
+          "SCATTER",
+          "SCATTER",
+          "SCATTER_1"
+        ],
+        "10": [
+          "SCATTER",
+          "SCATTER",
+          "SCATTER",
+          "SCATTER_1"
+        ],
+        "11": [
+          "SCATTER",
+          "SCATTER",
+          "SCATTER",
+          "SCATTER_2"
+        ],
+        "12": [
+          "SCATTER",
+          "SCATTER",
+          "SCATTER_1",
+          "SCATTER_3"
+        ]
+      }
+    },
+    "target_corrected_dispersion": {
+      "source_name": "目标校射火力散布裁决",
+      "dice": "2d6",
+      "by_roll": {
+        "2": "SCATTER",
+        "3": "SCATTER",
+        "4": "HIT",
+        "5": "HIT",
+        "6": "HIT",
+        "7": "HIT",
+        "8": "HIT",
+        "9": "HIT",
+        "10": "HIT",
+        "11": "SCATTER",
+        "12": "SCATTER"
+      }
+    },
+    "hit_target_result": {
+      "source_name": "命中目标战斗结果",
+      "dice": "2d6",
+      "by_roll": {
+        "2": {
+          "light": 2,
+          "medium": 3,
+          "heavy": 3
+        },
+        "3": {
+          "light": 1,
+          "medium": 2,
+          "heavy": 2
+        },
+        "4": {
+          "light": 1,
+          "medium": 1,
+          "heavy": 2
+        },
+        "5": {
+          "light": 1,
+          "medium": 1,
+          "heavy": 1
+        },
+        "6": {
+          "light": "SUPPRESS",
+          "medium": 1,
+          "heavy": 1
+        },
+        "7": {
+          "light": "SUPPRESS",
+          "medium": "SUPPRESS",
+          "heavy": "SUPPRESS"
+        },
+        "8": {
+          "light": "SUPPRESS",
+          "medium": "SUPPRESS",
+          "heavy": 1
+        },
+        "9": {
+          "light": "SUPPRESS",
+          "medium": "SUPPRESS",
+          "heavy": "SUPPRESS"
+        },
+        "10": {
+          "light": "SUPPRESS",
+          "medium": 2,
+          "heavy": 2
+        },
+        "11": {
+          "light": 1,
+          "medium": 1,
+          "heavy": 1
+        },
+        "12": {
+          "light": 1,
+          "medium": 1,
+          "heavy": 2
+        }
+      }
+    },
+    "off_target_result": {
+      "source_name": "偏离目标战斗结果",
+      "dice": "2d6",
+      "by_roll": {
+        "2": {
+          "light": "SUPPRESS",
+          "medium": 1,
+          "heavy": 1
+        },
+        "3": {
+          "light": "SUPPRESS",
+          "medium": "SUPPRESS",
+          "heavy": 1
+        },
+        "4": {
+          "light": "SUPPRESS",
+          "medium": "NO_EFFECT",
+          "heavy": "SUPPRESS"
+        },
+        "5": {
+          "light": "NO_EFFECT",
+          "medium": "NO_EFFECT",
+          "heavy": "NO_EFFECT"
+        },
+        "6": {
+          "light": "NO_EFFECT",
+          "medium": "NO_EFFECT",
+          "heavy": "SUPPRESS"
+        },
+        "7": {
+          "light": "NO_EFFECT",
+          "medium": "SUPPRESS",
+          "heavy": "SUPPRESS"
+        },
+        "8": {
+          "light": "NO_EFFECT",
+          "medium": "NO_EFFECT",
+          "heavy": "NO_EFFECT"
+        },
+        "9": {
+          "light": "SUPPRESS",
+          "medium": "NO_EFFECT",
+          "heavy": "NO_EFFECT"
+        },
+        "10": {
+          "light": "NO_EFFECT",
+          "medium": "SUPPRESS",
+          "heavy": "SUPPRESS"
+        },
+        "11": {
+          "light": "SUPPRESS",
+          "medium": "SUPPRESS",
+          "heavy": "SUPPRESS"
+        },
+        "12": {
+          "light": "SUPPRESS",
+          "medium": "SUPPRESS",
+          "heavy": 1
+        }
+      }
+    },
+    "result_modifiers": {
+      "source_name": "间瞄战斗结果修正",
+      "correction_dice": "1d6",
+      "roll_modifiers": {
+        "target_terrain": {
+          "residential": -1,
+          "forest": -2
+        },
+        "target_state": {
+          "concealed": -2,
+          "moving_personnel": 2,
+          "stacked": 2,
+          "marching": 4
+        },
+        "armor": {
+          "composite": -3,
+          "heavy": -1,
+          "medium": 0,
+          "light": 1
+        },
+        "gun_count": {
+          "1": -4,
+          "2": -2,
+          "3": 0,
+          "4": 2
+        }
+      },
+      "result_correction_by_modified_roll": [
+        {
+          "condition": "<=1",
+          "correction": -2
+        },
+        {
+          "condition": "2..4",
+          "correction": -1
+        },
+        {
+          "condition": "5..7",
+          "correction": 0
+        },
+        {
+          "condition": ">=8",
+          "correction": 1
+        }
+      ],
+      "unresolved": [
+        "Scatter direction for SCATTER/SCATTER_N is not specified in the table pages.",
+        "Unarmored indirect-fire armor modifier is absent from the source table."
+      ]
+    }
+  },
+  "anti_air": {
+    "weapon_attack_levels": {
+      "rapid_fire_gun": {
+        "source_name": "速射炮",
+        "range": 5,
+        "by_distance": [
+          3,
+          3,
+          2,
+          2,
+          1,
+          1
+        ]
+      },
+      "portable_missile": {
+        "source_name": "便携导弹",
+        "range": 10,
+        "by_distance": [
+          7,
+          7,
+          7,
+          8,
+          8,
+          8,
+          8,
+          8,
+          8,
+          8,
+          8
+        ]
+      },
+      "anti_air_cannon": {
+        "source_name": "防空高炮",
+        "range": 20,
+        "by_distance": [
+          9,
+          9,
+          8,
+          7,
+          6,
+          5,
+          4,
+          4,
+          3,
+          3,
+          3,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2
+        ]
+      },
+      "portable_anti_air_missile": {
+        "source_name": "便携防空导弹",
+        "range": 20,
+        "by_distance": [
+          0,
+          0,
+          5,
+          7,
+          7,
+          7,
+          6,
+          6,
+          4,
+          4,
+          4,
+          4,
+          4,
+          4,
+          4,
+          4,
+          4,
+          4,
+          4,
+          4,
+          4
+        ]
+      },
+      "vehicle_anti_air_missile": {
+        "source_name": "车载防空导弹",
+        "range": 50,
+        "by_distance_0_to_20": [
+          0,
+          0,
+          6,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          6,
+          6,
+          6,
+          6,
+          6,
+          6,
+          6,
+          6,
+          6,
+          6
+        ],
+        "distance_band_20_to_50": 6
+      }
+    },
+    "combat_results": {
+      "source_name": "空战斗结果表",
+      "dice": "2d6",
+      "result": "DESTROYED",
+      "destroyed_attack_levels_by_roll": {
+        "2": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11
+        ],
+        "3": [
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11
+        ],
+        "4": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11
+        ],
+        "5": [
+          7,
+          8,
+          9,
+          10,
+          11
+        ],
+        "6": [
+          9,
+          10,
+          11
+        ],
+        "7": [
+          11
+        ],
+        "8": [
+          10,
+          11
+        ],
+        "9": [
+          8,
+          9,
+          10,
+          11
+        ],
+        "10": [
+          6,
+          7,
+          8,
+          9,
+          10,
+          11
+        ],
+        "11": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11
+        ],
+        "12": [
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11
+        ]
+      },
+      "blank_cell": "NO_EFFECT"
+    }
+  },
+  "minefield": {
+    "base_losses": {
+      "source_name": "雷场-对车辆单位损伤结果表",
+      "dice": "2d6",
+      "by_unit_type": {
+        "vehicle": {
+          "2": 0,
+          "3": 0,
+          "4": 0,
+          "5": 0,
+          "6": 1,
+          "7": 1,
+          "8": 0,
+          "9": 0,
+          "10": 0,
+          "11": 2,
+          "12": 1
+        },
+        "personnel": {
+          "2": 0,
+          "3": 0,
+          "4": 0,
+          "5": 0,
+          "6": 1,
+          "7": 1,
+          "8": 0,
+          "9": 0,
+          "10": 0,
+          "11": 2,
+          "12": 1
+        }
+      }
+    },
+    "vehicle_armor_corrections": {
+      "source_name": "对车辆单位损伤战斗结果修正表",
+      "dash_semantics": 0,
+      "by_armor": {
+        "composite": {
+          "2": -2,
+          "3": -1,
+          "4": -1,
+          "5": -1,
+          "6": 0,
+          "7": 0,
+          "8": 0,
+          "9": 0,
+          "10": 0,
+          "11": -1,
+          "12": -1
+        },
+        "heavy": {
+          "2": -1,
+          "3": -1,
+          "4": 0,
+          "5": 0,
+          "6": 0,
+          "7": 0,
+          "8": 0,
+          "9": 0,
+          "10": 0,
+          "11": 0,
+          "12": -1
+        },
+        "medium": {
+          "2": -1,
+          "3": 0,
+          "4": 0,
+          "5": 0,
+          "6": 0,
+          "7": 0,
+          "8": 0,
+          "9": 0,
+          "10": 0,
+          "11": 0,
+          "12": 1
+        },
+        "light": {
+          "2": 1,
+          "3": 0,
+          "4": 0,
+          "5": 0,
+          "6": 0,
+          "7": 0,
+          "8": 0,
+          "9": 0,
+          "10": 0,
+          "11": 0,
+          "12": 1
+        },
+        "none": {
+          "2": 2,
+          "3": 1,
+          "4": 0,
+          "5": 0,
+          "6": 0,
+          "7": 0,
+          "8": 0,
+          "9": 0,
+          "10": 0,
+          "11": 1,
+          "12": 1
+        }
+      },
+      "application": "final_losses = clamp(base_losses + armor_correction, 0, target_strength)"
+    }
+  },
+  "source_frame_alignment": {
+    "critical_fields": {
+      "identity": [
+        "obj_id",
+        "color",
+        "type",
+        "sub_type",
+        "name",
+        "owner"
+      ],
+      "position": [
+        "cur_hex",
+        "cur_pos",
+        "altitude",
+        "move_path",
+        "speed",
+        "stop",
+        "move_state"
+      ],
+      "strength_and_protection": [
+        "blood",
+        "max_blood",
+        "armor",
+        "stack",
+        "keep",
+        "keep_remain_time",
+        "close_combat"
+      ],
+      "weapon": [
+        "carry_weapon_ids",
+        "remain_bullet_nums",
+        "weapon_cool_time",
+        "weapon_unfold_time",
+        "weapon_unfold_state"
+      ],
+      "observation": [
+        "observe_distance",
+        "see_enemy_bop_ids"
+      ],
+      "relationships": [
+        "passenger_ids",
+        "car",
+        "launcher",
+        "launch_ids",
+        "on_board",
+        "fort",
+        "in_fort"
+      ],
+      "timers": [
+        "move_to_stop_remain_time",
+        "change_state_remain_time",
+        "alive_remain_time",
+        "changing_altitude_remain_time",
+        "activating_radar_remain_time",
+        "entering_fort_remain_time",
+        "exiting_fort_remain_time",
+        "laying_mine_remain_time"
+      ]
+    },
+    "native_interpretation": {
+      "blood": "discrete remaining vehicle/squad count; primary combat loss variable",
+      "max_blood": "maximum vehicle/squad count",
+      "keep": "candidate source field for suppression/concealment state; must be mapped explicitly, not assumed",
+      "observe_distance": "source-indexed target-type distance vector; convert to named profile",
+      "cur_pos": "progress inside current path segment",
+      "valid_actions": "compatibility output only; Native rules regenerate legal actions",
+      "judge_info": "source frame slot for adjudication records; Native emits its own versioned evidence schema"
+    }
+  },
+  "known_ambiguities": [
+    {
+      "id": "R01",
+      "topic": "elevation_modifier_direction_and_blank_cells",
+      "status": "RESOLVED",
+      "decision": "low-to-high uses the negative table value; high-to-low and equal elevation use 0; blank cells use 0; height difference 7/distance 12 corrected from +1 to -1"
+    },
+    {
+      "id": "R02",
+      "topic": "infantry_light_weapon_blank_attack_levels",
+      "status": "RESOLVED",
+      "decision": "blank cells inside the declared range are attack level 0"
+    },
+    {
+      "id": "R03",
+      "topic": "vehicle_chart_blank_cells",
+      "status": "RESOLVED",
+      "decision": "blank result cells are zero losses"
+    },
+    {
+      "id": "R04",
+      "topic": "vehicle_loss_correction_application",
+      "status": "RESOLVED",
+      "decision": "add/subtract the correction from the number of vehicles/squads lost, then clamp"
+    },
+    {
+      "id": "R05",
+      "topic": "weapon_id_mapping",
+      "status": "RESOLVED_FOR_23_WEAPONS",
+      "decision": "use source_mappings.weapon_id_to_type"
+    },
+    {
+      "id": "U01",
+      "topic": "source_numeric_code_mapping",
+      "status": "PARTIAL",
+      "missing": [
+        "armor numeric code -> armor class",
+        "complete type/sub_type enum",
+        "ammo slot 0/100/101/102 -> ammunition class",
+        "keep/keep_remain_time semantic mapping",
+        "observe_distance index -> target type"
+      ]
+    },
+    {
+      "id": "U02",
+      "topic": "indirect_scatter_direction",
+      "status": "UNRESOLVED",
+      "policy": "table defines hit/scatter distance but not scatter direction"
+    },
+    {
+      "id": "U03",
+      "topic": "indirect_result_correction_application",
+      "status": "UNRESOLVED",
+      "policy": "numeric correction application to NO_EFFECT/SUPPRESS/numeric results must be explicit"
+    },
+    {
+      "id": "U04",
+      "topic": "vehicle_anti_air_distance_20_overlap",
+      "status": "SOURCE_LAYOUT_AMBIGUITY",
+      "policy": "retain distance 20 value and 20-50 band; both currently equal attack level 6"
+    },
+    {
+      "id": "U05",
+      "topic": "minefield_dice_reuse",
+      "status": "UNRESOLVED",
+      "policy": "confirm whether armor correction uses the same 2d6 or a second 2d6"
+    },
+    {
+      "id": "R06",
+      "topic": "suppression_duration",
+      "status": "RESOLVED",
+      "decision": "150 seconds, following uploaded complete rule text; reapplication resets to 150 seconds"
+    },
+    {
+      "id": "R07",
+      "topic": "personnel_result_correction_application",
+      "status": "RESOLVED_FOR_NUMERIC_RESULTS",
+      "decision": "apply -1/0/+1 to the base numeric loss; correction 0 leaves the base result unchanged"
+    },
+    {
+      "id": "I01",
+      "topic": "symbolic_personnel_result_order",
+      "status": "NATIVE_IMPLEMENTATION_CONVENTION",
+      "decision": "NO_EFFECT < SUPPRESS < LOSS_1 < LOSS_2 < ...",
+      "source_limit": "the uploaded text does not explicitly state this ordering"
+    }
+  ],
+  "source_mappings": {
+    "weapon_id_to_type": {
+      "71": {
+        "source_name": "便携导弹",
+        "canonical_type": "portable_missile",
+        "mapping_status": "USER_CONFIRMED"
+      },
+      "5": {
+        "source_name": "便携导弹（对地）",
+        "canonical_type": "portable_missile_ground",
+        "mapping_status": "USER_CONFIRMED"
+      },
+      "29": {
+        "source_name": "步兵轻武器",
+        "canonical_type": "infantry_light_weapon",
+        "mapping_status": "USER_CONFIRMED"
+      },
+      "69": {
+        "source_name": "车载导弹",
+        "canonical_type": "vehicle_missile",
+        "mapping_status": "USER_CONFIRMED"
+      },
+      "43": {
+        "source_name": "车载轻武器",
+        "canonical_type": "vehicle_light_weapon",
+        "mapping_status": "USER_CONFIRMED"
+      },
+      "36": {
+        "source_name": "大号直瞄炮",
+        "canonical_type": "large_direct_fire_gun",
+        "mapping_status": "USER_CONFIRMED"
+      },
+      "35": {
+        "source_name": "火箭筒",
+        "canonical_type": "rocket_launcher",
+        "mapping_status": "USER_CONFIRMED"
+      },
+      "56": {
+        "source_name": "速射炮",
+        "canonical_type": "rapid_fire_gun",
+        "mapping_status": "USER_CONFIRMED"
+      },
+      "4": {
+        "source_name": "速射炮（对地）",
+        "canonical_type": "rapid_fire_gun_ground",
+        "mapping_status": "USER_CONFIRMED"
+      },
+      "84": {
+        "source_name": "炮射导弹",
+        "canonical_type": "gun_launched_missile",
+        "mapping_status": "USER_CONFIRMED"
+      },
+      "89": {
+        "source_name": "轻型炮",
+        "canonical_type": "light_artillery",
+        "mapping_status": "USER_CONFIRMED"
+      },
+      "54": {
+        "source_name": "小号直瞄炮",
+        "canonical_type": "small_direct_fire_gun",
+        "mapping_status": "USER_CONFIRMED"
+      },
+      "75": {
+        "source_name": "小型导弹",
+        "canonical_type": "small_missile",
+        "mapping_status": "USER_CONFIRMED"
+      },
+      "76": {
+        "source_name": "巡飞导弹",
+        "canonical_type": "loitering_munition",
+        "mapping_status": "USER_CONFIRMED"
+      },
+      "37": {
+        "source_name": "中号直瞄炮",
+        "canonical_type": "medium_direct_fire_gun",
+        "mapping_status": "USER_CONFIRMED"
+      },
+      "83": {
+        "source_name": "中型导弹（标准）",
+        "canonical_type": "medium_missile_standard",
+        "mapping_status": "USER_CONFIRMED"
+      },
+      "74": {
+        "source_name": "中型导弹（便携）",
+        "canonical_type": "medium_missile_portable",
+        "mapping_status": "USER_CONFIRMED"
+      },
+      "88": {
+        "source_name": "中型炮",
+        "canonical_type": "medium_artillery",
+        "mapping_status": "USER_CONFIRMED"
+      },
+      "73": {
+        "source_name": "重型导弹",
+        "canonical_type": "heavy_missile",
+        "mapping_status": "USER_CONFIRMED"
+      },
+      "72": {
+        "source_name": "重型炮",
+        "canonical_type": "heavy_artillery",
+        "mapping_status": "USER_CONFIRMED"
+      },
+      "1": {
+        "source_name": "防空高炮",
+        "canonical_type": "anti_air_cannon",
+        "mapping_status": "USER_CONFIRMED"
+      },
+      "2": {
+        "source_name": "便携防空导弹",
+        "canonical_type": "portable_anti_air_missile",
+        "mapping_status": "USER_CONFIRMED"
+      },
+      "3": {
+        "source_name": "车载防空导弹",
+        "canonical_type": "vehicle_anti_air_missile",
+        "mapping_status": "USER_CONFIRMED"
+      }
+    },
+    "weapon_name_to_id": {
+      "便携导弹": 71,
+      "便携导弹（对地）": 5,
+      "步兵轻武器": 29,
+      "车载导弹": 69,
+      "车载轻武器": 43,
+      "大号直瞄炮": 36,
+      "火箭筒": 35,
+      "速射炮": 56,
+      "速射炮（对地）": 4,
+      "炮射导弹": 84,
+      "轻型炮": 89,
+      "小号直瞄炮": 54,
+      "小型导弹": 75,
+      "巡飞导弹": 76,
+      "中号直瞄炮": 37,
+      "中型导弹（标准）": 83,
+      "中型导弹（便携）": 74,
+      "中型炮": 88,
+      "重型导弹": 73,
+      "重型炮": 72,
+      "防空高炮": 1,
+      "便携防空导弹": 2,
+      "车载防空导弹": 3
+    }
+  },
+  "source_rule_summary": {
+    "strength_model": "one operator represents 1-4 vehicles/squads; blood is discrete strength",
+    "movement_reference_hex": "before completing movement into the next hex center, fire/adjudication uses the previous hex",
+    "visibility": {
+      "adjacent_hex_always_line_of_sight": true,
+      "high_observer_bonus_elevation_levels": 1,
+      "intermediate_residential_or_forest_bonus_elevation_levels": 1,
+      "concealed_target_observation_range_multiplier": 0.5,
+      "residential_or_forest_target_observation_range_multiplier": 0.5,
+      "vehicle_concealment_ignored_when_observer_higher": true
+    },
+    "indirect_fire": {
+      "friendly_fire": true,
+      "flight_seconds": 150,
+      "explosion_seconds": 300,
+      "cooldown_seconds": 300,
+      "active_zone_causes_adjudication_on_entry": true
+    },
+    "close_combat": {
+      "trigger": "opposing ground operators occupy same hex",
+      "distance": 0,
+      "initial_shot_immediate": true,
+      "repeat_seconds": 25,
+      "outside_direct_fire_into_close_combat_forbidden": true
+    }
+  },
+  "design_notes": {
+    "source_text_interpretation": {
+      "suppression_duration_seconds": 150,
+      "personnel_correction_zero_meaning": "zero correction means no change to the base result, not zero casualties",
+      "symbolic_result_ladder": "Native convention required to operationalize -1/+1 for NO_EFFECT and SUPPRESS"
+    }
+  },
+  "implementation_scope": {
+    "ready": [
+      "source standard-frame field alignment",
+      "runtime timing rules",
+      "line-of-sight and observation rules",
+      "direct-fire attack-level tables",
+      "direct-fire personnel and vehicle result tables",
+      "indirect-fire dispersion and result tables",
+      "anti-air attack-level and result tables",
+      "minefield base-loss and armor-correction tables",
+      "weapon ID mapping for 23 weapons"
+    ],
+    "requires_external_mapping_before_full_source_frame_execution": [
+      "armor numeric code -> armor class",
+      "complete type/sub_type enum",
+      "ammo slot 0/100/101/102 -> ammunition class",
+      "keep/keep_remain_time semantic mapping",
+      "observe_distance index -> target type"
+    ],
+    "explicit_native_conventions": [
+      "symbolic personnel result order: NO_EFFECT < SUPPRESS < LOSS_1 < LOSS_2 < ..."
+    ]
+  }
+}

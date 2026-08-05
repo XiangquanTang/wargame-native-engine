@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "native-adjudication-tables/1.2",
+  "type": "object",
+  "required": ["metadata", "runtime_rules", "implementation_scope", "source_rule_summary", "source_frame_alignment", "source_mappings", "known_ambiguities", "design_notes", "direct_fire", "indirect_fire", "anti_air", "minefield"],
+  "properties": {
+    "metadata": {
+      "type": "object",
+      "required": ["schema_version", "revision", "release_status", "table_set_id", "content_sha256", "transcription"],
+      "properties": {
+        "schema_version": {"const": "native-adjudication-tables/1.2"},
+        "revision": {"const": "1.2.1-final"},
+        "release_status": {"const": "FINAL_FOR_CODEX_IMPLEMENTATION"},
+        "content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "transcription": {
+          "type": "object",
+          "required": ["no_interpolation"],
+          "properties": {"no_interpolation": {"const": true}}
+        }
+      }
+    },
+    "direct_fire": {
+      "type": "object",
+      "required": ["personnel_attack_levels", "vehicle_attack_levels", "infantry_vs_vehicle_attack_levels", "elevation_attack_level_modifiers", "vehicle_base_combat_result_chart", "vehicle_result_modifiers", "personnel_and_infantry_vs_vehicle_results", "personnel_result_modifiers"]
+    }
+  },
+  "additionalProperties": true
+}

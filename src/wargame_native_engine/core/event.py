@@ -23,6 +23,18 @@ class EventType(str, Enum):
     OBJECTIVE_CONTROLLED = "objective_controlled"
     GAME_TERMINATED = "game_terminated"
     GAME_TRUNCATED = "game_truncated"
+    DIRECT_FIRE_REQUESTED = "direct_fire_requested"
+    DIRECT_FIRE_VALIDATED = "direct_fire_validated"
+    ATTACK_LEVEL_SELECTED = "attack_level_selected"
+    ATTACK_LEVEL_MODIFIED = "attack_level_modified"
+    DICE_ROLLED = "dice_rolled"
+    ROLL_MODIFIERS_APPLIED = "roll_modifiers_applied"
+    COMBAT_RESULT_LOOKED_UP = "combat_result_looked_up"
+    LOSSES_APPLIED = "losses_applied"
+    SUPPRESSION_APPLIED = "suppression_applied"
+    UNIT_DESTROYED = "unit_destroyed"
+    WEAPON_COOLDOWN_STARTED = "weapon_cooldown_started"
+    AMMUNITION_CONSUMED = "ammunition_consumed"
 
 
 EVENT_PRIORITY = {
@@ -41,6 +53,18 @@ EVENT_PRIORITY = {
     EventType.GAME_TERMINATED: 90,
     EventType.GAME_TRUNCATED: 91,
     EventType.ENGINE_RESET: 99,
+    EventType.DIRECT_FIRE_REQUESTED: 30,
+    EventType.DIRECT_FIRE_VALIDATED: 31,
+    EventType.ATTACK_LEVEL_SELECTED: 32,
+    EventType.ATTACK_LEVEL_MODIFIED: 33,
+    EventType.DICE_ROLLED: 34,
+    EventType.ROLL_MODIFIERS_APPLIED: 35,
+    EventType.COMBAT_RESULT_LOOKED_UP: 36,
+    EventType.LOSSES_APPLIED: 37,
+    EventType.SUPPRESSION_APPLIED: 38,
+    EventType.UNIT_DESTROYED: 39,
+    EventType.WEAPON_COOLDOWN_STARTED: 40,
+    EventType.AMMUNITION_CONSUMED: 41,
 }
 
 
@@ -68,7 +92,8 @@ class EngineEvent:
 
 
 def event_sort_key(value: EngineEvent) -> tuple[Any, ...]:
-    return (value.tick, EVENT_PRIORITY[value.event_type], value.side or "",
+    return (value.tick, EVENT_PRIORITY[value.event_type],
+            int(value.data.get("roll_index", -1)), value.side or "",
             -1 if value.actor_id is None else value.actor_id,
             -1 if value.target_id is None else value.target_id,
             value.event_id)
