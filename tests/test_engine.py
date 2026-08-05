@@ -151,3 +151,12 @@ def test_raw_observation_does_not_mutate_world(scenario) -> None:
     observation.friendly_operators[0].raw_attributes["source"] = "mutated"
     assert engine.observe("red").friendly_operators[0].raw_attributes["source"] == (
         "synthetic_example")
+
+
+def test_visible_enemy_observation_does_not_expose_raw_attributes(scenario) -> None:
+    engine = NativeEngine(scenario)
+    engine.reset(42)
+    advance_to_combat(engine)
+    visible = engine.observe("red").visible_enemies
+    assert visible
+    assert all(item.raw_attributes == {} for item in visible)
