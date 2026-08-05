@@ -1,0 +1,51 @@
+{
+  "schema_version": "native-calibration-split/1.0",
+  "split_id": "native-replay-calibration-v1",
+  "calibration_timestamp": "2026-08-05T00:00:00Z",
+  "smoke": [
+    {
+      "replay_id": "smoke-state-01",
+      "source_identifier": "examples/historical_replay_reduced_fixture/smoke-state-01",
+      "source_hash": "d0b27b6502b19d064854a69c08e106ec216d1f162e6596dbd023d57788652d41",
+      "evidence_level": "STATE_TRAJECTORY_LEVEL",
+      "scenario_id": "sanitized-smoke-scenario",
+      "map_id": "sanitized-grid",
+      "winner": null,
+      "inclusion_reason": "Smoke importer and state-trajectory alignment without invented actions"
+    }
+  ],
+  "calibration": [
+    {
+      "replay_id": "calibration-action-01",
+      "source_identifier": "examples/historical_replay_reduced_fixture/calibration-action-01",
+      "source_hash": "0d0a040a51d8d86f6bc6c1b8a1cb281a845a35487cd7f7d0434dd6eea0ba6970",
+      "evidence_level": "ACTION_LEVEL",
+      "scenario_id": "sanitized-calibration-a",
+      "map_id": "sanitized-open-grid",
+      "winner": "red",
+      "inclusion_reason": "Parameter-complete movement, attack, damage and terminal trajectory"
+    },
+    {
+      "replay_id": "calibration-action-02",
+      "source_identifier": "examples/historical_replay_reduced_fixture/calibration-action-02",
+      "source_hash": "5e8bfda47f129407f52d011614bb2df77e4a278a0bd4ca1a5b8e43fb45a04304",
+      "evidence_level": "ACTION_LEVEL",
+      "scenario_id": "sanitized-calibration-b",
+      "map_id": "sanitized-open-grid",
+      "winner": null,
+      "inclusion_reason": "Distinct mutual-elimination trajectory with two movement ticks"
+    }
+  ],
+  "validation": [
+    {
+      "replay_id": "validation-action-01",
+      "source_identifier": "examples/historical_replay_reduced_fixture/validation-action-01",
+      "source_hash": "5c938a57faa6a1a2da9c18e140eb8abc09b4944d4fd6d235c57753d1cedb749d",
+      "evidence_level": "ACTION_LEVEL",
+      "scenario_id": "sanitized-validation-a",
+      "map_id": "sanitized-open-grid",
+      "winner": "red",
+      "inclusion_reason": "Held-out geometry, health and longer damage trajectory"
+    }
+  ]
+}

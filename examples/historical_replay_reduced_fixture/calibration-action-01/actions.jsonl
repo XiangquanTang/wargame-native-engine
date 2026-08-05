@@ -1,0 +1,6 @@
+{"historical_time":0,"side":"red","actor_id":101,"action_type":"MOVE","target_position":[3.0,3.0],"parameters":{},"mapping_status":"DIRECT","source_kind":"COMMAND","execution_status":"CONFIRMED"}
+{"historical_time":0,"side":"blue","actor_id":201,"action_type":"MOVE","target_position":[6.0,3.0],"parameters":{},"mapping_status":"DIRECT","source_kind":"COMMAND","execution_status":"CONFIRMED"}
+{"historical_time":1,"side":"red","actor_id":101,"action_type":"ATTACK","target_id":201,"parameters":{"weapon_id":1001},"mapping_status":"DIRECT","source_kind":"COMMAND","execution_status":"CONFIRMED"}
+{"historical_time":1,"side":"blue","actor_id":201,"action_type":"ATTACK","target_id":101,"parameters":{"weapon_id":1001},"mapping_status":"DIRECT","source_kind":"COMMAND","execution_status":"CONFIRMED"}
+{"historical_time":2,"side":"red","actor_id":101,"action_type":"ATTACK","target_id":201,"parameters":{"weapon_id":1001},"mapping_status":"DIRECT","source_kind":"COMMAND","execution_status":"CONFIRMED"}
+{"historical_time":2,"side":"blue","actor_id":201,"action_type":"ATTACK","target_id":101,"parameters":{"weapon_id":1001},"mapping_status":"DIRECT","source_kind":"COMMAND","execution_status":"CONFIRMED"}

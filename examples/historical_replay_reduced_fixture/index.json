@@ -1,0 +1,12 @@
+{
+  "schema_version": "historical-replay-fixture-index/1.0",
+  "default_replay_id": "smoke-state-01",
+  "replay_ids": [
+    "smoke-state-01",
+    "calibration-action-01",
+    "calibration-action-02",
+    "validation-action-01"
+  ],
+  "source_nature": "real_structure_reduced_fixture",
+  "sanitized": true
+}

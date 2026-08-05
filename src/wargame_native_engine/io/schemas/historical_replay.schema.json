@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "wargame-native://historical-replay/1.0",
+  "type": "object",
+  "required": ["schema_version", "replay_id", "source_format", "source_hash", "evidence_level", "scenario_id", "map_id", "time_unit", "coordinate_unit", "frames", "actions", "events", "summary"],
+  "properties": {
+    "schema_version": {"const": "historical-replay/1.0"},
+    "replay_id": {"type": "string", "minLength": 1},
+    "source_format": {"type": "string", "minLength": 1},
+    "source_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "evidence_level": {"enum": ["ACTION_LEVEL", "STATE_TRAJECTORY_LEVEL", "EVENT_LEVEL", "SUMMARY_ONLY"]},
+    "scenario_id": {"type": "string"}, "map_id": {"type": "string"},
+    "time_unit": {"type": "string", "minLength": 1},
+    "coordinate_unit": {"type": "string", "minLength": 1},
+    "frames": {"type": "array"}, "actions": {"type": "array"},
+    "events": {"type": "array"}, "advantage_curve": {"type": "array"},
+    "summary": {"type": "object"}, "metadata": {"type": "object"},
+    "warnings": {"type": "array"}
+  },
+  "additionalProperties": false
+}

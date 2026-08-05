@@ -1,0 +1,8 @@
+{"historical_time":0,"event_type":"operator_moved","side":"red","actor_id":121}
+{"historical_time":0,"event_type":"operator_moved","side":"blue","actor_id":221}
+{"historical_time":1,"event_type":"attack_declared","side":"red","actor_id":121,"target_id":221}
+{"historical_time":1,"event_type":"attack_declared","side":"blue","actor_id":221,"target_id":121}
+{"historical_time":2,"event_type":"operator_damaged","side":"red","target_id":121,"data":{"damage":12.0}}
+{"historical_time":2,"event_type":"operator_damaged","side":"blue","target_id":221,"data":{"damage":12.0}}
+{"historical_time":3,"event_type":"operator_destroyed","side":"blue","target_id":221}
+{"historical_time":4,"event_type":"game_terminated","side":"red","data":{"reason":"side_eliminated","winner":"red"}}

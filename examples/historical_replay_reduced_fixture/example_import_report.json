@@ -1,0 +1,25 @@
+{
+  "schema_version": "historical-import-example/1.0",
+  "replay_id": "smoke-state-01",
+  "source_nature": "real_structure_reduced_fixture",
+  "sanitized": true,
+  "source_hash": "d0b27b6502b19d064854a69c08e106ec216d1f162e6596dbd023d57788652d41",
+  "importer_version": "historical-replay/1.0.0",
+  "evidence_level": "STATE_TRAJECTORY_LEVEL",
+  "time_unit": "sdk_step",
+  "coordinate_unit": "native_grid_unit",
+  "frame_count": 3,
+  "action_count": 1,
+  "executable_action_count": 0,
+  "event_count": 0,
+  "unmapped_fields": [
+    "frame.sdk_step",
+    "operator.armor",
+    "operator.sdk_cur_hex",
+    "action.echo_window"
+  ],
+  "warnings": [
+    "unconfirmed_actions_not_executable"
+  ],
+  "raw_original_replay_included": false
+}
