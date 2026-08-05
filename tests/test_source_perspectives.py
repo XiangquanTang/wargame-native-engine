@@ -96,6 +96,11 @@ def projection_fixture():
         "extra": {"native": {"engine_private": "green-only"}},
         "source_unknown_top": {"preserved": True},
     }
+    green["operators"][0]["blood"] = 2
+    green["judge_info"].append({
+        "actor_id": 20, "target_id": 1, "att_obj_id": 20,
+        "wp_id": 99, "native_evidence": {"rng": 6},
+    })
     red_friendly = (_observation(1, "red", x=1),
                     _observation(3, "red", x=3))
     blue_friendly = (_observation(2, "blue", x=2),
@@ -210,7 +215,16 @@ def test_judge_info_requires_all_enemy_references_visible(projection_fixture) ->
     assert red["judge_info"][0]["target_id"] == 2
     assert "native_evidence" not in red["judge_info"][0]
     assert "table_cell" not in red["judge_info"][0]
-    assert len(PerspectiveProjector().project(green, context).green["judge_info"]) == 2
+    assert len(PerspectiveProjector().project(green, context).green["judge_info"]) == 3
+
+
+def test_hidden_attacker_judge_is_omitted_but_friendly_loss_remains(
+        projection_fixture) -> None:
+    green, context = projection_fixture
+    red = PerspectiveProjector().project(green, context).red
+    assert all(record.get("actor_id") != 20 for record in red["judge_info"])
+    friendly = next(item for item in red["operators"] if item["obj_id"] == 1)
+    assert friendly["blood"] == 2
 
 
 def test_owned_and_public_auxiliary_fields_are_filtered(projection_fixture) -> None:
