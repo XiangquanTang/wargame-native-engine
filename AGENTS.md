@@ -26,3 +26,10 @@
 - Mark small-sample calibration and evidence limitations in every recommendation.
 - Evaluate validation only after candidate selection; do not tune from validation
   results.
+- Treat `docs/rules/Native兵棋裁决知识库_Final.md` as the Phase 4A guide and
+  `native_adjudication_tables_final.json` as the sole machine table source.
+- Do not read the PDF at runtime, interpolate tables, apply continuous damage,
+  or use Lanchester factors in adjudication.
+- Keep source numeric codes `UNKNOWN` unless the curated JSON maps them.
+- Record every direct-fire die, modifier, lookup coordinate, discrete outcome,
+  table hash, seed, and Native convention flag in replay evidence.

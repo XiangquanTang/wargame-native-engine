@@ -36,3 +36,15 @@ labelled `DIRECT`, `NORMALIZED`, `DERIVED`, `APPROXIMATED`, `UNMAPPED`, or
 Operator alignment statuses are `EXACT_ID`, `SOURCE_MAPPING`, explicit
 `HEURISTIC_MATCH`, and `UNMATCHED`. Time alignment always stores historical
 time, target Native tick, scale, offset, strategy, and residual error.
+
+## Source-compatible models
+
+The direct-fire path uses odd-r hex coordinates encoded as
+`row * 100 + column`. Integer `blood` and `max_blood` represent vehicles or
+squads and are primary table variables; `health` is derived from their ratio.
+
+`SourceFrame` has typed time, score, landmark, control-point, operator, and
+passenger records plus untouched raw values. Mapping reports separate source,
+normalized, and Native effective values. Unresolved numeric codes remain
+`UNKNOWN`. Source `valid_actions`, Action Echo, and `see_enemy_bop_ids` do
+not authorize rules.

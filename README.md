@@ -1,6 +1,6 @@
 # wargame_native_engine
 
-`wargame_native_engine` 0.3.0 is an independent, transparent and deterministic
+`wargame_native_engine` 0.4.0 is an independent, transparent and deterministic
 experiment engine. All adjudication is explicitly **Native simplified rules**;
 it does not import or claim compatibility with an official SDK, authentication
 configuration, binary package, or hidden rules.
@@ -132,3 +132,40 @@ candidate is selected. The baseline is never overwritten, and small samples
 produce an explicit evidence limitation rather than an official-equivalence
 claim. See `docs/HISTORICAL_REPLAY_IMPORT.md`, `docs/REPLAY_ALIGNMENT.md`, and
 `docs/RULE_CALIBRATION.md`.
+
+## Source-frame compatibility and direct fire
+
+The standard frame is a data compatibility contract, not a hidden rule source:
+
+```bash
+python -m wargame_native_engine.cli.inspect_source_frame \
+  --input local_data/source_frames/96.json \
+  --output local_data/source_frames/96_report
+```
+
+The only executable direct-fire source is
+`config/adjudication/source_tables_v1/native_adjudication_tables_final.json`.
+Its schema, revision, file hash, and canonical content hash are verified before
+lookup. No PDF is read at runtime and no interpolation is available.
+
+```bash
+python -m wargame_native_engine.cli.resolve_direct_fire \
+  --scenario examples/direct_fire_scenario.json \
+  --attacker 101 --target 201 --weapon 9101 --seed 42 \
+  --output local_data/adjudication/direct_fire_smoke
+```
+
+The output is a strict `native-direct-fire-replay/1.0` bundle. Target `202`
+exercises the vehicle and armor-correction path.
+
+```bash
+python -m wargame_native_engine.cli.run_source_compatible_game \
+  --frame local_data/source_frames/96.json \
+  --ruleset config/rulesets/native_default_v1.json \
+  --table-set config/adjudication/source_tables_v1/manifest.json \
+  --max-events 20 \
+  --output local_data/runs/source_frame_smoke
+```
+
+See `docs/SOURCE_FRAME_COMPATIBILITY.md`, `docs/SOURCE_VISIBILITY.md`, and
+`docs/DIRECT_FIRE_ADJUDICATION.md`.

@@ -46,3 +46,15 @@ events, frames and summary. It does not provide Native strict-replay guarantees
 and does not turn Action Echo into an accepted action. Replay-driven alignment
 passes mapped action intents through the normal `NativeEngine.step()` API and
 reports unsupported mappings separately from adjudication events.
+
+## Direct-fire replay
+
+Schema `native-direct-fire-replay/1.0` contains `manifest.json`,
+`request.json`, `events.jsonl`, `resolution.json`, and `final_state.json`.
+The manifest records engine version, seed, action/adjudication IDs, final
+table-set identity and hashes, collection checksums, resolution hash, and final
+state hash.
+
+Strict replay reconstructs the request, derives `NativeRNG` from the seed,
+repeats every die and exact JSON lookup, and compares both hashes. A mismatched
+table identity or changed collection is rejected.

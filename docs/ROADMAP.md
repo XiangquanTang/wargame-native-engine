@@ -30,3 +30,17 @@ implemented. Their absence is not filled by inferred compatibility behavior.
 
 The committed four-replay fixture is a small-sample validation harness. It does
 not establish broad fidelity or equivalence to an external engine.
+
+## 0.4.0 implemented
+
+- hash-checked standard-frame import/export;
+- odd-r elevation LOS and named observation profiles;
+- final curated JSON as the sole direct-fire table source;
+- ordered legality checks with reason codes and evidence;
+- discrete personnel, vehicle, and infantry-light-versus-vehicle resolution;
+- independent deterministic base/correction dice and lookup evidence;
+- suppression timers, passenger losses, ammunition, and cooldown;
+- first-arrival scheduling primitives and strict direct-fire replay.
+
+Indirect fire, anti-air, mines, electronic warfare, complex pathfinding, and
+PyQt integration remain outside 0.4.0.

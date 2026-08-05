@@ -47,3 +47,18 @@ project. Action-level evidence may enter `HistoricalReplayDriver`; state,
 event, and summary evidence can only enter their corresponding aligners.
 Candidate search is deterministic and completes before validation replays are
 loaded. Candidate provenance references, but never changes, the parent ruleset.
+
+## Source-compatible adjudication path
+
+```text
+source frame -> SourceFrameImporter -> normalized WorldState
+terrain/elevation profile -> LOS + named ObservationProfile
+command -> CommandScheduler -> ActionTimer -> EventQueue
+validated request -> final JSON direct-fire tables -> discrete mutation
+                                             -> strict direct-fire replay
+```
+
+This does not replace the synchronous `native_simplified` mode. The scheduler
+is first-arrival-first-adjudication. Personnel uses base 2D6 plus an independent
+correction D6; vehicles use two independent 2D6 rolls. `blood` is authoritative
+for discrete loss and compatibility `health` is derived.
