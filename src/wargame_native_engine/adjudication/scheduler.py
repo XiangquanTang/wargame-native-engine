@@ -39,15 +39,18 @@ class ScheduledCommand:
 
 class EventQueue:
     def __init__(self) -> None:
-        self._values: list[ScheduledCommand] = []
+        self._values: list[tuple[tuple[int, int, int, str], ScheduledCommand]] = []
 
     def push(self, command: ScheduledCommand) -> None:
-        heapq.heappush(self._values, command)
+        key = (command.event_time, command.arrival_index,
+               int(command.payload.get("event_sequence", -1)),
+               command.action_id)
+        heapq.heappush(self._values, (key, command))
 
     def pop_ready(self, event_time: int) -> tuple[ScheduledCommand, ...]:
         values: list[ScheduledCommand] = []
-        while self._values and self._values[0].event_time <= event_time:
-            values.append(heapq.heappop(self._values))
+        while self._values and self._values[0][1].event_time <= event_time:
+            values.append(heapq.heappop(self._values)[1])
         return tuple(values)
 
     def __len__(self) -> int:

@@ -2,12 +2,20 @@ from __future__ import annotations
 
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Mapping
+from decimal import Decimal, InvalidOperation
+from typing import Any, Mapping, Sequence
+
+from wargame_native_engine.adjudication import (
+    AdjudicationTableSet, DiceRoller, DirectFireAdjudicator,
+    DirectFireRequest, WeaponProfile,
+)
+from wargame_native_engine.compat.source_frame.models import ArmorClass, UnitDomain
 
 from wargame_native_engine.core.action import (
     ACTION_PRIORITY, ActionDecision, ActionType, EngineAction, ValidAction,
     valid_action_sort_key,
 )
+from wargame_native_engine.core.action_router import ActionRouter, RoutedAction
 from wargame_native_engine.core.event import EngineEvent, EventType, event_sort_key
 from wargame_native_engine.core.observation import (
     OperatorObservation, SideObservation, objective_view,
@@ -17,6 +25,13 @@ from wargame_native_engine.core.rng import NativeRNG
 from wargame_native_engine.core.world import Stage, WorldState
 from wargame_native_engine.io.scenario import NativeScenario
 from wargame_native_engine.io.serialization import canonical_hash
+from wargame_native_engine.movement.map_adapter import SourceHexMap
+from wargame_native_engine.movement.models import MovementMode
+from wargame_native_engine.movement.planner import MovementPlanner
+from wargame_native_engine.movement.policy import (
+    SourceMovementPolicy, load_source_movement_policy,
+)
+from wargame_native_engine.movement.runtime import MovementRuntime
 from wargame_native_engine.rules.config import Ruleset, load_ruleset
 from wargame_native_engine.rules.terminal_rules import TerminalRules
 from wargame_native_engine.systems.combat import validate_attack
@@ -27,6 +42,9 @@ from wargame_native_engine.systems.movement import (
 )
 from wargame_native_engine.systems.terminal import evaluate_terminal
 from wargame_native_engine.systems.visibility import can_see
+from wargame_native_engine.visibility import (
+    HexCell, HexMapProfile, evaluate_visibility,
+)
 
 
 class NativeEngine:
@@ -55,6 +73,28 @@ class NativeEngine:
         self._action_counts = {side: 0 for side in scenario.side_order}
         self._error_counts = {side: 0 for side in scenario.side_order}
         self._last_events: tuple[EngineEvent, ...] = ()
+        self._source_policy: SourceMovementPolicy | None = None
+        self._source_map: SourceHexMap | None = None
+        self._source_visibility_map: HexMapProfile | None = None
+        self._movement: MovementRuntime | None = None
+        self._action_router: ActionRouter | None = None
+        self._adjudication_tables: AdjudicationTableSet | None = None
+        if scenario.map.hexes:
+            self._source_policy = load_source_movement_policy()
+            self._source_map = SourceHexMap(scenario.map, self._source_policy)
+            self._movement = MovementRuntime(
+                MovementPlanner(self._source_map, self._source_policy),
+                self._source_policy)
+            self._action_router = ActionRouter()
+            self._adjudication_tables = AdjudicationTableSet(
+                Path(__file__).resolve().parents[3]
+                / "config/adjudication/source_tables_v1/native_adjudication_tables_final.json")
+            self._source_visibility_map = HexMapProfile({
+                item.hex_id: HexCell(
+                    item.hex_id, float(item.elevation),
+                    self._source_policy.terrain(item.terrain).value)
+                for item in scenario.map.hexes
+            })
 
     def reset(self, seed: int = 42) -> WorldState:
         if self._closed:
@@ -62,6 +102,7 @@ class NativeEngine:
         self._seed = int(seed)
         self._rng = NativeRNG(self._seed)
         self._world = self.scenario.initial_world()
+        self._world.elapsed_time_ms = self._world.tick * 1000
         self._action_counts = {side: 0 for side in self.scenario.side_order}
         self._error_counts = {side: 0 for side in self.scenario.side_order}
         self._last_events = (EngineEvent(
@@ -73,6 +114,8 @@ class NativeEngine:
                   "ruleset_version": self.ruleset.ruleset_version,
                   "ruleset_hash": self.ruleset.content_hash},
         ),)
+        if self._source_policy is not None:
+            self._refresh_source_observation()
         return WorldState.from_dict(self._world.to_dict())
 
     def observe(self, side: str) -> SideObservation:
@@ -102,6 +145,8 @@ class NativeEngine:
         self._require_side(side)
         if world.done:
             return ()
+        if self._source_policy is not None:
+            return self._source_valid_actions(side)
         values: list[ValidAction] = []
         if world.stage is Stage.DEPLOYMENT:
             for operator in self._friendly(side):
@@ -163,7 +208,19 @@ class NativeEngine:
                 values.append(ValidAction(wait, ACTION_PRIORITY[wait.action_type]))
         return tuple(sorted(values, key=valid_action_sort_key))
 
-    def step(self, actions: Mapping[str, EngineAction | None]) -> StepResult:
+    def step(self, actions: Mapping[str, EngineAction | None]
+             | Sequence[EngineAction], *,
+             delta_time_seconds: int | float = 1) -> StepResult:
+        if self._source_policy is not None:
+            return self._step_source(actions,
+                                     delta_time_ms=_delta_time_ms(delta_time_seconds))
+        if delta_time_seconds != 1:
+            raise ValueError("legacy native-default step requires delta_time_seconds=1")
+        if not isinstance(actions, Mapping):
+            raise TypeError("legacy native-default actions must be a side mapping")
+        return self._step_legacy(actions)
+
+    def _step_legacy(self, actions: Mapping[str, EngineAction | None]) -> StepResult:
         world = self._require_world()
         if world.done:
             raise RuntimeError("episode_already_finished")
@@ -304,6 +361,376 @@ class NativeEngine:
                           tuple(events),
                           world.terminal, world.truncated)
 
+    def _step_source(self, actions: Mapping[str, EngineAction | None]
+                     | Sequence[EngineAction], *,
+                     delta_time_ms: int) -> StepResult:
+        world = self._require_world()
+        if world.done:
+            raise RuntimeError("episode_already_finished")
+        if world.stage is not Stage.COMBAT:
+            raise RuntimeError("source-compatible actions require combat stage")
+        if self._action_router is None or self._movement is None:
+            raise RuntimeError("source-compatible runtime is unavailable")
+        tick_before, stage_before = world.tick, world.stage
+        routed = self._action_router.normalize(
+            actions, side_order=self.scenario.side_order,
+            start_sequence=world.next_action_sequence)
+        world.next_action_sequence += len(routed)
+        common_errors: dict[int, str | None] = {}
+        seen_actors: set[int] = set()
+        for item in routed:
+            error = self._action_router.common_error(
+                item, world, self.scenario.side_order)
+            actor_id = item.action.actor_id
+            if error is None and actor_id is not None:
+                if actor_id in seen_actors:
+                    error = "DUPLICATE_ACTOR_ACTION"
+                seen_actors.add(actor_id)
+            common_errors[item.action_sequence] = error
+
+        accepted: list[RoutedAction] = []
+        decisions: list[ActionDecision] = []
+        events: list[EngineEvent] = []
+        for item in routed:
+            action = item.action
+            error = common_errors[item.action_sequence]
+            if error is None:
+                error = self._dispatch_source_action(item, events)
+            if error is None:
+                accepted.append(item)
+                self._action_counts[action.side] += 1
+                decisions.append(ActionDecision(
+                    action.action_id, True, "accepted",
+                    "accepted by source-compatible action router"))
+            else:
+                if action.side in self._error_counts:
+                    self._error_counts[action.side] += 1
+                decisions.append(ActionDecision(
+                    action.action_id, False, error,
+                    "source-compatible validation rejected action"))
+                events.append(self._source_event(
+                    EventType.ACTION_REJECTED, action.side, action.actor_id,
+                    action.target_id, item.action_sequence,
+                    {"action_id": action.action_id, "code": error}))
+
+        self._movement.advance(world, delta_time_ms, events)
+        self._refresh_source_observation()
+        world.last_actions = [item.action.to_dict() for item in routed]
+        direct_event_types = {
+            EventType.DIRECT_FIRE_REQUESTED, EventType.DIRECT_FIRE_VALIDATED,
+            EventType.ATTACK_LEVEL_SELECTED, EventType.ATTACK_LEVEL_MODIFIED,
+            EventType.DICE_ROLLED, EventType.ROLL_MODIFIERS_APPLIED,
+            EventType.COMBAT_RESULT_LOOKED_UP, EventType.LOSSES_APPLIED,
+            EventType.SUPPRESSION_APPLIED, EventType.UNIT_DESTROYED,
+            EventType.WEAPON_COOLDOWN_STARTED, EventType.AMMUNITION_CONSUMED,
+        }
+        world.last_judge_info = [item.to_dict() for item in events
+                                 if item.event_type in direct_event_types]
+        if self.ruleset.terminal.mission_score_enabled:
+            self._score_objectives(events)
+        terminal = evaluate_terminal(world, self.terminal_rules,
+                                     self.scenario.side_order)
+        if terminal.terminal or terminal.truncated:
+            world.terminal = terminal.terminal
+            world.truncated = terminal.truncated
+            world.winner = terminal.winner
+            world.terminal_reason = terminal.reason
+            world.stage = Stage.TERMINAL
+            events.append(self._source_event(
+                EventType.GAME_TERMINATED if terminal.terminal
+                else EventType.GAME_TRUNCATED,
+                terminal.winner, None, None, world.next_action_sequence,
+                {"reason": terminal.reason, "winner": terminal.winner}))
+        events.sort(key=event_sort_key)
+        self._last_events = tuple(events)
+        return StepResult(
+            tick_before, world.tick, stage_before, world.stage,
+            tuple(item.action for item in routed), tuple(decisions), tuple(events),
+            world.terminal, world.truncated,
+            tuple(item.action_sequence for item in routed), delta_time_ms, True)
+
+    def _dispatch_source_action(self, routed: RoutedAction,
+                                events: list[EngineEvent]) -> str | None:
+        world = self._require_world()
+        action, sequence = routed.action, routed.action_sequence
+        if action.action_type is ActionType.WAIT:
+            events.append(self._source_event(
+                EventType.WAITED, action.side, action.actor_id, None, sequence,
+                {"action_id": action.action_id}))
+            return None
+        operator = world.operators[int(action.actor_id)]
+        if action.action_type is ActionType.MOVE:
+            raw_path = action.parameters.get("path",
+                                             action.parameters.get("move_path"))
+            if not isinstance(raw_path, (list, tuple)):
+                return "PATH_REQUIRED"
+            try:
+                path = [int(item) for item in raw_path]
+                mode = MovementMode(str(action.parameters.get(
+                    "movement_mode", operator.movement_mode)).upper())
+            except (TypeError, ValueError):
+                return "INVALID_MOVEMENT_PARAMETERS"
+            legality = self._movement.planner.validate_path(
+                operator, path, mode, world)
+            if not legality.legal:
+                return legality.reason_code
+            self._movement.start(
+                world, operator, path=path, mode=mode,
+                action_id=action.action_id, action_sequence=sequence,
+                events=events)
+            return None
+        if action.action_type is ActionType.STOP_MOVE:
+            if operator.move_to_stop_remaining_ms > 0:
+                return "STOP_ALREADY_IN_PROGRESS"
+            if not operator.moving:
+                return "ACTOR_NOT_MOVING"
+            self._movement.request_stop(
+                world, operator, action_id=action.action_id,
+                action_sequence=sequence, events=events)
+            return None
+        if action.action_type is ActionType.SHOOT:
+            return self._resolve_source_shoot(routed, events)
+        if action.action_type is ActionType.WEAPON_LOCK:
+            return self._start_source_transition(
+                operator, "WEAPON_LOCK", sequence, action.action_id, events)
+        if action.action_type is ActionType.WEAPON_UNFOLD:
+            return self._start_source_transition(
+                operator, "WEAPON_UNFOLD", sequence, action.action_id, events)
+        if action.action_type is ActionType.CHANGE_STATE:
+            return self._change_source_state(routed, events)
+        return "UNSUPPORTED_ACTION_TYPE"
+
+    def _start_source_transition(self, operator: Any, kind: str,
+                                 action_sequence: int, action_id: str,
+                                 events: list[EngineEvent]) -> str | None:
+        if not operator.stopped or operator.moving:
+            return "ACTOR_MUST_BE_STOPPED"
+        if operator.transition_kind is not None:
+            return "TRANSITION_IN_PROGRESS"
+        if kind == "WEAPON_LOCK" and operator.weapon_locked:
+            return "WEAPON_ALREADY_LOCKED"
+        if kind == "WEAPON_UNFOLD" and operator.weapon_unfolded:
+            return "WEAPON_ALREADY_UNFOLDED"
+        operator.transition_kind = kind
+        operator.transition_remaining_ms = int(self._source_policy.transition_ms)
+        operator.state = "TRANSITIONING"
+        operator.stopped = False
+        if kind == "WEAPON_LOCK":
+            operator.weapon_unfolded = False
+            event_type = EventType.WEAPON_LOCK_STARTED
+        else:
+            event_type = EventType.WEAPON_UNFOLD_STARTED
+        events.append(self._source_event(
+            event_type, operator.side, operator.operator_id, None,
+            action_sequence, {"action_id": action_id,
+                              "duration_ms": operator.transition_remaining_ms,
+                              "transition_kind": kind}))
+        return None
+
+    def _change_source_state(self, routed: RoutedAction,
+                             events: list[EngineEvent]) -> str | None:
+        if self._source_map is None or self._source_policy is None:
+            return "SOURCE_MAP_UNAVAILABLE"
+        action, sequence = routed.action, routed.action_sequence
+        operator = self._require_world().operators[int(action.actor_id)]
+        target = str(action.parameters.get("state", "")).upper()
+        if target in {"MARCHING", "NORMAL"}:
+            if not operator.stopped or operator.moving:
+                return "ACTOR_MUST_BE_STOPPED"
+            if operator.transition_kind is not None:
+                return "TRANSITION_IN_PROGRESS"
+            if target == "MARCHING":
+                if operator.operator_type.upper() != "VEHICLE":
+                    return "MARCHING_REQUIRES_VEHICLE"
+                if not operator.weapon_locked:
+                    return "WEAPON_NOT_LOCKED"
+                if operator.current_hex is None or not any(
+                        int(item) > 0
+                        for item in self._source_map.cell(operator.current_hex).roads):
+                    return "MARCHING_REQUIRES_ROAD"
+                kind = "ENTER_MARCHING"
+            else:
+                if operator.movement_mode != MovementMode.MARCHING.value:
+                    return "ACTOR_NOT_MARCHING"
+                kind = "EXIT_MARCHING"
+            operator.transition_kind = kind
+            operator.transition_remaining_ms = self._source_policy.transition_ms
+            operator.state = "TRANSITIONING"
+            operator.stopped = False
+            events.append(self._source_event(
+                EventType.MOVEMENT_MODE_CHANGE_STARTED, operator.side,
+                operator.operator_id, None, sequence,
+                {"action_id": action.action_id, "target_state": target,
+                 "transition_kind": kind,
+                 "duration_ms": operator.transition_remaining_ms}))
+            return None
+        if target in {MovementMode.CHARGE_1.value,
+                      MovementMode.CHARGE_2.value}:
+            if operator.operator_type.upper() != "PERSONNEL":
+                return "CHARGE_REQUIRES_PERSONNEL"
+            if operator.fatigue_level >= 2:
+                return "FATIGUE_PREVENTS_MOVEMENT"
+            if target == MovementMode.CHARGE_2.value and operator.fatigue_level >= 1:
+                return "FATIGUE_PREVENTS_CHARGE_2"
+            before = operator.movement_mode
+            operator.movement_mode = target
+            events.append(self._source_event(
+                EventType.OPERATOR_STATE_CHANGED, operator.side,
+                operator.operator_id, None, sequence,
+                {"action_id": action.action_id, "before": before,
+                 "after": target}))
+            return None
+        return "UNSUPPORTED_STATE_CHANGE"
+
+    def _resolve_source_shoot(self, routed: RoutedAction,
+                              events: list[EngineEvent]) -> str | None:
+        world = self._require_world()
+        action, sequence = routed.action, routed.action_sequence
+        if action.target_id is None or action.target_id not in world.operators:
+            return "TARGET_NOT_FOUND"
+        attacker = world.operators[int(action.actor_id)]
+        target = world.operators[int(action.target_id)]
+        try:
+            request = self._direct_fire_request(action, attacker, target)
+        except ValueError as exc:
+            return str(exc)
+        if self._rng is None or self._adjudication_tables is None:
+            raise RuntimeError("source direct-fire runtime is unavailable")
+        resolution = DirectFireAdjudicator(
+            self._adjudication_tables, DiceRoller(self._rng)).resolve(request)
+        for source_event in resolution.events:
+            events.append(self._annotate_source_event(source_event, sequence))
+        if resolution.outcome is None:
+            return resolution.error or resolution.legality.reason_code
+        ammo = self._ammunition(attacker)
+        ammo[request.weapon.ammunition_key] = resolution.ammunition_after
+        attacker.raw_attributes["ammunition"] = ammo
+        source = attacker.raw_attributes.get("source_frame")
+        if isinstance(source, dict):
+            source["remain_bullet_nums"] = dict(ammo)
+        attacker.weapon_cooldown_remaining_ms = resolution.cooldown_after * 1000
+        if target.state == "SUPPRESSED":
+            target.suppression_remaining_ms = self._source_policy.suppression_ms
+        return None
+
+    def _direct_fire_request(self, action: EngineAction, attacker: Any,
+                             target: Any) -> DirectFireRequest:
+        if (self._source_map is None or self._source_visibility_map is None
+                or self._source_policy is None):
+            raise ValueError("SOURCE_MAP_UNAVAILABLE")
+        if attacker.current_hex is None or target.current_hex is None:
+            raise ValueError("CURRENT_HEX_REQUIRED")
+        weapon_id = action.parameters.get("weapon_id")
+        if weapon_id is None:
+            raise ValueError("WEAPON_REQUIRED")
+        weapon_id = int(weapon_id)
+        profile = self._source_weapon_profile(weapon_id)
+        target_domain = _unit_domain(target.operator_type)
+        armor_value = str(target.raw_attributes.get(
+            "armor_class",
+            target.raw_attributes.get("normalized_value", {}).get(
+                "armor_class", "UNKNOWN"))).upper()
+        try:
+            armor = ArmorClass(armor_value)
+        except ValueError as exc:
+            raise ValueError("UNKNOWN_ARMOR_CLASS") from exc
+        if target_domain is UnitDomain.VEHICLE and armor is ArmorClass.UNKNOWN:
+            raise ValueError("UNKNOWN_ARMOR_CLASS")
+        visibility = evaluate_visibility(
+            self._source_visibility_map,
+            observer_hex=attacker.current_hex, target_hex=target.current_hex,
+            observer_domain=_unit_domain(attacker.operator_type),
+            target_domain=target_domain,
+            target_concealed=bool(target.raw_attributes.get("concealed", False)),
+            target_terrain=self._source_map.terrain(target.current_hex).value)
+        left = self._source_map.cell(attacker.current_hex)
+        right = self._source_map.cell(target.current_hex)
+        ammunition = self._ammunition(attacker)
+        passengers = tuple(
+            self._require_world().operators[int(item)]
+            for item in target.raw_attributes.get("passenger_ids", [])
+            if int(item) in self._require_world().operators)
+        return DirectFireRequest(
+            tick=self._require_world().tick, episode_seed=self._seed,
+            action_id=action.action_id, attacker=attacker, target=target,
+            weapon=profile, visibility=visibility, distance=visibility.distance,
+            target_domain=target_domain, target_armor=armor,
+            ammunition_before=ammunition.get(profile.ammunition_key, 0),
+            weapon_cooldown_before=(attacker.weapon_cooldown_remaining_ms + 999) // 1000,
+            weapon_unfolded=attacker.weapon_unfolded,
+            elevation_difference=int(round(float(right.elevation)
+                                           - float(left.elevation))),
+            attacker_suppressed=attacker.suppression_remaining_ms > 0,
+            attacker_moving=(not attacker.stopped
+                             or attacker.movement_mode == MovementMode.MARCHING.value),
+            target_terrain=self._source_map.terrain(target.current_hex).value,
+            target_concealed=bool(target.raw_attributes.get("concealed", False)),
+            target_moving=not target.stopped,
+            target_stacked=sum(
+                1 for item in self._require_world().operators.values()
+                if item.alive and item.current_hex == target.current_hex) > 1,
+            target_marching=target.movement_mode == MovementMode.MARCHING.value,
+            attacker_transitioning=(attacker.transition_kind is not None
+                                    or attacker.move_to_stop_remaining_ms > 0),
+            target_external_direct_fire_prohibited=target.state == "CLOSE_COMBAT",
+            carried_passengers=passengers)
+
+    def _source_weapon_profile(self, weapon_id: int) -> WeaponProfile:
+        source = self.scenario.metadata.get("source_compatible", {})
+        weapons = source.get("weapons", {}) if isinstance(source, Mapping) else {}
+        value = weapons.get(str(weapon_id), weapons.get(weapon_id))
+        if not isinstance(value, Mapping):
+            raise ValueError("WEAPON_PROFILE_UNAVAILABLE")
+        try:
+            domains = frozenset(_unit_domain(str(item))
+                                for item in value["target_domains"])
+            return WeaponProfile(
+                weapon_id=weapon_id, weapon_class=str(value["weapon_class"]),
+                maximum_range=int(value["maximum_range"]),
+                target_domains=domains,
+                ammunition_key=str(value.get("ammunition_key", "0")),
+                cooldown_ticks=(None if value.get("cooldown_seconds") is None
+                                else int(value["cooldown_seconds"])),
+                requires_unfolded=bool(value.get("requires_unfolded", True)),
+                can_fire_while_moving=bool(value.get("can_fire_while_moving", False)))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("INVALID_WEAPON_PROFILE") from exc
+
+    @staticmethod
+    def _ammunition(operator: Any) -> dict[str, int]:
+        value = operator.raw_attributes.get("ammunition")
+        if not isinstance(value, Mapping):
+            source = operator.raw_attributes.get("source_frame", {})
+            value = source.get("remain_bullet_nums", {}) if isinstance(
+                source, Mapping) else {}
+        return {str(key): int(item) for key, item in value.items()}
+
+    def _annotate_source_event(self, event: EngineEvent,
+                               action_sequence: int) -> EngineEvent:
+        world = self._require_world()
+        sequence = world.next_event_sequence
+        world.next_event_sequence += 1
+        return EngineEvent(
+            tick=event.tick, event_type=event.event_type, side=event.side,
+            actor_id=event.actor_id, target_id=event.target_id,
+            data={**event.data, "event_time_ms": world.elapsed_time_ms,
+                  "action_sequence": action_sequence,
+                  "event_sequence": sequence})
+
+    def _source_event(self, event_type: EventType, side: str | None,
+                      actor_id: int | None, target_id: int | None,
+                      action_sequence: int,
+                      data: Mapping[str, Any]) -> EngineEvent:
+        world = self._require_world()
+        sequence = world.next_event_sequence
+        world.next_event_sequence += 1
+        return EngineEvent(
+            tick=world.tick, event_type=event_type, side=side,
+            actor_id=actor_id, target_id=target_id,
+            data={**data, "event_time_ms": world.elapsed_time_ms,
+                  "action_sequence": action_sequence,
+                  "event_sequence": sequence})
+
     def is_terminal(self) -> bool:
         return self._require_world().done
 
@@ -332,7 +759,7 @@ class NativeEngine:
         world = self._require_world()
         if self._rng is None:
             raise RuntimeError("engine_not_reset")
-        return {
+        value = {
             "schema_version": "native-snapshot/2.0",
             "scenario_hash": self.scenario.scenario_hash,
             "ruleset_id": self.ruleset.ruleset_id,
@@ -343,6 +770,13 @@ class NativeEngine:
             "action_counts": dict(self._action_counts),
             "error_counts": dict(self._error_counts),
         }
+        if self._source_policy is not None:
+            value["movement_policy"] = {
+                "movement_policy_id": self._source_policy.policy_id,
+                "movement_policy_version": self._source_policy.policy_version,
+                "movement_policy_hash": self._source_policy.content_hash,
+            }
+        return value
 
     def restore(self, snapshot: Mapping[str, Any]) -> WorldState:
         if self._closed:
@@ -355,6 +789,15 @@ class NativeEngine:
                 or snapshot.get("ruleset_version") != self.ruleset.ruleset_version
                 or snapshot.get("ruleset_hash") != self.ruleset.content_hash):
             raise ValueError("snapshot ruleset mismatch")
+        movement = snapshot.get("movement_policy")
+        if self._source_policy is not None:
+            expected = {"movement_policy_id": self._source_policy.policy_id,
+                        "movement_policy_version": self._source_policy.policy_version,
+                        "movement_policy_hash": self._source_policy.content_hash}
+            if movement != expected:
+                raise ValueError("snapshot movement policy mismatch")
+        elif movement is not None:
+            raise ValueError("snapshot requires source-compatible movement")
         self._seed = int(snapshot["seed"])
         self._rng = NativeRNG.restore(snapshot["rng"])
         self._world = WorldState.from_dict(snapshot["world"])
@@ -363,6 +806,8 @@ class NativeEngine:
         self._error_counts = {str(key): int(item)
                               for key, item in snapshot["error_counts"].items()}
         self._last_events = ()
+        if self._source_policy is not None:
+            self._refresh_source_observation()
         return WorldState.from_dict(self._world.to_dict())
 
     def close(self) -> None:
@@ -464,8 +909,115 @@ class NativeEngine:
         return sorted((item for item in world.operators.values()
                        if item.side == side), key=lambda item: item.operator_id)
 
+    def _source_valid_actions(self, side: str) -> tuple[ValidAction, ...]:
+        world = self._require_world()
+        if self._movement is None or self._source_map is None:
+            return ()
+        values: list[ValidAction] = []
+        for operator in self._friendly(side):
+            if not operator.alive or not operator.deployed:
+                continue
+            if operator.moving:
+                action = EngineAction(side, operator.operator_id,
+                                      ActionType.STOP_MOVE)
+                values.append(ValidAction(action, ACTION_PRIORITY[action.action_type],
+                                          "source_action_router"))
+            elif (operator.stopped and operator.transition_kind is None
+                  and operator.current_hex is not None):
+                try:
+                    mode = MovementMode(operator.movement_mode)
+                except ValueError:
+                    mode = MovementMode.NORMAL
+                for target in sorted(item for item in
+                                     self._source_map.cell(operator.current_hex).neighbors
+                                     if item >= 0):
+                    legality = self._movement.planner.validate_path(
+                        operator, [target], mode, world)
+                    if legality.legal:
+                        action = EngineAction(
+                            side, operator.operator_id, ActionType.MOVE,
+                            parameters={"path": [target],
+                                        "movement_mode": mode.value})
+                        values.append(ValidAction(
+                            action, ACTION_PRIORITY[action.action_type],
+                            "source_action_router"))
+            for weapon_id in sorted(operator.weapon_ids):
+                for target in sorted(world.operators.values(),
+                                     key=lambda item: item.operator_id):
+                    if target.side == side or not target.alive:
+                        continue
+                    action = EngineAction(
+                        side, operator.operator_id, ActionType.SHOOT,
+                        target_id=target.operator_id,
+                        parameters={"weapon_id": weapon_id})
+                    try:
+                        request = self._direct_fire_request(action, operator, target)
+                        legal = DirectFireAdjudicator(
+                            self._adjudication_tables,
+                            DiceRoller(self._rng)).validate(request)
+                    except (TypeError, ValueError):
+                        continue
+                    if legal.legal:
+                        values.append(ValidAction(
+                            action, ACTION_PRIORITY[action.action_type],
+                            "source_action_router"))
+            if operator.stopped and operator.transition_kind is None:
+                if not operator.weapon_locked:
+                    action = EngineAction(side, operator.operator_id,
+                                          ActionType.WEAPON_LOCK)
+                    values.append(ValidAction(action, ACTION_PRIORITY[action.action_type],
+                                              "source_action_router"))
+                if not operator.weapon_unfolded:
+                    action = EngineAction(side, operator.operator_id,
+                                          ActionType.WEAPON_UNFOLD)
+                    values.append(ValidAction(action, ACTION_PRIORITY[action.action_type],
+                                              "source_action_router"))
+            wait = EngineAction(side, operator.operator_id, ActionType.WAIT)
+            values.append(ValidAction(wait, ACTION_PRIORITY[wait.action_type],
+                                      "source_action_router"))
+        if not values:
+            action = EngineAction(side, None, ActionType.WAIT)
+            values.append(ValidAction(action, ACTION_PRIORITY[action.action_type],
+                                      "source_action_router"))
+        return tuple(sorted(values, key=valid_action_sort_key))
+
+    def _refresh_source_observation(self) -> None:
+        if self._source_map is None or self._source_visibility_map is None:
+            return
+        world = self._require_world()
+        for observer in sorted(world.operators.values(),
+                               key=lambda item: item.operator_id):
+            visible: list[int] = []
+            if observer.alive and observer.deployed and observer.current_hex is not None:
+                for target in sorted(world.operators.values(),
+                                     key=lambda item: item.operator_id):
+                    if (target.side == observer.side or not target.alive
+                            or not target.deployed or target.current_hex is None):
+                        continue
+                    result = evaluate_visibility(
+                        self._source_visibility_map,
+                        observer_hex=observer.current_hex,
+                        target_hex=target.current_hex,
+                        observer_domain=_unit_domain(observer.operator_type),
+                        target_domain=_unit_domain(target.operator_type),
+                        target_concealed=bool(
+                            target.raw_attributes.get("concealed", False)),
+                        target_terrain=self._source_map.terrain(
+                            target.current_hex).value)
+                    if result.observable:
+                        visible.append(target.operator_id)
+            observer.raw_attributes["see_enemy_bop_ids"] = visible
+
     def _visible_enemies(self, side: str) -> list[Any]:
         world = self._require_world()
+        if self._source_policy is not None:
+            visible_ids = {int(target_id)
+                           for observer in self._friendly(side)
+                           for target_id in observer.raw_attributes.get(
+                               "see_enemy_bop_ids", [])}
+            return sorted((item for item in world.operators.values()
+                           if item.side != side and item.operator_id in visible_ids),
+                          key=lambda item: item.operator_id)
         friendly = self._friendly(side)
         return sorted((target for target in world.operators.values()
                        if target.side != side
@@ -487,3 +1039,20 @@ class NativeEngine:
     def _require_side(self, side: str) -> None:
         if side not in self.scenario.side_order:
             raise ValueError(f"unknown side: {side}")
+
+
+def _delta_time_ms(value: int | float) -> int:
+    try:
+        milliseconds = Decimal(str(value)) * Decimal(1000)
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError("delta_time_seconds must be numeric") from exc
+    if milliseconds != milliseconds.to_integral_value() or milliseconds <= 0:
+        raise ValueError("delta_time_seconds must resolve to positive integer milliseconds")
+    return int(milliseconds)
+
+
+def _unit_domain(value: str) -> UnitDomain:
+    try:
+        return UnitDomain(str(value).upper())
+    except ValueError:
+        return UnitDomain.UNKNOWN

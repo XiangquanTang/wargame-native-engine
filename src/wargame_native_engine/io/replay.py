@@ -33,7 +33,7 @@ class ReplayWriter:
             raise FileExistsError(f"refusing to overwrite non-empty replay: {self.root}")
         self.root.mkdir(parents=True, exist_ok=True)
         (self.root / "snapshots").mkdir()
-        for name in ("actions.jsonl", "events.jsonl"):
+        for name in ("actions.jsonl", "events.jsonl", "steps.jsonl"):
             (self.root / name).write_text("", encoding="utf-8")
         self.manifest: dict[str, Any] = {
             "schema_version": REPLAY_SCHEMA_VERSION,
@@ -62,9 +62,11 @@ class ReplayWriter:
 
     def record_step(self, result: StepResult,
                     snapshot: Mapping[str, Any]) -> None:
-        decisions = {item.action_id: item for item in result.decisions}
-        for action in result.actions:
-            decision = decisions[action.action_id]
+        decisions: dict[str, list[Any]] = {}
+        for item in result.decisions:
+            decisions.setdefault(item.action_id, []).append(item)
+        for index, action in enumerate(result.actions):
+            decision = decisions[action.action_id].pop(0)
             self._append("actions.jsonl", {
                 "schema_version": "native-action/1.0",
                 "tick_before": result.tick_before,
@@ -74,10 +76,23 @@ class ReplayWriter:
                 "action": action.to_dict(),
                 "accepted": decision.accepted,
                 "decision_code": decision.code,
+                "action_sequence": (None if not result.action_sequences else
+                                    result.action_sequences[index]),
+                "delta_time_ms": result.delta_time_ms,
             })
         for event in result.events:
             self._append("events.jsonl", event.to_dict())
         self.record_snapshot(snapshot)
+        self._append("steps.jsonl", {
+            "schema_version": "native-step/1.0",
+            "tick_before": result.tick_before,
+            "tick_after": result.tick_after,
+            "delta_time_ms": result.delta_time_ms,
+            "ordered_actions": [item.to_dict() for item in result.actions],
+            "action_sequences": list(result.action_sequences),
+            "ordered_action_input": result.ordered_action_input,
+            "world_hash": canonical_hash(snapshot["world"]),
+        })
 
     def record_snapshot(self, snapshot: Mapping[str, Any]) -> None:
         tick = int(snapshot["world"]["tick"])
@@ -89,6 +104,7 @@ class ReplayWriter:
             "initial_state.json": file_sha256(self.root / "initial_state.json"),
             "actions.jsonl": file_sha256(self.root / "actions.jsonl"),
             "events.jsonl": file_sha256(self.root / "events.jsonl"),
+            "steps.jsonl": file_sha256(self.root / "steps.jsonl"),
             "episode_summary.json": file_sha256(self.root / "episode_summary.json"),
         }
         snapshots = sorted((self.root / "snapshots").glob("*.json"))
@@ -132,6 +148,8 @@ class ReplayReader:
                 "initial_state": self._json(path / "initial_state.json"),
                 "actions": self._jsonl(path / "actions.jsonl"),
                 "events": self._jsonl(path / "events.jsonl"),
+                "steps": (self._jsonl(path / "steps.jsonl")
+                          if (path / "steps.jsonl").is_file() else []),
                 "summary": summary}
 
     @staticmethod
@@ -187,14 +205,27 @@ def replay_actions(scenario: NativeScenario, root: str | Path, *,
                           max_ticks=int(manifest["max_ticks"]),
                           ruleset=active_ruleset)
     engine.reset(int(manifest["seed"]))
-    grouped: dict[int, dict[str, EngineAction]] = {}
-    for record in bundle["actions"]:
-        grouped.setdefault(int(record["tick_before"]), {})[str(record["side"])] = (
-            EngineAction.from_dict(record["action"]))
-    for tick in sorted(grouped):
-        if engine.is_terminal():
-            break
-        engine.step(grouped[tick])
+    if bundle.get("steps"):
+        for record in bundle["steps"]:
+            if engine.is_terminal():
+                break
+            ordered = [EngineAction.from_dict(item)
+                       for item in record["ordered_actions"]]
+            delta_seconds = int(record["delta_time_ms"]) / 1000
+            if record.get("ordered_action_input", bool(record.get("action_sequences"))):
+                engine.step(ordered, delta_time_seconds=delta_seconds)
+            else:
+                engine.step({item.side: item for item in ordered},
+                            delta_time_seconds=delta_seconds)
+    else:
+        grouped: dict[int, dict[str, EngineAction]] = {}
+        for record in bundle["actions"]:
+            grouped.setdefault(int(record["tick_before"]), {})[str(record["side"])] = (
+                EngineAction.from_dict(record["action"]))
+        for tick in sorted(grouped):
+            if engine.is_terminal():
+                break
+            engine.step(grouped[tick])
     actual = engine.result()
     expected_hash = str(bundle["summary"]["result"]["world_hash"])
     engine.close()

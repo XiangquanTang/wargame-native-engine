@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Mapping
+from typing import Mapping, Sequence
 
 from wargame_native_engine.agents.protocol import AgentAction, AgentStepContext
 from wargame_native_engine.backends.protocol import EngineBackend
@@ -23,8 +23,6 @@ class GameSession:
         self._closed = False
 
     def reset(self, seed: int = 42) -> WorldState:
-        if self._reset:
-            raise RuntimeError("session_already_reset")
         if self._closed:
             raise RuntimeError("session_closed")
         self.seed = int(seed)
@@ -53,8 +51,15 @@ class GameSession:
         return self.backend.valid_actions(side)
 
     def step(self, action_batch: Mapping[
-            str, AgentAction | EngineAction | None]) -> StepResult:
+            str, AgentAction | EngineAction | None] | Sequence[EngineAction], *,
+             delta_time_seconds: int | float = 1) -> StepResult:
         self._require_active()
+        if isinstance(action_batch, Sequence) and not isinstance(
+                action_batch, (str, bytes)):
+            if not all(isinstance(item, EngineAction) for item in action_batch):
+                raise TypeError("ordered session actions must be EngineAction values")
+            return self.backend.step(tuple(action_batch),
+                                     delta_time_seconds=delta_time_seconds)
         values: dict[str, EngineAction | None] = {}
         for side, item in action_batch.items():
             if isinstance(item, AgentAction):
@@ -65,7 +70,7 @@ class GameSession:
                 values[side] = item
             else:
                 raise TypeError("session actions must be AgentAction, EngineAction or None")
-        return self.backend.step(values)
+        return self.backend.step(values, delta_time_seconds=delta_time_seconds)
 
     def stage(self) -> Stage:
         self._require_active()

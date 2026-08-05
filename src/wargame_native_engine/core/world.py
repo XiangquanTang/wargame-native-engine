@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Mapping
 
+from wargame_native_engine.io.serialization import json_clone
+
 from wargame_native_engine.core.operator import OperatorState
 
 
@@ -51,13 +53,19 @@ class WorldState:
     winner: str | None
     terminal_reason: str | None
     truncated: bool = False
+    elapsed_time_ms: int = 0
+    next_action_sequence: int = 0
+    next_event_sequence: int = 0
+    movement_evidence: list[dict[str, Any]] = field(default_factory=list)
+    last_actions: list[dict[str, Any]] = field(default_factory=list)
+    last_judge_info: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def done(self) -> bool:
         return self.terminal or self.truncated
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        value = {
             "tick": self.tick,
             "stage": self.stage.value,
             "operators": {str(key): item.to_dict()
@@ -70,6 +78,16 @@ class WorldState:
             "terminal_reason": self.terminal_reason,
             "truncated": self.truncated,
         }
+        if any(item.current_hex is not None for item in self.operators.values()):
+            value.update({
+                "elapsed_time_ms": self.elapsed_time_ms,
+                "next_action_sequence": self.next_action_sequence,
+                "next_event_sequence": self.next_event_sequence,
+                "movement_evidence": json_clone(self.movement_evidence),
+                "last_actions": json_clone(self.last_actions),
+                "last_judge_info": json_clone(self.last_judge_info),
+            })
+        return value
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "WorldState":
@@ -89,4 +107,10 @@ class WorldState:
         return cls(int(value["tick"]), Stage(str(value["stage"])), operators,
                    sides, objectives, bool(value["terminal"]),
                    value.get("winner"), value.get("terminal_reason"),
-                   bool(value.get("truncated", False)))
+                   bool(value.get("truncated", False)),
+                   int(value.get("elapsed_time_ms", int(value["tick"]) * 1000)),
+                   int(value.get("next_action_sequence", 0)),
+                   int(value.get("next_event_sequence", 0)),
+                   json_clone(value.get("movement_evidence", [])),
+                   json_clone(value.get("last_actions", [])),
+                   json_clone(value.get("last_judge_info", [])))

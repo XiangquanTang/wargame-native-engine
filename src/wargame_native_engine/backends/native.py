@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Mapping
+from typing import Mapping, Sequence
 from pathlib import Path
 
 from wargame_native_engine.core.action import EngineAction, ValidAction
@@ -35,8 +35,9 @@ class NativeEngineBackend:
     def valid_actions(self, side: str) -> tuple[ValidAction, ...]:
         return self.engine.valid_actions(side)
 
-    def step(self, actions: Mapping[str, EngineAction | None]) -> StepResult:
-        return self.engine.step(actions)
+    def step(self, actions: Mapping[str, EngineAction | None] | Sequence[EngineAction],
+             *, delta_time_seconds: int | float = 1) -> StepResult:
+        return self.engine.step(actions, delta_time_seconds=delta_time_seconds)
 
     def is_terminal(self) -> bool:
         return self.engine.is_terminal()

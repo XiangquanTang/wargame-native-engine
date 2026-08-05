@@ -35,6 +35,19 @@ class EventType(str, Enum):
     UNIT_DESTROYED = "unit_destroyed"
     WEAPON_COOLDOWN_STARTED = "weapon_cooldown_started"
     AMMUNITION_CONSUMED = "ammunition_consumed"
+    MOVEMENT_STARTED = "movement_started"
+    ARRIVED_HEX = "arrived_hex"
+    MOVEMENT_BLOCKED = "movement_blocked"
+    STOP_MOVE_REQUESTED = "stop_move_requested"
+    STOPPING_STARTED = "stopping_started"
+    STOPPING_COMPLETED = "stopping_completed"
+    FATIGUE_CHANGED = "fatigue_changed"
+    WEAPON_LOCK_STARTED = "weapon_lock_started"
+    WEAPON_LOCKED = "weapon_locked"
+    WEAPON_UNFOLD_STARTED = "weapon_unfold_started"
+    WEAPON_UNFOLDED = "weapon_unfolded"
+    MOVEMENT_MODE_CHANGE_STARTED = "movement_mode_change_started"
+    MOVEMENT_MODE_CHANGED = "movement_mode_changed"
 
 
 EVENT_PRIORITY = {
@@ -65,6 +78,19 @@ EVENT_PRIORITY = {
     EventType.UNIT_DESTROYED: 39,
     EventType.WEAPON_COOLDOWN_STARTED: 40,
     EventType.AMMUNITION_CONSUMED: 41,
+    EventType.MOVEMENT_STARTED: 13,
+    EventType.ARRIVED_HEX: 14,
+    EventType.MOVEMENT_BLOCKED: 15,
+    EventType.STOP_MOVE_REQUESTED: 16,
+    EventType.STOPPING_STARTED: 17,
+    EventType.STOPPING_COMPLETED: 18,
+    EventType.FATIGUE_CHANGED: 19,
+    EventType.WEAPON_LOCK_STARTED: 23,
+    EventType.WEAPON_LOCKED: 24,
+    EventType.WEAPON_UNFOLD_STARTED: 25,
+    EventType.WEAPON_UNFOLDED: 26,
+    EventType.MOVEMENT_MODE_CHANGE_STARTED: 27,
+    EventType.MOVEMENT_MODE_CHANGED: 28,
 }
 
 
@@ -92,7 +118,11 @@ class EngineEvent:
 
 
 def event_sort_key(value: EngineEvent) -> tuple[Any, ...]:
-    return (value.tick, EVENT_PRIORITY[value.event_type],
+    event_time = int(value.data.get("event_time_ms", value.tick * 1000))
+    action_sequence = int(value.data.get("action_sequence", -1))
+    event_sequence = int(value.data.get("event_sequence", -1))
+    return (event_time, action_sequence, event_sequence,
+            EVENT_PRIORITY[value.event_type],
             int(value.data.get("roll_index", -1)), value.side or "",
             -1 if value.actor_id is None else value.actor_id,
             -1 if value.target_id is None else value.target_id,

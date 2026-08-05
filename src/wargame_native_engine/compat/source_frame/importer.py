@@ -110,6 +110,17 @@ class SourceFrameImporter:
                 alive=source.alive, weapon_ids=list(source.carry_weapon_ids),
                 raw_attributes=raw, deployed=not source.on_board,
                 blood=source.blood, max_blood=source.max_blood,
+                basic_speed=source.basic_speed,
+                current_hex=source.current_hex,
+                cur_pos_millionths=int(round(source.current_progress * 1_000_000)),
+                move_path=[int(item) for item in source.raw.get("move_path", [])],
+                movement_mode="MARCHING" if source.marching else "NORMAL",
+                stopped=source.stopped,
+                move_to_stop_remaining_ms=int(round(float(
+                    source.raw.get("move_to_stop_remain_time", 0)) * 1000)),
+                weapon_unfolded=bool(source.raw.get("weapon_unfold_state", 1)),
+                weapon_cooldown_remaining_ms=int(round(float(
+                    source.raw.get("weapon_cool_time", 0)) * 1000)),
             )
             records.append({
                 "operator_id": source.obj_id,
