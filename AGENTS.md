@@ -41,3 +41,11 @@
 - Reject unknown terrain, elevation units, roads and movement codes. Keep
   Native fatigue and transitions in named state/`extra.native`, not unresolved
   Source fields.
+- Treat GREEN as the complete referee/production frame. Project RED and BLUE
+  only from detached SideObservation plus explicit policy; never copy hidden
+  GREEN fields to fill an unknown side field.
+- Never expose visible-enemy raw attributes, hidden relationship IDs, opponent
+  actions/valid actions, hidden adjudication, RNG, or Native evidence to a side.
+- Production Source replay records numbered GREEN frames only. Recorder code is
+  observer-only and must not call step, visibility, valid-action, RNG, scoring,
+  or terminal logic.

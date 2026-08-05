@@ -177,3 +177,21 @@ the same `GameSession -> NativeEngine.step` call. Integer delta-time advances
 explicit hex-path segments, timers, observation and valid actions. The small
 fixture is `examples/source_movement_scenario.json`; semantics and field units
 are documented in `docs/SOURCE_MOVEMENT.md`.
+
+## RED, BLUE, GREEN and production Source replay
+
+`setup_views()` and `step_views()` return RED and BLUE isolated controller
+frames plus the complete GREEN referee frame. Production recording stores only
+numbered GREEN frames and the shared strict step records.
+
+```bash
+python scripts/run_minimal_source_replay.py \
+  --output local_data/acceptance/source_perspectives_smoke \
+  --seed 42
+```
+
+The smoke moves, changes visibility, resolves direct fire, packages
+`replay.zip`, imports it through the historical-compatible reader, strictly
+replays its steps, and compares final hashes. See
+`docs/SOURCE_PERSPECTIVES.md`, `docs/SOURCE_REPLAY_RECORDER.md`, and
+`docs/MINIMAL_END_TO_END_ACCEPTANCE.md`.

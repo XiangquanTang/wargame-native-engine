@@ -56,3 +56,13 @@ transition/cooldown/suppression timers, weapon lock/unfold state, and active
 segment identity. `basic_speed` is immutable standard km/h; `speed` is current
 segment progress in hexes per second. `WorldState.elapsed_time_ms`, sequence
 counters, and movement evidence participate in snapshots and state hashes.
+
+`Perspective` is the Source protocol enum: RED `0`, BLUE `1`, GREEN `-1`.
+`ObservationBundle` contains three same-contract frame mappings.
+`PerspectiveContext` supplies already-computed RED/BLUE SideObservations; the
+projector has no map or LOS dependency. Visible enemy side records use explicit
+unknown values rather than Source raw fields.
+
+`SourceReplayArchive` contains ordered numbered GREEN frames, strict steps, an
+optional Native manifest, source hash, and warnings. Historical archives need
+no Native manifest; Native archives validate collection and provenance hashes.

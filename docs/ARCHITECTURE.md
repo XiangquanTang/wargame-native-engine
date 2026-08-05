@@ -77,3 +77,18 @@ controller -> GameSession -> NativeEngineBackend -> NativeEngine.step
 `SourceCompatibleEnvironment` only adapts the resulting world to a frame. It
 does not own a second movement loop. Legacy scenarios without a hex grid retain
 the existing synchronous native-default path.
+
+## Source perspectives and GREEN recording
+
+```text
+WorldState -> existing Visibility/SideObservation
+           -> complete SourceFrameExporter GREEN
+           -> pure PerspectiveProjector -> RED / BLUE / GREEN
+                                      GREEN -> observer-only Recorder
+                                            -> numbered frames + steps -> ZIP
+```
+
+RED and BLUE never derive visibility or inspect GREEN records. The projector
+rebuilds visible enemy records from safe SideObservation fields and cleans
+nested ID relations. Only the referee owns GREEN. The Recorder consumes a
+detached GREEN serialization and has no engine/backend reference.

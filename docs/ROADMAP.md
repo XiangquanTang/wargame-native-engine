@@ -59,3 +59,18 @@ PyQt integration remain outside 0.4.0.
 Full frame recording, replay.zip, external human/Agent gateways,
 HTTP/WebSocket, indirect fire, mines and complex automatic pathfinding remain
 outside Phase 4A.2.
+
+## Phase 4A.3 implemented
+
+- formal RED `0`, BLUE `1`, GREEN `-1` Source perspectives;
+- safe visible-enemy reconstruction and recursive relationship cleanup;
+- isolated valid actions, actions, judge information and auxiliary fields;
+- GREEN-only numbered-frame Recorder with atomic deterministic output;
+- stable replay.zip packaging, manifest hashes and tamper validation;
+- one reader for historical and Native numbered-frame archives;
+- strict step replay and a movement/visibility/direct-fire acceptance run;
+- Recorder-on/off trace and result equivalence checks.
+
+CommandGateway, human control, Agent/API external control, HTTP, WebSocket,
+PyQt, last-known-position memory, observable enemy actions, anonymous incoming
+fire, indirect fire, mines and complex pathfinding remain outside Phase 4A.3.

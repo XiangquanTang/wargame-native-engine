@@ -68,3 +68,16 @@ Each line records the ordered action list, action sequences, integer
 retained because they advance movement and timers. Strict replay restores the
 same ordered-list versus side-mapping input form. This is an extension of the
 existing Native Replay bundle, not a separate movement replay format.
+
+## Production Source-frame replay
+
+Schema `native-source-frame-replay/1.0` contains numbered complete GREEN
+standard frames, `steps.jsonl`, and `replay_manifest.native.jsonl`. Only the
+frames use `.json`, so a historical numeric-frame reader does not treat a
+manifest as state. `0.json` has empty action/judge fields; each later frame
+carries the action echo and adjudication that created its current state.
+
+The importer validates every frame and collection hash. Strict Source replay
+uses the shared ordered steps to drive the normal Native engine and compares
+each expected state hash and the final hash. This complements rather than
+replaces `native-replay/2.0`.
