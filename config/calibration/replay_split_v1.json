@@ -23,7 +23,7 @@
       "scenario_id": "sanitized-calibration-a",
       "map_id": "sanitized-open-grid",
       "winner": "red",
-      "inclusion_reason": "Parameter-complete movement, attack, damage and terminal trajectory"
+      "inclusion_reason": "Controlled sanitized action-mapping case; exercises movement, attack, damage and terminal calibration without claiming historical execution"
     },
     {
       "replay_id": "calibration-action-02",
@@ -33,7 +33,7 @@
       "scenario_id": "sanitized-calibration-b",
       "map_id": "sanitized-open-grid",
       "winner": null,
-      "inclusion_reason": "Distinct mutual-elimination trajectory with two movement ticks"
+      "inclusion_reason": "Controlled sanitized action-mapping case for mutual elimination; not evidence that an upstream UNKNOWN action executed"
     }
   ],
   "validation": [
@@ -45,7 +45,7 @@
       "scenario_id": "sanitized-validation-a",
       "map_id": "sanitized-open-grid",
       "winner": "red",
-      "inclusion_reason": "Held-out geometry, health and longer damage trajectory"
+      "inclusion_reason": "Held-out controlled conformance case with distinct geometry and health; validates tooling, not external adjudication fidelity"
     }
   ]
 }

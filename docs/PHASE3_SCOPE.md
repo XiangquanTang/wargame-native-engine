@@ -51,7 +51,7 @@ Four mutually exclusive, sanitized fixtures are committed:
   parsed bounded-horizon evaluator run; its upstream manifest hash is retained
   while names, IDs, values and geometry are sanitized;
 - `calibration-action-01` and `calibration-action-02`: small, parameter-complete
-  action/state/event trajectories for bounded calibration;
+  controlled action/state/event conformance trajectories for bounded search;
 - `validation-action-01`: a distinct action-level trajectory held out until
   candidate selection.
 
@@ -59,6 +59,13 @@ They retain source-format structure and mapping uncertainty but replace names,
 IDs, geometry and scale. They are not complete original replays. Their split,
 source hashes, evidence levels and inclusion reasons are recorded in
 `config/calibration/replay_split_v1.json`.
+
+Only the smoke fixture retains an upstream parsed-run manifest hash. The three
+action-level fixtures are controlled, sanitized cases used to verify
+Replay-driven mapping, search and held-out evaluation because the inspected
+upstream run reported its available action outcomes as `UNKNOWN`. They are not
+presented as proof that those historical actions executed, so their calibration
+result cannot establish external historical fidelity.
 
 ## Explicit non-goals
 

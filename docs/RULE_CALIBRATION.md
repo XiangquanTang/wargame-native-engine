@@ -23,3 +23,9 @@ with material validation regression triggers overfitting. Fewer than three
 calibration or two validation replays remains insufficient evidence even when
 the held-out score improves. The output is only a
 **Historical-replay-calibrated native simplified rules** candidate.
+
+The v1 split's action-level calibration and validation records are controlled
+conformance fixtures. The inspected upstream smoke has state-level evidence and
+`UNKNOWN` action outcomes, which are intentionally not promoted to executable
+actions. Consequently, a numerically improved v1 candidate remains
+`INSUFFICIENT_EVIDENCE` and is not committed as a recommended ruleset.
