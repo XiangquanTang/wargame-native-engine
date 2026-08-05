@@ -159,12 +159,31 @@ def calibrate(*, split_path: str | Path, baseline_ruleset_path: str | Path,
         "candidate_validation_score": candidate_validation["aggregate_score"],
         "calibration_improvement": calibration_gain,
         "validation_improvement": validation_gain,
+        "improvements": _metric_changes(
+            baseline_calibration, best_calibration,
+            baseline_validation, candidate_validation, positive=True),
+        "regressions": _metric_changes(
+            baseline_calibration, best_calibration,
+            baseline_validation, candidate_validation, positive=False),
+        "unsupported_evidence": {
+            "baseline_calibration_actions": _unsupported_count(
+                baseline_calibration),
+            "candidate_calibration_actions": _unsupported_count(
+                best_calibration),
+            "baseline_validation_actions": _unsupported_count(
+                baseline_validation),
+            "candidate_validation_actions": _unsupported_count(
+                candidate_validation),
+        },
         "validation_passed": validation_gain >= 0 and not overfitting,
         "overfitting_suspected": overfitting,
         "small_sample_calibration": (
             len(calibration_replays) < 3 or len(validation_replays) < 2),
         "recommendation": recommendation,
         "limitations": best_documents["root"]["calibration_provenance"]["limitations"],
+        "warnings": (["small_sample_calibration"]
+                     if len(calibration_replays) < 3
+                     or len(validation_replays) < 2 else []),
     }
     _write_json(output / "manifest.json", {
         "schema_version": "native-calibration/1.0",
@@ -175,6 +194,9 @@ def calibrate(*, split_path: str | Path, baseline_ruleset_path: str | Path,
         "candidate_ruleset_hash": best_ruleset.content_hash,
         "calibration_replay_ids": [item.replay_id for item in calibration_replays],
         "validation_replay_ids": [item.replay_id for item in validation_replays],
+        "source_replay_hashes": [item["source_hash"] for item in
+                                 (*split.calibration, *split.validation)],
+        "calibration_timestamp": split.calibration_timestamp,
         "validation_used_during_search": False,
         "recommendation": recommendation})
     _write_jsonl(output / "candidates.jsonl", candidates)
@@ -237,6 +259,16 @@ def _evaluate_replays(replays: Iterable[HistoricalReplay], ruleset: Ruleset,
                       weights: Mapping[str, float]) -> Mapping[str, Any]:
     results = [ReplayAligner().align(replay, ruleset, weights=weights)
                for replay in replays]
+    per_replay = [{
+        **dict(item.summary),
+        "trajectory_metrics": dict(item.trajectory_metrics),
+        "event_metrics": dict(item.event_metrics),
+        "terminal_metrics": dict(item.terminal_metrics),
+        "advantage_metrics": dict(item.advantage_metrics),
+        "time_alignment": dict(item.time_alignment),
+        "operator_mapping": dict(item.operator_mapping),
+        "warnings": list(item.warnings),
+    } for item in results]
     return {
         "ruleset_id": ruleset.ruleset_id,
         "ruleset_version": ruleset.ruleset_version,
@@ -244,7 +276,11 @@ def _evaluate_replays(replays: Iterable[HistoricalReplay], ruleset: Ruleset,
         "replay_count": len(results),
         "aggregate_score": statistics.fmean(
             float(item.summary["alignment_score"]) for item in results),
-        "per_replay": [dict(item.summary) for item in results],
+        "aggregate_components": {
+            name: statistics.fmean(float(item.summary["components"][name])
+                                   for item in results)
+            for name in ("position", "event", "terminal", "advantage")},
+        "per_replay": per_replay,
     }
 
 
@@ -321,6 +357,39 @@ def _calibration_recommendation(*, calibration_gain: float,
     if validation_gain >= 0:
         return "ACCEPT_CANDIDATE", False
     return "REJECT_CANDIDATE", False
+
+
+def _unsupported_count(report: Mapping[str, Any]) -> int:
+    return sum(int(item["unsupported_action_count"])
+               for item in report["per_replay"])
+
+
+def _metric_changes(baseline_calibration: Mapping[str, Any],
+                    candidate_calibration: Mapping[str, Any],
+                    baseline_validation: Mapping[str, Any],
+                    candidate_validation: Mapping[str, Any], *,
+                    positive: bool) -> list[Mapping[str, Any]]:
+    result: list[Mapping[str, Any]] = []
+    for partition, baseline, candidate in (
+            ("calibration", baseline_calibration, candidate_calibration),
+            ("validation", baseline_validation, candidate_validation)):
+        values = {
+            "alignment_score": (float(baseline["aggregate_score"]),
+                                float(candidate["aggregate_score"])),
+            **{
+                f"component.{name}": (
+                    float(baseline["aggregate_components"][name]),
+                    float(candidate["aggregate_components"][name]))
+                for name in ("position", "event", "terminal", "advantage")
+            },
+        }
+        for metric, (before, after) in values.items():
+            delta = after - before
+            if (delta > 1e-12) is positive and abs(delta) > 1e-12:
+                result.append({"partition": partition, "metric": metric,
+                               "baseline": before, "candidate": after,
+                               "delta": delta})
+    return result
 
 
 def _write_json(path: Path, value: Mapping[str, Any]) -> None:

@@ -62,6 +62,8 @@ def test_calibration_uses_only_calibration_split(calibration_output: Path) -> No
     candidates = [json.loads(line) for line in
                   (calibration_output / "candidates.jsonl").read_text().splitlines()]
     assert all(len(item["per_replay"]) == 2 for item in candidates)
+    baseline = json.loads((calibration_output / "baseline_report.json").read_text())
+    assert "trajectory_metrics" in baseline["per_replay"][0]
 
 
 def test_validation_split_is_not_used_for_search(calibration_output: Path) -> None:
@@ -108,6 +110,10 @@ def test_calibrated_ruleset_records_provenance(calibration_output: Path) -> None
     assert provenance["split_id"] == "native-replay-calibration-v1"
     assert len(provenance["source_replay_hashes"]) == 3
     assert "small_sample_calibration" in provenance["limitations"]
+    comparison = json.loads((calibration_output / "comparison.json").read_text())
+    assert comparison["improvements"]
+    assert comparison["regressions"] == []
+    assert comparison["unsupported_evidence"]["candidate_validation_actions"] == 0
 
 
 def test_calibration_cli_outputs_reports(tmp_path: Path) -> None:
