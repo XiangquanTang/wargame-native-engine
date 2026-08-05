@@ -25,3 +25,14 @@ remain separate.
 Canonical action intents are `DEPLOY`, `END_DEPLOYMENT`, `MOVE`,
 `CHANGE_STATE`, `ATTACK` and `WAIT`. `EngineAction` intent and `EngineEvent`
 adjudication output use different schemas and replay collections.
+
+Historical evidence uses frozen `HistoricalReplay`, `HistoricalFrame`,
+`HistoricalOperatorState`, `HistoricalAction`, `HistoricalEvent`, and
+`HistoricalEpisodeSummary` records. Each replay has one evidence level. Raw,
+normalized, and Native-comparable layers remain separate, with key fields
+labelled `DIRECT`, `NORMALIZED`, `DERIVED`, `APPROXIMATED`, `UNMAPPED`, or
+`MISSING`. An unconfirmed Action Echo has `executable=false`.
+
+Operator alignment statuses are `EXACT_ID`, `SOURCE_MAPPING`, explicit
+`HEURISTIC_MATCH`, and `UNMATCHED`. Time alignment always stores historical
+time, target Native tick, scale, offset, strategy, and residual error.

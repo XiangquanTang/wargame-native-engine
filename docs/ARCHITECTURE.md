@@ -5,6 +5,10 @@ The implemented dependency direction is:
 ```text
 JSON rule/profile files -> immutable Ruleset
 legacy JSON -> ScenarioImporter -> NativeScenario
+parsed historical evidence -> HistoricalReplayImporter -> HistoricalReplay
+HistoricalReplay initial frame -> HistoricalScenarioBuilder -> NativeScenario
+HistoricalReplay + Native trajectory -> ReplayAligner -> component metrics
+calibration split + bounded parameter grid -> candidate -> held-out validation
 Ruleset + NativeScenario -> NativeEngine -> authoritative WorldState
                                       |-> detached SideObservation -> Agent
                                       |-> EngineAction -> systems -> EngineEvent
@@ -37,3 +41,9 @@ documented Native simplified policy, not a claim about an external engine.
 `GameSession` owns lifecycle and delegates rules to one backend. The single-game
 CLI, migration CLI, fairness CLI, Replay and local Agent tools all use these
 same boundaries.
+
+Historical import is a data boundary, not a runtime dependency on the old
+project. Action-level evidence may enter `HistoricalReplayDriver`; state,
+event, and summary evidence can only enter their corresponding aligners.
+Candidate search is deterministic and completes before validation replays are
+loaded. Candidate provenance references, but never changes, the parent ruleset.

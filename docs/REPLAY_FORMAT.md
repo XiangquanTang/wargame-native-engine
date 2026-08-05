@@ -38,3 +38,11 @@ the final world hash is compared with the recorded result.
 same NativeScenario + same expanded Ruleset + same action intents + same seed
 = same ordered events, snapshots and final WorldState hash
 ```
+
+Historical replay archives are deliberately separate from Native replay
+bundles. Normalized historical import schema `historical-replay/1.0` retains
+source hash, evidence level, source time/coordinate units, raw fields, actions,
+events, frames and summary. It does not provide Native strict-replay guarantees
+and does not turn Action Echo into an accepted action. Replay-driven alignment
+passes mapped action intents through the normal `NativeEngine.step()` API and
+reports unsupported mappings separately from adjudication events.

@@ -14,3 +14,15 @@
 - Preserve determinism: sort all generated actions/events, use `NativeRNG`, and
   record the scenario hash, ruleset, seed and engine version.
 - Keep generated runs under `local_data/` or `/tmp`; do not commit them.
+- Treat every historical source as read-only and record its source hash.
+- Never infer missing historical actions from state changes or Action Echo.
+- Keep calibration and validation replay partitions disjoint; validation data
+  must not participate in search or candidate selection.
+- Never overwrite the baseline ruleset during calibration.
+- Describe candidates only as historical-replay-calibrated Native simplified
+  rules, never as official rules or recovered official adjudication.
+- Record all source replay hashes and parameter changes in calibrated candidate
+  provenance.
+- Mark small-sample calibration and evidence limitations in every recommendation.
+- Evaluate validation only after candidate selection; do not tune from validation
+  results.
