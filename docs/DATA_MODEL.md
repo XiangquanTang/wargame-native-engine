@@ -1,33 +1,27 @@
 # Data model
 
-All canonical models are JSON-serializable dataclasses. The native coordinate
-system is a Cartesian XY plane:
+Canonical runtime models are JSON-serializable dataclasses. `NativeScenario`
+is immutable and hashes its normalized JSON representation. `WorldState` is
+mutable and authoritative; snapshots and observations are detached copies.
 
-- X/Y, altitude, movement range, sensor range and attack range use scenario
-  distance units; the bundled scenario declares those units as metres.
-- heading is degrees clockwise from north;
-- health and damage are abstract non-negative points;
-- speed is distance units per tick; version 0.1 movement is bounded by
-  `min(move_range, max_speed)` and does not integrate acceleration;
-- tick is a discrete simultaneous-resolution counter.
+The coordinate system is Cartesian XY. Distance fields use the scenario map's
+unit, heading is degrees clockwise from north, health/damage are abstract
+non-negative points, speed is distance per native tick, and visibility uses
+2D Euclidean radius in the current ruleset. Elevation is preserved but the
+configured elevation, occlusion and concealment switches are disabled.
 
-`OperatorState.raw_attributes` preserves unrecognized importer fields. A known
-field and its source value may both be retained when normalization is lossy.
-Opaque fields have no rule effect unless a later native ruleset documents one.
+`OperatorState.raw_attributes` preserves source fields without granting them
+rule meaning. Migrated operators distinguish:
 
-Stages are `deployment`, `combat` and `terminal`. `terminal` means a native
-winning/drawing condition was met. `truncated` means the max-tick guard ended
-the episode without converting the guard into a winner.
+- `source_values`: the input record;
+- `normalized_values`: explicit numeric/unit conversion;
+- `effective_rule_values`: values used by Native rules;
+- `provenance`: source, conversion, default or `derived_by_native_rules`.
 
-Canonical actions are `DEPLOY`, `END_DEPLOYMENT`, `MOVE`, `CHANGE_STATE`,
-`ATTACK` and `WAIT`. Compatibility numbers are format aliases only:
+Stages are `deployment`, `combat` and `terminal`. A natural win/draw has
+`terminal=true`. A guard such as `max_ticks` has `truncated=true`; the two flags
+remain separate.
 
-| External-format number | Native action |
-|---:|---|
-| 1 | MOVE |
-| 2 | ATTACK |
-| 6 | CHANGE_STATE |
-| 333 | END_DEPLOYMENT |
-
-Unsupported numbers produce `unsupported_action`; they are never ignored or
-guessed.
+Canonical action intents are `DEPLOY`, `END_DEPLOYMENT`, `MOVE`,
+`CHANGE_STATE`, `ATTACK` and `WAIT`. `EngineAction` intent and `EngineEvent`
+adjudication output use different schemas and replay collections.

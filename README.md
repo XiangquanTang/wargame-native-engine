@@ -1,55 +1,92 @@
 # wargame_native_engine
 
-`wargame_native_engine` is a small, transparent and deterministic Python
-wargame environment. It is an independent implementation: it does not require
-the official SDK, its authentication configuration, its binaries, or the old
-benchmark repository.
+`wargame_native_engine` 0.2.0 is an independent, transparent and deterministic
+experiment engine. All adjudication is explicitly **Native simplified rules**;
+it does not import or claim compatibility with an official SDK, authentication
+configuration, binary package, or hidden rules.
 
-The current `0.1.0` ruleset is deliberately labelled **Native simplified
-rules**. It supports deployment, straight-line movement, radius visibility,
-deterministic direct attack, health/destroyed state, elimination/objective/max-
-tick endings, per-side Agents, snapshots and a checksummed native replay. It
-does not claim official SDK-equivalent adjudication.
+## Run with a versioned ruleset
 
-## Install and run
+The default JSON ruleset expands its operator, weapon and terrain profiles into
+one canonical ruleset hash. No YAML dependency is required.
 
 ```bash
-python -m pip install -e .
 python -m wargame_native_engine.cli.run_game \
   --scenario examples/minimal_scenario.json \
+  --ruleset config/rulesets/native_default_v1.json \
   --red-agent first-valid \
   --blue-agent first-valid \
   --seed 42 \
-  --max-ticks 500 \
-  --output local_data/runs/minimal_demo
+  --output local_data/runs/minimal_v2
 ```
 
-The command exits with zero only for a natural terminal result. A max-tick
-ending is represented as `truncated: true`, never as an authoritative winner.
+Run the migrated 3v3 fixture with independent Agent seeds:
 
-## Python API
+```bash
+python -m wargame_native_engine.cli.run_game \
+  --scenario examples/migrated_scenario_small.json \
+  --ruleset config/rulesets/native_default_v1.json \
+  --red-agent random-legal \
+  --blue-agent random-legal \
+  --seed 42 \
+  --max-ticks 500 \
+  --output local_data/runs/migrated_small
+```
+
+A max-tick result is `truncated: true`; it is never reported as a natural win.
+
+## Migrate the reduced legacy-shaped fixture
+
+```bash
+python -m wargame_native_engine.cli.import_scenario \
+  --source examples/legacy_scenario_reduced_fixture.json \
+  --source-identifier legacy-field-structure-small/sanitized-reduced-fixture \
+  --ruleset config/rulesets/native_default_v1.json \
+  --output local_data/migrations/migrated_small
+```
+
+The command emits the native scenario plus manifest, field mapping, unmapped
+field list and warnings. It reads legacy JSON as data and never imports the old
+project at runtime.
+
+## Evaluate procedural fairness
+
+```bash
+python -m wargame_native_engine.cli.evaluate_fairness \
+  --scenario examples/migrated_scenario_small.json \
+  --ruleset config/rulesets/native_default_v1.json \
+  --red-agent random-legal \
+  --blue-agent random-legal \
+  --seeds 0:99 \
+  --swap-sides \
+  --mirror \
+  --output local_data/fairness/migrated_small
+```
+
+Inspect `summary.json` for per-variant results, paired winner consistency,
+side-swap outcome reversal, mirror consistency, score/survival/damage
+differences, and replay/state mismatch counts. Overall red/blue win rate alone
+is not treated as proof of fairness.
+
+## Strict replay
 
 ```python
-from wargame_native_engine.backends.native import NativeEngineBackend
-from wargame_native_engine.agents import FirstValidActionAgent
+from wargame_native_engine.io.replay import replay_actions
 from wargame_native_engine.io.scenario import load_scenario
-from wargame_native_engine.session.game_session import GameSession
 
 scenario = load_scenario("examples/minimal_scenario.json")
-session = GameSession(NativeEngineBackend(scenario, max_ticks=500))
-session.reset(seed=42)
-agents = {side: FirstValidActionAgent() for side in scenario.side_order}
-while not session.is_terminal():
-    batch = {}
-    for side in session.current_seats():
-        batch[side] = agents[side].act(
-            observation=session.observe(side),
-            valid_actions=session.valid_actions(side),
-            context=session.agent_context(side),
-        )
-    session.step(batch)
-session.close()
+verification = replay_actions(
+    scenario,
+    "local_data/runs/minimal_v2",
+    ruleset="config/rulesets/native_default_v1.json",
+    strict=True,
+    seed=42,
+)
+assert verification.matches
 ```
 
-See `docs/ARCHITECTURE.md`, `docs/DATA_MODEL.md` and
-`docs/REPLAY_FORMAT.md` for the stable boundaries and rule scope.
+Strict replay checks scenario hash, ruleset ID/version/hash and seed before
+execution. `strict=False` is explicit and emits a warning on mismatch.
+
+See `docs/RULESET_CONFIGURATION.md`, `docs/SCENARIO_MIGRATION.md`,
+`docs/FAIRNESS_VALIDATION.md` and `docs/REPLAY_FORMAT.md`.

@@ -1,37 +1,39 @@
 # Architecture
 
-The engine has one dependency direction:
+The implemented dependency direction is:
 
 ```text
-NativeScenario -> NativeEngine -> WorldState
-                         |
-                         +-> ObservationBuilder -> SideObservation -> Agent
-                         +-> ActionValidator -> systems -> EngineEvent
-                         +-> snapshot/result -> GameSession -> CLI/replay/tools
+JSON rule/profile files -> immutable Ruleset
+legacy JSON -> ScenarioImporter -> NativeScenario
+Ruleset + NativeScenario -> NativeEngine -> authoritative WorldState
+                                      |-> detached SideObservation -> Agent
+                                      |-> EngineAction -> systems -> EngineEvent
+                                      |-> Snapshot / Replay -> strict verification
 ```
 
-`WorldState` is the sole authoritative mutable state. Systems implement bounded
-native rules and receive explicit rule configuration. They do not call map or
-SDK helpers. `NativeEngine.step()` accepts one synchronous action per active
-side, validates every action against the pre-tick valid-action set, resolves
-movement before attacks, applies attack damage simultaneously, then evaluates
-terminal rules.
+`WorldState` is the sole authoritative mutable state. Agents receive detached
+side observations and current canonical valid actions. They never receive the
+world object, hidden opponent state, or another side's observation.
 
-`GameSession` owns the public lifecycle but does not duplicate rules. CLI,
-Agents, future benchmark code and future UI adapters all consume this session
-boundary. `LocalAgentTools` exposes the same boundary without a network server.
+`NativeEngine` loads and validates a `Ruleset` before reset. The frozen object
+is retained for the episode. Systems receive the relevant movement,
+visibility, combat or terminal rule object rather than embedding tolerances,
+ranges, damage or max-tick constants.
 
-## Information boundary
+## Synchronous resolution
 
-`observe(side)` returns a detached `SideObservation`: all friendly operators,
-only sensor-visible enemies, public objectives and legal action identifiers.
-Agents never receive `WorldState`, hidden opponents, another side's observation
-or future replay frames.
+Every side's action is validated against the same pre-tick valid-action set.
+Accepted intents are canonically sorted. Deployment, state and straight-line
+movement effects are applied, then every attack committed as legal for that
+tick contributes to an aggregate damage table. Damage is applied by sorted
+target ID, so an operator destroyed during that damage pass still executes its
+already committed attack. Terminal evaluation follows damage and objective
+scoring.
 
-## Resolution order
+Events use a stable `(tick, event priority, side, actor, target, event hash)`
+order. Mapping insertion order is not part of adjudication. This is the
+documented Native simplified policy, not a claim about an external engine.
 
-Within a tick, actions are canonically ordered by scenario side order. Valid
-deployment/state/movement actions resolve first. Valid attacks are evaluated
-against the pre-damage state and accumulated damage is applied simultaneously.
-Terminal evaluation occurs after damage and objective scoring. This is an
-explicit native policy, not an assertion about an external engine.
+`GameSession` owns lifecycle and delegates rules to one backend. The single-game
+CLI, migration CLI, fairness CLI, Replay and local Agent tools all use these
+same boundaries.
