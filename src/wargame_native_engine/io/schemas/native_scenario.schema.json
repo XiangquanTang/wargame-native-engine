@@ -7,13 +7,74 @@
   "properties": {
     "schema_version": {"const": "native-scenario/1.0"},
     "scenario_id": {"type": "string", "minLength": 1},
-    "map": {"type": "object"},
-    "sides": {"type": "array", "minItems": 2, "items": {"type": "string"}},
-    "operators": {"type": "array", "minItems": 2, "items": {"type": "object"}},
-    "objectives": {"type": "array", "items": {"type": "object"}},
-    "deployment": {"type": "object"},
-    "terminal_rules": {"type": "object"},
+    "map": {
+      "type": "object",
+      "required": ["map_id", "width", "height", "distance_unit"],
+      "properties": {
+        "map_id": {"type": "string", "minLength": 1},
+        "width": {"type": "number", "exclusiveMinimum": 0},
+        "height": {"type": "number", "exclusiveMinimum": 0},
+        "distance_unit": {"type": "string", "minLength": 1},
+        "blocked_positions": {"type": "array", "items": {"$ref": "#/$defs/position"}}
+      },
+      "additionalProperties": false
+    },
+    "sides": {"type": "array", "minItems": 2, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "operators": {"type": "array", "minItems": 2, "items": {"$ref": "#/$defs/operator"}},
+    "objectives": {"type": "array", "items": {"$ref": "#/$defs/objective"}},
+    "deployment": {
+      "type": "object", "required": ["positions"],
+      "properties": {"positions": {"type": "object"}},
+      "additionalProperties": false
+    },
+    "terminal_rules": {
+      "type": "object",
+      "required": ["max_ticks", "elimination", "objective_score_to_win"],
+      "properties": {
+        "max_ticks": {"type": "integer", "minimum": 1},
+        "elimination": {"type": "boolean"},
+        "objective_score_to_win": {"type": ["integer", "null"], "minimum": 1}
+      },
+      "additionalProperties": false
+    },
     "metadata": {"type": "object"}
+  },
+  "$defs": {
+    "position": {"type": "array", "prefixItems": [{"type": "number"}, {"type": "number"}], "minItems": 2, "maxItems": 2},
+    "operator": {
+      "type": "object",
+      "required": ["operator_id", "side", "operator_type", "x", "y", "health", "max_health", "max_speed", "move_range", "sensor_range", "state", "alive", "weapon_ids", "attack_range", "attack_damage"],
+      "properties": {
+        "operator_id": {"type": "integer", "minimum": 0},
+        "side": {"type": "string"}, "operator_type": {"type": "string"},
+        "subtype": {"type": ["string", "null"]},
+        "x": {"type": "number"}, "y": {"type": "number"},
+        "altitude": {"type": "number"}, "heading": {"type": "number"},
+        "health": {"type": "number", "minimum": 0},
+        "max_health": {"type": "number", "exclusiveMinimum": 0},
+        "speed": {"type": "number", "minimum": 0},
+        "max_speed": {"type": "number", "minimum": 0},
+        "move_range": {"type": "number", "minimum": 0},
+        "sensor_range": {"type": "number", "minimum": 0},
+        "state": {"type": "string"}, "alive": {"type": "boolean"},
+        "weapon_ids": {"type": "array", "items": {"type": "integer"}},
+        "raw_attributes": {"type": "object"},
+        "attack_range": {"type": "number", "minimum": 0},
+        "attack_damage": {"type": "number", "minimum": 0},
+        "deployed": {"type": "boolean"}
+      },
+      "additionalProperties": true
+    },
+    "objective": {
+      "type": "object", "required": ["objective_id", "x", "y"],
+      "properties": {
+        "objective_id": {"type": "integer"}, "x": {"type": "number"},
+        "y": {"type": "number"}, "radius": {"type": "number", "minimum": 0},
+        "value": {"type": "integer"},
+        "controlling_side": {"type": ["string", "null"]}
+      },
+      "additionalProperties": false
+    }
   },
   "additionalProperties": false
 }

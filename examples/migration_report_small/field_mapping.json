@@ -1,0 +1,33 @@
+{
+  "coordinate_conversion": {
+    "cell_size": 1.0,
+    "formula": "x=(cur_hex % width + 0.5)*cell_size; y=(cur_hex // width + 0.5)*cell_size",
+    "grid_width": 10
+  },
+  "operator": {
+    "alive": "alive or health > 0",
+    "altitude": "altitude or documented zero default",
+    "heading": "heading or documented zero default",
+    "health": "blood * 10.0",
+    "move_range": "derived_by_native_rules",
+    "operator_id": "obj_id",
+    "operator_type": "type via explicit map",
+    "raw_attributes": "complete source record plus provenance",
+    "sensor_range": "derived_by_native_rules",
+    "side": "color via explicit map",
+    "speed": "basic_speed * 0.027777777777777776",
+    "state": "state or ready default",
+    "subtype": "sub_type",
+    "weapon_ids": "explicit simplified native mapping",
+    "x,y": "cur_pos or cur_hex explicit grid conversion"
+  },
+  "scenario": {
+    "initial_phase": "native deployment",
+    "map_bounds": "map_reference grid dimensions * cell_size",
+    "map_id": "map_id + '-native-grid'",
+    "max_ticks": "time.max_time",
+    "mission_objective": "native configured terminal rules",
+    "scenario_id": "scenario_id + '-native-reduced'",
+    "sides": "explicit color mapping {'0': 'red', '1': 'blue'}"
+  }
+}

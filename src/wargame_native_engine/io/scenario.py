@@ -136,7 +136,7 @@ def scenario_from_dict(value: Mapping[str, Any]) -> NativeScenario:
         side_order=sides, operators=operators, objectives=objectives,
         deployment_positions=positions,
         terminal_rules=TerminalRules(
-            max_ticks=int(terminal.get("max_ticks", 500)),
+            max_ticks=int(terminal["max_ticks"]),
             elimination=bool(terminal.get("elimination", True)),
             objective_score_to_win=(None if terminal.get("objective_score_to_win") is None
                                     else int(terminal["objective_score_to_win"])),

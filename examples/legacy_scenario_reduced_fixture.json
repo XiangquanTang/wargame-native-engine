@@ -1,0 +1,26 @@
+{
+  "scenario_id": "legacy-field-structure-small",
+  "map_id": "reduced-grid",
+  "map_reference": {
+    "map_id": "reduced-grid",
+    "source": "sanitized_local_fixture",
+    "grid_width": 10,
+    "grid_height": 8,
+    "cell_size": 1.0
+  },
+  "time": {"cur_step": 0, "max_time": 80, "tick": 1},
+  "operators": [
+    {"obj_id": 1101, "color": 0, "type": 2, "sub_type": 0, "name": "red-ground-a", "cur_hex": 31, "basic_speed": 54, "blood": 4, "max_blood": 4, "carry_weapon_ids": [43], "armor": 4, "remain_bullet_nums": {"0": 12}},
+    {"obj_id": 1102, "color": 0, "type": 1, "sub_type": 1, "name": "red-recon", "cur_hex": 21, "basic_speed": 72, "blood": 3, "max_blood": 3, "carry_weapon_ids": [36], "guide_ability": 1, "move_path": []},
+    {"obj_id": 1103, "color": 0, "type": 3, "sub_type": 0, "name": "red-support", "cur_hex": 41, "basic_speed": 36, "blood": 5, "max_blood": 5, "carry_weapon_ids": [43], "loading_capacity": 2, "weapon_unfold_state": 1},
+    {"obj_id": 2101, "color": 1, "type": 2, "sub_type": 0, "name": "blue-ground-a", "cur_hex": 38, "basic_speed": 54, "blood": 4, "max_blood": 4, "carry_weapon_ids": [43], "armor": 4, "remain_bullet_nums": {"0": 12}},
+    {"obj_id": 2102, "color": 1, "type": 1, "sub_type": 1, "name": "blue-recon", "cur_hex": 28, "basic_speed": 72, "blood": 3, "max_blood": 3, "carry_weapon_ids": [36], "guide_ability": 1, "move_path": []},
+    {"obj_id": 2103, "color": 1, "type": 3, "sub_type": 0, "name": "blue-support", "cur_hex": 48, "basic_speed": 36, "blood": 5, "max_blood": 5, "carry_weapon_ids": [43], "loading_capacity": 2, "weapon_unfold_state": 1}
+  ],
+  "cities": [
+    {"name": "central-objective", "coord": [5.0, 3.5], "flag": 0, "type": 0, "value": 1}
+  ],
+  "derived": true,
+  "not_original_scenario": true,
+  "source": "real_structure_reduced_fixture"
+}
