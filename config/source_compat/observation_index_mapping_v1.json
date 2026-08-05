@@ -1,0 +1,8 @@
+{
+  "schema_version": "source-observation-index-mapping/1.0",
+  "mapping_id": "source-observation-indices-v1",
+  "indices": {},
+  "status": "UNRESOLVED",
+  "fallback_policy": "USE_NAMED_NATIVE_PROFILE",
+  "notes": ["Source observe_distance arrays are preserved but naked indices are not used by core rules"]
+}

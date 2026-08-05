@@ -29,6 +29,8 @@ class OperatorState:
     attack_range: float = 0.0
     attack_damage: float = 0.0
     deployed: bool = False
+    blood: int | None = None
+    max_blood: int | None = None
 
     def __post_init__(self) -> None:
         if self.operator_id < 0:
@@ -40,6 +42,15 @@ class OperatorState:
             if getattr(self, name) < 0:
                 raise ValueError(f"{name} must be non-negative")
         if self.health == 0:
+            self.alive = False
+            self.state = "destroyed"
+        if self.blood is None:
+            self.blood = int(round(self.health))
+        if self.max_blood is None:
+            self.max_blood = int(round(self.max_health))
+        if self.max_blood <= 0 or not 0 <= self.blood <= self.max_blood:
+            raise ValueError("blood must be within [0, max_blood]")
+        if self.blood == 0:
             self.alive = False
             self.state = "destroyed"
         self.weapon_ids = [int(item) for item in self.weapon_ids]
@@ -72,6 +83,8 @@ class OperatorState:
             "attack_range": self.attack_range,
             "attack_damage": self.attack_damage,
             "deployed": self.deployed,
+            "blood": self.blood,
+            "max_blood": self.max_blood,
         }
 
     @classmethod
@@ -97,4 +110,7 @@ class OperatorState:
             attack_range=float(value.get("attack_range", 0.0)),
             attack_damage=float(value.get("attack_damage", 0.0)),
             deployed=bool(value.get("deployed", False)),
+            blood=(None if value.get("blood") is None else int(value["blood"])),
+            max_blood=(None if value.get("max_blood") is None
+                       else int(value["max_blood"])),
         )

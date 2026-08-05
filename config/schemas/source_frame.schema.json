@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "native-source-frame-compat/1.0",
+  "type": "object",
+  "required": ["operators", "passengers", "time", "jm_points", "cities", "scores", "landmarks", "terrain_id", "judge_info", "role_and_grouping_info", "communication", "scenario_id", "valid_actions", "actions"],
+  "properties": {
+    "operators": {"type": "array", "items": {"$ref": "#/$defs/unit"}},
+    "passengers": {"type": "array", "items": {"$ref": "#/$defs/unit"}},
+    "time": {"type": "object"}, "jm_points": {"type": "array"},
+    "cities": {"type": "array"}, "scores": {"type": "object"},
+    "landmarks": {"type": "object"}, "valid_actions": {"type": "object"},
+    "actions": {"type": "array"}
+  },
+  "additionalProperties": true,
+  "$defs": {"unit": {"type": "object", "required": ["obj_id", "color", "type", "sub_type", "cur_hex", "blood", "max_blood"], "additionalProperties": true}}
+}

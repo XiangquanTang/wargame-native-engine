@@ -1,0 +1,21 @@
+{
+  "schema_version": "source-weapon-id-mapping/1.0",
+  "mapping_id": "source-weapons-v1",
+  "source": "native_adjudication_tables_final.json source_mappings.weapon_id_to_type",
+  "mappings": {
+    "1": "anti_air_cannon", "2": "portable_anti_air_missile",
+    "3": "vehicle_anti_air_missile", "4": "rapid_fire_gun_ground",
+    "5": "portable_missile_ground", "29": "infantry_light_weapon",
+    "35": "rocket_launcher", "36": "large_direct_fire_gun",
+    "37": "medium_direct_fire_gun", "43": "vehicle_light_weapon",
+    "54": "small_direct_fire_gun", "56": "rapid_fire_gun",
+    "69": "vehicle_missile", "71": "portable_missile",
+    "72": "heavy_artillery", "73": "heavy_missile",
+    "74": "medium_missile_portable", "75": "small_missile",
+    "76": "loitering_munition", "83": "medium_missile_standard",
+    "84": "gun_launched_missile", "88": "medium_artillery",
+    "89": "light_artillery"
+  },
+  "mapping_status": "USER_CONFIRMED",
+  "unknown_weapon_policy": "PRESERVE_RAW_REJECT"
+}

@@ -1,0 +1,13 @@
+{
+  "schema_version": "source-unit-type-mapping/1.0",
+  "mapping_id": "source-unit-types-v1",
+  "source": "documented standard-frame field definitions",
+  "type_codes": {
+    "1": {"domain": "PERSONNEL", "status": "DIRECT", "source": "type 1 = infantry"},
+    "2": {"domain": "VEHICLE", "status": "DIRECT", "source": "type 2 = vehicle"},
+    "3": {"domain": "AIR", "status": "DIRECT", "source": "type 3 = aircraft"},
+    "4": {"domain": "UNKNOWN", "status": "UNMAPPED", "source": "fortification outside Phase 4A"},
+    "5": {"domain": "UNKNOWN", "status": "UNMAPPED", "source": "strategic support outside Phase 4A"}
+  },
+  "sub_type_codes": {"status": "UNRESOLVED", "fallback_policy": "PRESERVE_RAW"}
+}

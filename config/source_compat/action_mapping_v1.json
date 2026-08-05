@@ -1,0 +1,7 @@
+{
+  "schema_version": "source-action-mapping/1.0",
+  "mapping_id": "source-actions-v1",
+  "mappings": {},
+  "unknown_action_policy": "PRESERVE_RAW_REJECT",
+  "notes": ["valid_actions is compatibility output only and never rule truth", "action echo is intent, not execution evidence"]
+}

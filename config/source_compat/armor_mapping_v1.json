@@ -1,0 +1,13 @@
+{
+  "schema_version": "source-armor-mapping/1.0",
+  "mapping_id": "source-armor-v1",
+  "source": "native_adjudication_tables_final.json known_ambiguity U01",
+  "codes": {
+    "0": {"armor_class": "UNKNOWN", "status": "UNRESOLVED", "source": "U01"},
+    "1": {"armor_class": "UNKNOWN", "status": "UNRESOLVED", "source": "U01"},
+    "2": {"armor_class": "UNKNOWN", "status": "UNRESOLVED", "source": "U01"},
+    "3": {"armor_class": "UNKNOWN", "status": "UNRESOLVED", "source": "U01"},
+    "4": {"armor_class": "UNKNOWN", "status": "UNRESOLVED", "source": "U01"}
+  },
+  "fallback_policy": "PRESERVE_RAW_REJECT_ADJUDICATION"
+}

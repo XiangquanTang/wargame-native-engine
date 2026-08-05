@@ -150,6 +150,7 @@ _OPERATOR_FIELDS = {
     "altitude", "heading", "health", "max_health", "speed", "max_speed",
     "move_range", "sensor_range", "state", "alive", "weapon_ids",
     "raw_attributes", "attack_range", "attack_damage", "deployed",
+    "blood", "max_blood",
 }
 
 
