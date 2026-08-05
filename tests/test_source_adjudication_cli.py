@@ -26,6 +26,8 @@ def test_direct_fire_cli_outputs_strict_replay(tmp_path: Path) -> None:
     ]) == 0
     manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["schema_version"] == "native-direct-fire-replay/1.0"
+    assert manifest["resolution_hash"] == (
+        "be2bf2333c57dd80e75154993ce788029521290557fb2447e630438c81ae70af")
     assert replay_direct_fire(output, tables=AdjudicationTableSet(FINAL_TABLES)).matches
 
 
