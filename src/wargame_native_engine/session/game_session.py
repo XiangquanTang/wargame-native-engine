@@ -93,6 +93,10 @@ class GameSession:
             raise RuntimeError("session_closed")
         result = self.backend.restore(snapshot)
         self.seed = int(snapshot["seed"])
+        self.session_id = "session-" + canonical_hash({
+            "scenario_hash": self.scenario.scenario_hash,
+            "seed": self.seed,
+        })[:24]
         self._reset = True
         return result
 

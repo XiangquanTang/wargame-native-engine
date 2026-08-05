@@ -25,11 +25,13 @@ class OperatorObservation:
     raw_attributes: Mapping[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_state(cls, value: OperatorState) -> "OperatorObservation":
+    def from_state(cls, value: OperatorState, *,
+                   include_raw_attributes: bool = True) -> "OperatorObservation":
         return cls(value.operator_id, value.side, value.operator_type,
                    value.subtype, value.position, value.altitude, value.heading,
                    value.health, value.max_health, value.state, value.alive,
-                   value.deployed, json_clone(value.raw_attributes))
+                   value.deployed, (json_clone(value.raw_attributes)
+                                    if include_raw_attributes else {}))
 
     def to_dict(self) -> dict[str, Any]:
         return {"operator_id": self.operator_id, "side": self.side,

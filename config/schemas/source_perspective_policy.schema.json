@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Native Source Perspective Policy",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "policy_id",
+    "policy_version",
+    "schema_version",
+    "perspectives",
+    "own_unit_field_policy",
+    "visible_enemy_field_policy",
+    "actions_visibility",
+    "judge_info_visibility",
+    "communication_visibility",
+    "scores_visibility",
+    "cities_visibility",
+    "landmark_visibility",
+    "jm_point_visibility",
+    "role_and_grouping_visibility",
+    "native_evidence_visibility",
+    "unknown_field_policy",
+    "relation_id_fields",
+    "side_extra_native_allowlist",
+    "visible_enemy_safe_fields"
+  ],
+  "properties": {
+    "policy_id": {"type": "string", "minLength": 1},
+    "policy_version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+    "schema_version": {"const": "source-perspective-policy/1.0"},
+    "perspectives": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["RED", "BLUE", "GREEN"],
+      "properties": {
+        "RED": {"const": 0},
+        "BLUE": {"const": 1},
+        "GREEN": {"const": -1}
+      }
+    },
+    "own_unit_field_policy": {"type": "string"},
+    "visible_enemy_field_policy": {"type": "string"},
+    "actions_visibility": {"type": "string"},
+    "judge_info_visibility": {"type": "string"},
+    "communication_visibility": {"type": "string"},
+    "scores_visibility": {"type": "string"},
+    "cities_visibility": {"type": "string"},
+    "landmark_visibility": {"type": "string"},
+    "jm_point_visibility": {"type": "string"},
+    "role_and_grouping_visibility": {"type": "string"},
+    "native_evidence_visibility": {"type": "string"},
+    "unknown_field_policy": {"type": "string"},
+    "relation_id_fields": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "side_extra_native_allowlist": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "visible_enemy_safe_fields": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+  }
+}

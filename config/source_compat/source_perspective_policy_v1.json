@@ -1,0 +1,52 @@
+{
+  "policy_id": "native-source-perspectives",
+  "policy_version": "1.0.0",
+  "schema_version": "source-perspective-policy/1.0",
+  "perspectives": {
+    "RED": 0,
+    "BLUE": 1,
+    "GREEN": -1
+  },
+  "own_unit_field_policy": "SOURCE_FULL_WITH_VISIBLE_RELATION_CLEANING",
+  "visible_enemy_field_policy": "REBUILD_FROM_SIDE_OBSERVATION_SAFE_FIELDS",
+  "actions_visibility": "OWN_ACCEPTED_ACTIONS_ONLY",
+  "judge_info_visibility": "ALL_REFERENCED_ENEMIES_VISIBLE_OR_FRIENDLY_ONLY",
+  "communication_visibility": "OWNED_OR_PUBLIC_ONLY_UNKNOWN_HIDDEN",
+  "scores_visibility": "PUBLIC",
+  "cities_visibility": "PUBLIC",
+  "landmark_visibility": "OWNED_OR_PUBLIC_ONLY_UNKNOWN_HIDDEN",
+  "jm_point_visibility": "OWNED_OR_PUBLIC_ONLY_UNKNOWN_HIDDEN",
+  "role_and_grouping_visibility": "OWN_SIDE_ONLY",
+  "native_evidence_visibility": "GREEN_ONLY",
+  "unknown_field_policy": "UNKNOWN_DO_NOT_COPY_FROM_GREEN",
+  "relation_id_fields": [
+    "passenger_ids",
+    "car",
+    "launcher",
+    "launch_ids",
+    "target_obj_id",
+    "target_id",
+    "partner_id",
+    "owner",
+    "see_enemy_bop_ids"
+  ],
+  "side_extra_native_allowlist": [
+    "engine_version",
+    "ruleset_id",
+    "ruleset_version",
+    "perspective",
+    "current_step",
+    "session_id",
+    "protocol_version",
+    "perspective_policy_id",
+    "perspective_policy_version"
+  ],
+  "visible_enemy_safe_fields": [
+    "obj_id",
+    "color",
+    "cur_hex",
+    "altitude",
+    "state",
+    "alive"
+  ]
+}

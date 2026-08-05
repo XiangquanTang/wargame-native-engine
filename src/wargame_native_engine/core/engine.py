@@ -123,7 +123,8 @@ class NativeEngine:
         self._require_side(side)
         friendly = tuple(OperatorObservation.from_state(item)
                          for item in self._friendly(side))
-        visible = tuple(OperatorObservation.from_state(item)
+        visible = tuple(OperatorObservation.from_state(
+                            item, include_raw_attributes=False)
                         for item in self._visible_enemies(side))
         actions = self.valid_actions(side)
         return SideObservation(
@@ -776,6 +777,14 @@ class NativeEngine:
                 "movement_policy_version": self._source_policy.policy_version,
                 "movement_policy_hash": self._source_policy.content_hash,
             }
+        if self._adjudication_tables is not None:
+            value["adjudication_table_set"] = {
+                "adjudication_table_set_id": self._adjudication_tables.table_set_id,
+                "adjudication_table_set_version": (
+                    self._adjudication_tables.table_set_version),
+                "adjudication_table_set_hash": (
+                    self._adjudication_tables.content_hash),
+            }
         return value
 
     def restore(self, snapshot: Mapping[str, Any]) -> WorldState:
@@ -798,6 +807,18 @@ class NativeEngine:
                 raise ValueError("snapshot movement policy mismatch")
         elif movement is not None:
             raise ValueError("snapshot requires source-compatible movement")
+        adjudication = snapshot.get("adjudication_table_set")
+        if self._adjudication_tables is not None:
+            expected_adjudication = {
+                "adjudication_table_set_id": self._adjudication_tables.table_set_id,
+                "adjudication_table_set_version": (
+                    self._adjudication_tables.table_set_version),
+                "adjudication_table_set_hash": self._adjudication_tables.content_hash,
+            }
+            if adjudication != expected_adjudication:
+                raise ValueError("snapshot adjudication table set mismatch")
+        elif adjudication is not None:
+            raise ValueError("snapshot requires source-compatible adjudication")
         self._seed = int(snapshot["seed"])
         self._rng = NativeRNG.restore(snapshot["rng"])
         self._world = WorldState.from_dict(snapshot["world"])
