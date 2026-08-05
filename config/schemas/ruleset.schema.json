@@ -7,7 +7,7 @@
     "schema_version": {"const": "native-ruleset/1.0"},
     "ruleset_id": {"type": "string", "minLength": 1},
     "ruleset_version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
-    "ruleset_type": {"const": "native_simplified"},
+    "ruleset_type": {"enum": ["native_simplified", "historical_replay_calibrated_native_simplified"]},
     "description": {"type": "string", "minLength": 1},
     "minimum_engine_version": {"type": "string"},
     "coordinate_unit": {"type": "string"},
@@ -20,7 +20,9 @@
     "terminal": {"type": "object"},
     "operator_types": {"type": "string"},
     "weapon_types": {"type": "string"},
-    "terrain_types": {"type": "string"}
+    "terrain_types": {"type": "string"},
+    "declared_content_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "calibration_provenance": {"type": "object"}
   },
   "additionalProperties": false
 }

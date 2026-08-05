@@ -1,0 +1,10 @@
+{
+  "schema_version": "native-alignment-weights/1.0",
+  "weights_id": "native-alignment-weights-v1",
+  "weights": {
+    "position": 0.35,
+    "event": 0.20,
+    "terminal": 0.30,
+    "advantage": 0.15
+  }
+}

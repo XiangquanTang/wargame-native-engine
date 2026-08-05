@@ -81,6 +81,7 @@ def load_ruleset(path: str | Path | None = None) -> Ruleset:
     expanded["operator_types"] = operators_doc
     expanded["weapon_types"] = weapons_doc
     expanded["terrain_types"] = terrain_doc
+    declared_hash = expanded.pop("declared_content_hash", None)
     canonical_content = tuple(sorted(expanded.items()))
     rules = Ruleset(
         ruleset_id=str(root["ruleset_id"]),
@@ -158,6 +159,8 @@ def load_ruleset(path: str | Path | None = None) -> Ruleset:
         _canonical_content=canonical_content,
     )
     _validate_semantics(rules)
+    if declared_hash is not None and str(declared_hash) != rules.content_hash:
+        raise ValueError("declared ruleset content hash mismatch")
     return rules
 
 
@@ -196,8 +199,10 @@ def _validate_ruleset_root(value: Mapping[str, Any]) -> None:
         raise ValueError(f"ruleset missing required fields: {missing}")
     if value["schema_version"] != "native-ruleset/1.0":
         raise ValueError("unsupported ruleset schema")
-    if value["ruleset_type"] != "native_simplified":
-        raise ValueError("ruleset_type must be native_simplified")
+    if value["ruleset_type"] not in {
+            "native_simplified",
+            "historical_replay_calibrated_native_simplified"}:
+        raise ValueError("unsupported transparent native ruleset_type")
 
 
 def _validate_profile_document(value: Mapping[str, Any], kind: str) -> None:

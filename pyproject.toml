@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "wargame-native-engine"
-version = "0.2.0"
+version = "0.3.0"
 description = "A transparent, deterministic, SDK-independent native wargame engine"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -19,6 +19,10 @@ dev = ["pytest>=7"]
 wargame-native-run = "wargame_native_engine.cli.run_game:main"
 wargame-native-fairness = "wargame_native_engine.cli.evaluate_fairness:main"
 wargame-native-import = "wargame_native_engine.cli.import_scenario:main"
+wargame-native-import-history = "wargame_native_engine.cli.import_historical_replay:main"
+wargame-native-align = "wargame_native_engine.cli.align_replay:main"
+wargame-native-calibrate = "wargame_native_engine.cli.calibrate_rules:main"
+wargame-native-evaluate-calibrated = "wargame_native_engine.cli.evaluate_calibrated_rules:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

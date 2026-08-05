@@ -1,0 +1,34 @@
+{
+  "schema_version": "native-parameter-space/1.0",
+  "parameter_space_id": "native-replay-parameters-v1",
+  "search_method": "grid_search",
+  "parameters": [
+    {
+      "parameter": "movement.operator_type_ranges.ground_unit",
+      "type": "float",
+      "minimum": 1.5,
+      "maximum": 2.0,
+      "step": 0.5,
+      "baseline": 1.5,
+      "reason": "Historical movement alignment"
+    },
+    {
+      "parameter": "weapon_types.profiles.1001.attack_range",
+      "type": "float",
+      "minimum": 2.2,
+      "maximum": 3.0,
+      "step": 0.8,
+      "baseline": 2.2,
+      "reason": "Historical first-attack range alignment"
+    },
+    {
+      "parameter": "weapon_types.profiles.1001.damage",
+      "type": "float",
+      "minimum": 10.0,
+      "maximum": 12.0,
+      "step": 2.0,
+      "baseline": 10.0,
+      "reason": "Historical deterministic damage alignment"
+    }
+  ]
+}
