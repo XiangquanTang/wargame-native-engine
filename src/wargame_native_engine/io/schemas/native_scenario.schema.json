@@ -15,7 +15,12 @@
         "width": {"type": "number", "exclusiveMinimum": 0},
         "height": {"type": "number", "exclusiveMinimum": 0},
         "distance_unit": {"type": "string", "minLength": 1},
-        "blocked_positions": {"type": "array", "items": {"$ref": "#/$defs/position"}}
+        "blocked_positions": {"type": "array", "items": {"$ref": "#/$defs/position"}},
+        "hexes": {"type": "array", "items": {"$ref": "#/$defs/hex"}},
+        "hex_size_m": {"type": ["integer", "null"], "minimum": 1},
+        "elevation_unit_m": {"type": ["number", "null"], "exclusiveMinimum": 0},
+        "elevation_kind": {"type": ["string", "null"], "enum": ["LEVEL", "METERS", null]},
+        "roadblocks": {"type": "array", "items": {"type": "integer"}}
       },
       "additionalProperties": false
     },
@@ -37,10 +42,24 @@
       },
       "additionalProperties": false
     },
-    "metadata": {"type": "object"}
+    "metadata": {"type": "object"},
+    "initial_stage": {"type": "string", "enum": ["deployment", "combat"]}
   },
   "$defs": {
     "position": {"type": "array", "prefixItems": [{"type": "number"}, {"type": "number"}], "minItems": 2, "maxItems": 2},
+    "sixIntegers": {"type": "array", "items": {"type": "integer"}, "minItems": 6, "maxItems": 6},
+    "hex": {
+      "type": "object",
+      "required": ["pos", "elev", "cond", "neighbors", "roads", "rivers"],
+      "properties": {
+        "pos": {"type": "integer"}, "elev": {"type": ["number", "null"]},
+        "cond": {"type": ["integer", "string"]},
+        "neighbors": {"$ref": "#/$defs/sixIntegers"},
+        "roads": {"$ref": "#/$defs/sixIntegers"},
+        "rivers": {"$ref": "#/$defs/sixIntegers"}
+      },
+      "additionalProperties": false
+    },
     "operator": {
       "type": "object",
       "required": ["operator_id", "side", "operator_type", "x", "y", "health", "max_health", "max_speed", "move_range", "sensor_range", "state", "alive", "weapon_ids", "attack_range", "attack_damage"],

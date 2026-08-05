@@ -31,6 +31,30 @@ class OperatorState:
     deployed: bool = False
     blood: int | None = None
     max_blood: int | None = None
+    basic_speed: float | None = None
+    current_hex: int | None = None
+    cur_pos_millionths: int = 0
+    move_path: list[int] = field(default_factory=list)
+    movement_mode: str = "NORMAL"
+    stopped: bool = True
+    move_to_stop_remaining_ms: int = 0
+    fatigue_level: int = 0
+    fatigue_recovery_elapsed_ms: int = 0
+    movement_action_id: str | None = None
+    movement_action_sequence: int | None = None
+    movement_stop_requested: bool = False
+    movement_blocked_reason: str | None = None
+    segment_from_hex: int | None = None
+    segment_to_hex: int | None = None
+    segment_elapsed_ms: int = 0
+    segment_traversal_ms: int = 0
+    segment_event_id: str | None = None
+    transition_kind: str | None = None
+    transition_remaining_ms: int = 0
+    weapon_locked: bool = False
+    weapon_unfolded: bool = True
+    weapon_cooldown_remaining_ms: int = 0
+    suppression_remaining_ms: int = 0
 
     def __post_init__(self) -> None:
         if self.operator_id < 0:
@@ -54,14 +78,35 @@ class OperatorState:
             self.alive = False
             self.state = "destroyed"
         self.weapon_ids = [int(item) for item in self.weapon_ids]
+        if self.basic_speed is None:
+            self.basic_speed = self.max_speed
+        if self.basic_speed < 0:
+            raise ValueError("basic_speed must be non-negative")
+        if not 0 <= self.cur_pos_millionths <= 1_000_000:
+            raise ValueError("cur_pos_millionths must be within [0, 1000000]")
+        for name in ("move_to_stop_remaining_ms", "fatigue_level",
+                     "fatigue_recovery_elapsed_ms", "segment_elapsed_ms",
+                     "segment_traversal_ms", "transition_remaining_ms",
+                     "weapon_cooldown_remaining_ms", "suppression_remaining_ms"):
+            if getattr(self, name) < 0:
+                raise ValueError(f"{name} must be non-negative")
+        self.move_path = [int(item) for item in self.move_path]
         self.raw_attributes = json_clone(self.raw_attributes)
 
     @property
     def position(self) -> tuple[float, float]:
         return (self.x, self.y)
 
+    @property
+    def cur_pos(self) -> float:
+        return self.cur_pos_millionths / 1_000_000.0
+
+    @property
+    def moving(self) -> bool:
+        return self.segment_to_hex is not None
+
     def to_dict(self) -> dict[str, Any]:
-        return {
+        value = {
             "operator_id": self.operator_id,
             "side": self.side,
             "operator_type": self.operator_type,
@@ -86,6 +131,34 @@ class OperatorState:
             "blood": self.blood,
             "max_blood": self.max_blood,
         }
+        if self.current_hex is not None:
+            value.update({
+                "basic_speed": self.basic_speed,
+                "current_hex": self.current_hex,
+                "cur_pos_millionths": self.cur_pos_millionths,
+                "move_path": list(self.move_path),
+                "movement_mode": self.movement_mode,
+                "stopped": self.stopped,
+                "move_to_stop_remaining_ms": self.move_to_stop_remaining_ms,
+                "fatigue_level": self.fatigue_level,
+                "fatigue_recovery_elapsed_ms": self.fatigue_recovery_elapsed_ms,
+                "movement_action_id": self.movement_action_id,
+                "movement_action_sequence": self.movement_action_sequence,
+                "movement_stop_requested": self.movement_stop_requested,
+                "movement_blocked_reason": self.movement_blocked_reason,
+                "segment_from_hex": self.segment_from_hex,
+                "segment_to_hex": self.segment_to_hex,
+                "segment_elapsed_ms": self.segment_elapsed_ms,
+                "segment_traversal_ms": self.segment_traversal_ms,
+                "segment_event_id": self.segment_event_id,
+                "transition_kind": self.transition_kind,
+                "transition_remaining_ms": self.transition_remaining_ms,
+                "weapon_locked": self.weapon_locked,
+                "weapon_unfolded": self.weapon_unfolded,
+                "weapon_cooldown_remaining_ms": self.weapon_cooldown_remaining_ms,
+                "suppression_remaining_ms": self.suppression_remaining_ms,
+            })
+        return value
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "OperatorState":
@@ -113,4 +186,34 @@ class OperatorState:
             blood=(None if value.get("blood") is None else int(value["blood"])),
             max_blood=(None if value.get("max_blood") is None
                        else int(value["max_blood"])),
+            basic_speed=(None if value.get("basic_speed") is None
+                         else float(value["basic_speed"])),
+            current_hex=(None if value.get("current_hex") is None
+                         else int(value["current_hex"])),
+            cur_pos_millionths=int(value.get("cur_pos_millionths", 0)),
+            move_path=list(value.get("move_path", [])),
+            movement_mode=str(value.get("movement_mode", "NORMAL")),
+            stopped=bool(value.get("stopped", True)),
+            move_to_stop_remaining_ms=int(value.get("move_to_stop_remaining_ms", 0)),
+            fatigue_level=int(value.get("fatigue_level", 0)),
+            fatigue_recovery_elapsed_ms=int(value.get("fatigue_recovery_elapsed_ms", 0)),
+            movement_action_id=value.get("movement_action_id"),
+            movement_action_sequence=(None if value.get("movement_action_sequence") is None
+                                      else int(value["movement_action_sequence"])),
+            movement_stop_requested=bool(value.get("movement_stop_requested", False)),
+            movement_blocked_reason=value.get("movement_blocked_reason"),
+            segment_from_hex=(None if value.get("segment_from_hex") is None
+                              else int(value["segment_from_hex"])),
+            segment_to_hex=(None if value.get("segment_to_hex") is None
+                            else int(value["segment_to_hex"])),
+            segment_elapsed_ms=int(value.get("segment_elapsed_ms", 0)),
+            segment_traversal_ms=int(value.get("segment_traversal_ms", 0)),
+            segment_event_id=value.get("segment_event_id"),
+            transition_kind=value.get("transition_kind"),
+            transition_remaining_ms=int(value.get("transition_remaining_ms", 0)),
+            weapon_locked=bool(value.get("weapon_locked", False)),
+            weapon_unfolded=bool(value.get("weapon_unfolded", True)),
+            weapon_cooldown_remaining_ms=int(
+                value.get("weapon_cooldown_remaining_ms", 0)),
+            suppression_remaining_ms=int(value.get("suppression_remaining_ms", 0)),
         )

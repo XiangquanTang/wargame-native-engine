@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "wargame-native://source-movement-policy/1.0",
+  "type": "object",
+  "required": [
+    "schema_version", "movement_policy_id", "movement_policy_version",
+    "time_resolution_ms", "hex_size_m", "terrain_codes",
+    "vehicle_terrain_multipliers", "vehicle_slope_multipliers",
+    "road_codes", "mode_multipliers", "personnel_height_threshold_m",
+    "personnel_high_difference_multiplier", "fatigue_recovery_seconds",
+    "transition_seconds", "suppression_seconds",
+    "friendly_ground_stack_limit", "unknown_terrain_policy",
+    "unknown_elevation_unit_policy", "path_completion_policy", "event_order"
+  ],
+  "properties": {
+    "schema_version": {"const": "native-source-movement-policy/1.0"},
+    "movement_policy_id": {"type": "string", "minLength": 1},
+    "movement_policy_version": {"type": "string", "minLength": 1},
+    "description": {"type": "string"},
+    "time_resolution_ms": {"type": "integer", "minimum": 1},
+    "hex_size_m": {
+      "type": "object",
+      "required": ["value", "status", "basis"],
+      "properties": {
+        "value": {"type": "integer", "minimum": 1},
+        "status": {"const": "DERIVED_SOURCE_PARAMETER"},
+        "basis": {"type": "array", "minItems": 1, "items": {"type": "string"}}
+      },
+      "additionalProperties": false
+    },
+    "terrain_codes": {"type": "object"},
+    "vehicle_terrain_multipliers": {"type": "object"},
+    "vehicle_slope_multipliers": {"type": "object"},
+    "road_codes": {"type": "object"},
+    "mode_multipliers": {"type": "object"},
+    "personnel_height_threshold_m": {"type": "number", "minimum": 0},
+    "personnel_high_difference_multiplier": {"$ref": "#/$defs/fraction"},
+    "fatigue_recovery_seconds": {"type": "integer", "minimum": 1},
+    "transition_seconds": {"type": "integer", "minimum": 1},
+    "suppression_seconds": {"type": "integer", "minimum": 1},
+    "friendly_ground_stack_limit": {"type": "integer", "minimum": 1},
+    "unknown_terrain_policy": {"const": "REJECT"},
+    "unknown_elevation_unit_policy": {"const": "REJECT"},
+    "path_completion_policy": {"const": "CENTER_TO_CENTER"},
+    "event_order": {"const": ["event_time", "action_sequence", "event_sequence"]}
+  },
+  "$defs": {
+    "fraction": {
+      "type": "array", "prefixItems": [
+        {"type": "integer", "minimum": 0},
+        {"type": "integer", "minimum": 1}
+      ], "minItems": 2, "maxItems": 2
+    }
+  },
+  "additionalProperties": false
+}

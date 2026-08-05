@@ -1,0 +1,56 @@
+{
+  "schema_version": "native-source-movement-policy/1.0",
+  "movement_policy_id": "native-source-compatible-movement",
+  "movement_policy_version": "1.0.0",
+  "description": "Transparent Native simplified segment-movement policy for source-compatible frames",
+  "time_resolution_ms": 1,
+  "hex_size_m": {
+    "value": 200,
+    "status": "DERIVED_SOURCE_PARAMETER",
+    "basis": ["4 km = 20 hexes", "10 km = 50 hexes"]
+  },
+  "terrain_codes": {
+    "0": "NORMAL",
+    "1": "FOREST",
+    "2": "SETTLEMENT",
+    "3": "SOFT_GROUND",
+    "4": "LARGE_RIVER",
+    "5": "ROADBLOCK"
+  },
+  "vehicle_terrain_multipliers": {
+    "NORMAL": [1, 1],
+    "FOREST": [1, 2],
+    "SETTLEMENT": [1, 3],
+    "SMALL_RIVER": [1, 2],
+    "LARGE_RIVER": [1, 4],
+    "SOFT_GROUND": [1, 4]
+  },
+  "vehicle_slope_multipliers": {
+    "0": [1, 1],
+    "1": [1, 1],
+    "2": [1, 2],
+    "3": [1, 3],
+    "4": [1, 4],
+    "5": [1, 5]
+  },
+  "road_codes": {
+    "1": {"road_type": "RURAL", "march_speed_kph": 40},
+    "2": {"road_type": "GENERAL", "march_speed_kph": 60},
+    "3": {"road_type": "GRADED", "march_speed_kph": 90}
+  },
+  "mode_multipliers": {
+    "NORMAL": [1, 1],
+    "CHARGE_1": [2, 1],
+    "CHARGE_2": [4, 1]
+  },
+  "personnel_height_threshold_m": 60,
+  "personnel_high_difference_multiplier": [1, 2],
+  "fatigue_recovery_seconds": 75,
+  "transition_seconds": 75,
+  "suppression_seconds": 150,
+  "friendly_ground_stack_limit": 4,
+  "unknown_terrain_policy": "REJECT",
+  "unknown_elevation_unit_policy": "REJECT",
+  "path_completion_policy": "CENTER_TO_CENTER",
+  "event_order": ["event_time", "action_sequence", "event_sequence"]
+}
