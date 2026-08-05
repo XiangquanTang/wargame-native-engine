@@ -238,6 +238,13 @@ class HistoricalReplayImporter:
                     output_dir: str | Path | None = None) -> HistoricalImportResult:
         path = Path(source)
         before = _source_hash(path)
+        if path.is_file() and path.suffix.lower() == ".zip":
+            result = self._import_source_archive(path)
+            if _source_hash(path) != before:
+                raise RuntimeError("historical source replay changed during import")
+            if output_dir is not None:
+                result.write(output_dir)
+            return result
         if path.is_dir() and not (path / "manifest.json").exists():
             index_path = path / "index.json"
             if not index_path.exists():
@@ -281,6 +288,107 @@ class HistoricalReplayImporter:
         if output_dir is not None:
             result.write(output_dir)
         return result
+
+    def _import_source_archive(self, source: Path) -> HistoricalImportResult:
+        from wargame_native_engine.io.importers.source_replay_archive import (
+            SourceReplayArchiveImporter,
+        )
+        archive = SourceReplayArchiveImporter().import_path(source)
+        frames: list[HistoricalFrame] = []
+        for frame in archive.frames:
+            operators = []
+            for unit in sorted(frame.all_units, key=lambda item: item.obj_id):
+                row, column = unit.row_col
+                side = "red" if unit.color == 0 else "blue" if unit.color == 1 else "unknown"
+                health = 100.0 * unit.blood / unit.max_blood
+                mapping = {
+                    "operator_id": MappingStatus.DIRECT.value,
+                    "side": MappingStatus.NORMALIZED.value,
+                    "operator_type": MappingStatus.NORMALIZED.value,
+                    "position": MappingStatus.NORMALIZED.value,
+                    "health": MappingStatus.DERIVED.value,
+                    "alive": MappingStatus.DERIVED.value,
+                    "state": MappingStatus.NORMALIZED.value,
+                }
+                normalized = {
+                    "position": {"x": float(column), "y": float(row)},
+                    "health": health, "alive": unit.alive,
+                    "state": "MOVING" if not unit.stopped else "STOPPED",
+                }
+                operators.append(HistoricalOperatorState(
+                    operator_id=unit.obj_id, side=side,
+                    operator_type=f"source-type-{unit.type_code}",
+                    x=float(column), y=float(row), health=health,
+                    max_health=100.0, alive=unit.alive,
+                    state=str(normalized["state"]),
+                    weapon_ids=unit.carry_weapon_ids,
+                    field_mapping=mapping, source_raw=json_clone(unit.raw),
+                    normalized_historical=normalized,
+                    native_comparable={**normalized,
+                                       "mapping_status": mapping},
+                ))
+            frames.append(HistoricalFrame(
+                historical_time=float(frame.time.cur_step),
+                operators=tuple(operators), source_raw=frame.to_dict()))
+        actions: list[HistoricalAction] = []
+        for step in archive.steps:
+            for action in step.get("ordered_actions", []):
+                if not isinstance(action, Mapping) or action.get("actor_id") is None:
+                    continue
+                position = action.get("target_position")
+                actions.append(HistoricalAction(
+                    historical_time=float(step.get("step_index", 0)),
+                    side=str(action["side"]), actor_id=int(action["actor_id"]),
+                    action_type=str(action["action_type"]),
+                    target_id=(None if action.get("target_id") is None
+                               else int(action["target_id"])),
+                    target_position=(None if position is None else
+                                     (float(position[0]), float(position[1]))),
+                    parameters=json_clone(action.get("parameters", {})),
+                    mapping_status=MappingStatus.DIRECT.value,
+                    source_kind="NATIVE_STEP", execution_status="CONFIRMED",
+                    executable=True, source_raw=json_clone(action),
+                ))
+        manifest = archive.manifest
+        final = archive.frames[-1]
+        survivor_counts: dict[str, int] = {}
+        for unit in final.all_units:
+            if not unit.alive:
+                continue
+            side = "red" if unit.color == 0 else "blue" if unit.color == 1 else "unknown"
+            survivor_counts[side] = survivor_counts.get(side, 0) + 1
+        summary_raw = {
+            "terminal": manifest.get("termination"),
+            "truncated": manifest.get("truncated"),
+            "winner": manifest.get("winner"),
+            "terminal_reason": manifest.get("termination_reason"),
+            "terminal_time": final.time.cur_step,
+            "final_survivors": survivor_counts,
+            "cumulative_damage": {},
+        }
+        summary = self._summary(summary_raw)
+        evidence = detect_evidence_level(frames, actions, (), summary_raw)
+        replay = HistoricalReplay(
+            replay_id=str(manifest.get("episode_id", source.stem)),
+            source_format=str(manifest.get(
+                "replay_format", "source-numbered-frames/unknown")),
+            source_hash=archive.source_hash, evidence_level=evidence,
+            scenario_id=archive.frames[0].scenario_id,
+            map_id=str(archive.frames[0].terrain_id),
+            time_unit="source_cur_step", coordinate_unit="source_hex",
+            frames=tuple(frames), actions=tuple(actions), events=(),
+            advantage_curve=(), summary=summary,
+            metadata={"source_archive_manifest": json_clone(manifest),
+                      "frame_names": list(archive.frame_names),
+                      "native_sidecars_ignored_as_frames": [
+                          "steps.jsonl", "replay_manifest.native.jsonl"]},
+            warnings=archive.warnings,
+        )
+        return HistoricalImportResult(
+            replay, self._manifest(replay, source),
+            {"fields": [], "note": (
+                "numbered Source-compatible frames imported; JSONL sidecars "
+                "were not treated as frames")})
 
     def _import_reduced(self, root: Path, manifest: Mapping[str, Any],
                         source_hash: str) -> HistoricalImportResult:

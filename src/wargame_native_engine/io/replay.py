@@ -231,3 +231,64 @@ def replay_actions(scenario: NativeScenario, root: str | Path, *,
     engine.close()
     return ReplayVerification(expected_hash == actual.world_hash, expected_hash,
                               actual.world_hash, actual.ticks)
+
+
+def replay_source_archive(scenario: NativeScenario, source: str | Path, *,
+                          ruleset: Ruleset | str | Path | None = None,
+                          strict: bool = True) -> ReplayVerification:
+    """Strictly replay Native steps embedded beside numbered GREEN frames."""
+    from wargame_native_engine.io.importers.source_replay_archive import (
+        SourceReplayArchiveImporter,
+    )
+    archive = SourceReplayArchiveImporter().import_path(source)
+    manifest = archive.manifest
+    active_ruleset = (ruleset if isinstance(ruleset, Ruleset)
+                      else load_ruleset(ruleset))
+    expected = {
+        "scenario_id": scenario.scenario_id,
+        "scenario_hash": scenario.scenario_hash,
+        "ruleset_id": active_ruleset.ruleset_id,
+        "ruleset_version": active_ruleset.ruleset_version,
+        "ruleset_hash": active_ruleset.content_hash,
+        "perspective": "GREEN",
+    }
+    mismatches = [name for name, value in expected.items()
+                  if manifest.get(name) != value]
+    if not archive.steps:
+        mismatches.append("steps.jsonl")
+    if mismatches:
+        message = "source replay compatibility mismatch: " + ", ".join(
+            sorted(set(mismatches)))
+        if strict:
+            raise ValueError(message)
+        warnings.warn(message + "; continuing in non-strict mode", RuntimeWarning,
+                      stacklevel=2)
+    engine = NativeEngine(
+        scenario, max_ticks=int(manifest.get(
+            "max_ticks", scenario.terminal_rules.max_ticks)),
+        ruleset=active_ruleset)
+    engine.reset(int(manifest["episode_seed"]))
+    for record in archive.steps:
+        if engine.is_terminal():
+            break
+        ordered = [EngineAction.from_dict(value)
+                   for value in record.get("ordered_actions", [])]
+        result = engine.step(
+            ordered,
+            delta_time_seconds=int(record["delta_time_ms"]) / 1000)
+        actual_step_hash = canonical_hash(engine.snapshot()["world"])
+        expected_step_hash = str(record["expected_state_hash"])
+        if strict and actual_step_hash != expected_step_hash:
+            engine.close()
+            raise ValueError(
+                f"source replay state hash mismatch at step {record.get('step_index')}")
+        if strict and result.action_sequences != tuple(
+                int(value) for value in record.get("action_sequences", [])):
+            engine.close()
+            raise ValueError(
+                f"source replay action sequence mismatch at step {record.get('step_index')}")
+    actual = engine.result()
+    expected_hash = str(manifest["final_state_hash"])
+    engine.close()
+    return ReplayVerification(expected_hash == actual.world_hash, expected_hash,
+                              actual.world_hash, actual.ticks)

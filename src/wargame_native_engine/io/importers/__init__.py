@@ -7,9 +7,12 @@ from wargame_native_engine.io.importers.historical_replay import (
     EvidenceLevel, HistoricalReplay, HistoricalReplayImporter, MappingStatus,
     load_historical_replay,
 )
+from wargame_native_engine.io.importers.source_replay_archive import (
+    SourceReplayArchive, SourceReplayArchiveImporter,
+)
 
 __all__ = [
     "EvidenceLevel", "HistoricalReplay", "HistoricalReplayImporter",
     "LegacyScenarioImporter", "MappingStatus", "MigrationResult",
-    "load_historical_replay",
+    "SourceReplayArchive", "SourceReplayArchiveImporter", "load_historical_replay",
 ]
