@@ -24,6 +24,11 @@ class NativeRNG:
         self.draws += 1
         return self.state / float(1 << 64)
 
+    def randbelow(self, upper: int) -> int:
+        if upper < 1:
+            raise ValueError("upper must be positive")
+        return min(int(self.random() * upper), upper - 1)
+
     def snapshot(self) -> dict[str, int]:
         return {"seed": int(self.seed), "state": self.state, "draws": self.draws}
 

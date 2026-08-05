@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from pathlib import Path
 from typing import Any, Mapping
 
 from wargame_native_engine.core.action import (
     ACTION_PRIORITY, ActionDecision, ActionType, EngineAction, ValidAction,
     valid_action_sort_key,
 )
-from wargame_native_engine.core.event import EngineEvent, EventType
+from wargame_native_engine.core.event import EngineEvent, EventType, event_sort_key
 from wargame_native_engine.core.observation import (
     OperatorObservation, SideObservation, objective_view,
 )
@@ -16,6 +17,7 @@ from wargame_native_engine.core.rng import NativeRNG
 from wargame_native_engine.core.world import Stage, WorldState
 from wargame_native_engine.io.scenario import NativeScenario
 from wargame_native_engine.io.serialization import canonical_hash
+from wargame_native_engine.rules.config import Ruleset, load_ruleset
 from wargame_native_engine.rules.terminal_rules import TerminalRules
 from wargame_native_engine.systems.combat import validate_attack
 from wargame_native_engine.systems.damage import apply_damage
@@ -25,20 +27,26 @@ from wargame_native_engine.systems.movement import (
 )
 from wargame_native_engine.systems.terminal import evaluate_terminal
 from wargame_native_engine.systems.visibility import can_see
-from wargame_native_engine.version import RULESET_VERSION
 
 
 class NativeEngine:
     """Authoritative runtime for the documented Native simplified rules."""
 
     def __init__(self, scenario: NativeScenario, *,
-                 max_ticks: int | None = None) -> None:
+                 max_ticks: int | None = None,
+                 ruleset: Ruleset | str | Path | None = None) -> None:
         self.scenario = scenario
+        self.ruleset = (ruleset if isinstance(ruleset, Ruleset)
+                        else load_ruleset(ruleset))
         self.terminal_rules = TerminalRules(
             max_ticks=(scenario.terminal_rules.max_ticks if max_ticks is None
                        else int(max_ticks)),
             elimination=scenario.terminal_rules.elimination,
             objective_score_to_win=scenario.terminal_rules.objective_score_to_win,
+            mission_score_enabled=self.ruleset.terminal.mission_score_enabled,
+            mutual_elimination_result=self.ruleset.terminal.mutual_elimination_result,
+            tie_result=self.ruleset.terminal.tie_result,
+            evaluation_order=self.ruleset.terminal.evaluation_order,
         )
         self._world: WorldState | None = None
         self._rng: NativeRNG | None = None
@@ -60,7 +68,10 @@ class NativeEngine:
             0, EventType.ENGINE_RESET,
             data={"scenario_id": self.scenario.scenario_id,
                   "scenario_hash": self.scenario.scenario_hash,
-                  "seed": self._seed, "ruleset_version": RULESET_VERSION},
+                  "seed": self._seed,
+                  "ruleset_id": self.ruleset.ruleset_id,
+                  "ruleset_version": self.ruleset.ruleset_version,
+                  "ruleset_hash": self.ruleset.content_hash},
         ),)
         return WorldState.from_dict(self._world.to_dict())
 
@@ -113,23 +124,32 @@ class NativeEngine:
             for operator in self._friendly(side):
                 if not operator.alive or not operator.deployed:
                     continue
-                targets = [item for item in enemies
-                           if validate_attack(operator, item) is None]
+                weapon_id = operator.weapon_ids[0] if operator.weapon_ids else None
+                targets = ([] if weapon_id is None else [
+                    item for item in enemies if validate_attack(
+                        operator, item, combat_rules=self.ruleset.combat,
+                        visibility_rules=self.ruleset.visibility,
+                        weapon_id=weapon_id) is None])
                 for target in sorted(targets, key=lambda item: item.operator_id):
                     action = EngineAction(side, operator.operator_id,
                                           ActionType.ATTACK,
                                           target_id=target.operator_id,
-                                          parameters={"weapon_id": operator.weapon_ids[0]})
+                                          parameters={"weapon_id": weapon_id})
                     values.append(ValidAction(action, ACTION_PRIORITY[action.action_type]))
                 if not targets and enemies:
                     target = min(enemies, key=lambda item: (
                         distance(operator.position, item.position), item.operator_id))
-                    limit = min(operator.move_range, operator.max_speed)
+                    configured_range = self.ruleset.movement.for_operator(operator)
+                    limit = min(configured_range,
+                                operator.max_speed or configured_range)
                     destination = move_toward(operator.position, target.position, limit)
                     if destination != operator.position and validate_move(
                         operator, destination, width=self.scenario.map.width,
                         height=self.scenario.map.height,
                         blocked_positions=self.scenario.map.blocked_positions,
+                        rules=self.ruleset.movement,
+                        occupied_positions=self._occupied_positions(
+                            exclude=operator.operator_id),
                     ) is None:
                         action = EngineAction(side, operator.operator_id,
                                               ActionType.MOVE,
@@ -185,6 +205,11 @@ class NativeEngine:
                                                 "accepted for native resolution"))
                 accepted.append(action)
 
+        accepted.sort(key=lambda item: (
+            ACTION_PRIORITY[item.action_type], item.side,
+            -1 if item.actor_id is None else item.actor_id,
+            -1 if item.target_id is None else item.target_id,
+            item.action_id))
         for action in accepted:
             if action.action_type is ActionType.DEPLOY:
                 self._apply_deploy(action, events)
@@ -221,16 +246,19 @@ class NativeEngine:
                 {"action_id": action.action_id,
                  "weapon_id": action.parameters.get("weapon_id")},
             ))
-            damage[target.operator_id] += attacker.attack_damage
+            weapon_id = int(action.parameters["weapon_id"])
+            attack_damage = self.ruleset.combat.damage(attacker, weapon_id)
+            damage[target.operator_id] += attack_damage
             attackers[target.operator_id].append(attacker.operator_id)
             events.append(EngineEvent(
                 tick_before, EventType.TARGET_HIT, action.side,
                 attacker.operator_id, target.operator_id,
-                {"damage": attacker.attack_damage},
+                {"damage": attack_damage},
             ))
         for target_id in sorted(damage):
             target = world.operators[target_id]
-            before, after, destroyed = apply_damage(target, damage[target_id])
+            before, after, destroyed = apply_damage(
+                target, damage[target_id], self.ruleset.combat)
             events.append(EngineEvent(
                 tick_before, EventType.OPERATOR_DAMAGED, target.side,
                 target_id=target_id,
@@ -246,7 +274,8 @@ class NativeEngine:
                 ))
 
         world.tick += 1
-        if world.stage is Stage.COMBAT:
+        if (world.stage is Stage.COMBAT
+                and self.ruleset.terminal.mission_score_enabled):
             self._score_objectives(events)
         terminal = evaluate_terminal(world, self.terminal_rules,
                                      self.scenario.side_order)
@@ -264,9 +293,15 @@ class NativeEngine:
                 data={"reason": terminal.reason,
                       "winner": terminal.winner},
             ))
+        events.sort(key=event_sort_key)
         self._last_events = tuple(events)
         return StepResult(tick_before, world.tick, stage_before, world.stage,
-                          tuple(submitted), tuple(decisions), tuple(events),
+                          tuple(sorted(submitted, key=lambda item: (
+                              item.side, item.actor_id is None,
+                              -1 if item.actor_id is None else item.actor_id,
+                              item.action_id))),
+                          tuple(sorted(decisions, key=lambda item: item.action_id)),
+                          tuple(events),
                           world.terminal, world.truncated)
 
     def is_terminal(self) -> bool:
@@ -287,7 +322,9 @@ class NativeEngine:
             reason=world.terminal_reason, final_stage=world.stage,
             ticks=world.tick, action_counts=dict(self._action_counts),
             error_counts=dict(self._error_counts), seed=self._seed,
-            ruleset_version=RULESET_VERSION,
+            ruleset_id=self.ruleset.ruleset_id,
+            ruleset_version=self.ruleset.ruleset_version,
+            ruleset_hash=self.ruleset.content_hash,
             world_hash=canonical_hash(world.to_dict()),
         )
 
@@ -296,9 +333,11 @@ class NativeEngine:
         if self._rng is None:
             raise RuntimeError("engine_not_reset")
         return {
-            "schema_version": "native-snapshot/1.0",
+            "schema_version": "native-snapshot/2.0",
             "scenario_hash": self.scenario.scenario_hash,
-            "ruleset_version": RULESET_VERSION,
+            "ruleset_id": self.ruleset.ruleset_id,
+            "ruleset_version": self.ruleset.ruleset_version,
+            "ruleset_hash": self.ruleset.content_hash,
             "seed": self._seed, "rng": self._rng.snapshot(),
             "world": world.to_dict(),
             "action_counts": dict(self._action_counts),
@@ -308,11 +347,13 @@ class NativeEngine:
     def restore(self, snapshot: Mapping[str, Any]) -> WorldState:
         if self._closed:
             raise RuntimeError("engine_closed")
-        if snapshot.get("schema_version") != "native-snapshot/1.0":
+        if snapshot.get("schema_version") != "native-snapshot/2.0":
             raise ValueError("unsupported snapshot schema")
         if snapshot.get("scenario_hash") != self.scenario.scenario_hash:
             raise ValueError("snapshot scenario hash mismatch")
-        if snapshot.get("ruleset_version") != RULESET_VERSION:
+        if (snapshot.get("ruleset_id") != self.ruleset.ruleset_id
+                or snapshot.get("ruleset_version") != self.ruleset.ruleset_version
+                or snapshot.get("ruleset_hash") != self.ruleset.content_hash):
             raise ValueError("snapshot ruleset mismatch")
         self._seed = int(snapshot["seed"])
         self._rng = NativeRNG.restore(snapshot["rng"])
@@ -342,6 +383,9 @@ class NativeEngine:
             position, width=self.scenario.map.width,
             height=self.scenario.map.height,
             blocked_positions=self.scenario.map.blocked_positions,
+            rules=self.ruleset.movement,
+            occupied_positions=self._occupied_positions(
+                exclude=operator.operator_id),
         )
         if error is not None:
             raise RuntimeError(f"validated deploy failed:{error}")
@@ -366,6 +410,9 @@ class NativeEngine:
             operator, position, width=self.scenario.map.width,
             height=self.scenario.map.height,
             blocked_positions=self.scenario.map.blocked_positions,
+            rules=self.ruleset.movement,
+            occupied_positions=self._occupied_positions(
+                exclude=operator.operator_id),
         )
         if error is not None:
             raise RuntimeError(f"validated move failed:{error}")
@@ -399,7 +446,8 @@ class NativeEngine:
             occupying = {operator.side for operator in world.operators.values()
                          if operator.alive and operator.deployed
                          and distance(operator.position, (objective.x, objective.y))
-                         <= objective.radius + 1e-9}
+                         <= objective.radius
+                         + self.ruleset.movement.float_tolerance}
             controller = next(iter(occupying)) if len(occupying) == 1 else None
             if controller != objective.controlling_side:
                 objective.controlling_side = controller
@@ -421,8 +469,15 @@ class NativeEngine:
         friendly = self._friendly(side)
         return sorted((target for target in world.operators.values()
                        if target.side != side
-                       and any(can_see(observer, target) for observer in friendly)),
+                       and any(can_see(observer, target, self.ruleset.visibility)
+                               for observer in friendly)),
                       key=lambda item: item.operator_id)
+
+    def _occupied_positions(self, *, exclude: int) -> tuple[tuple[float, float], ...]:
+        world = self._require_world()
+        return tuple(sorted(item.position for item in world.operators.values()
+                            if item.operator_id != exclude and item.deployed
+                            and item.alive))
 
     def _require_world(self) -> WorldState:
         if self._world is None:

@@ -71,6 +71,9 @@
   },
   "metadata": {
     "rules_label": "Native simplified rules",
-    "description": "Synthetic two-unit CI scenario; no restricted data"
+    "description": "Synthetic two-unit CI scenario; no restricted data",
+    "ruleset_id": "native-default",
+    "ruleset_version": "1.0.0",
+    "ruleset_hash": "e971fbbfac1e70d318e97f4f8646825f4d898640ebd2b2676310d398e500f3d1"
   }
 }

@@ -44,7 +44,9 @@ class GameResult:
     action_counts: Mapping[str, int] = field(default_factory=dict)
     error_counts: Mapping[str, int] = field(default_factory=dict)
     seed: int = 0
-    ruleset_version: str = "native-simplified/1.0"
+    ruleset_id: str = "native-default"
+    ruleset_version: str = "1.0.0"
+    ruleset_hash: str = ""
     world_hash: str = ""
 
     def to_dict(self) -> dict[str, Any]:
@@ -57,5 +59,7 @@ class GameResult:
                            "action_counts": self.action_counts,
                            "error_counts": self.error_counts,
                            "seed": self.seed,
+                           "ruleset_id": self.ruleset_id,
                            "ruleset_version": self.ruleset_version,
+                           "ruleset_hash": self.ruleset_hash,
                            "world_hash": self.world_hash})

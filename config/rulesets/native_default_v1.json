@@ -1,0 +1,77 @@
+{
+  "schema_version": "native-ruleset/1.0",
+  "ruleset_id": "native-default",
+  "ruleset_version": "1.0.0",
+  "ruleset_type": "native_simplified",
+  "description": "Transparent simplified rules for native engine experiments",
+  "minimum_engine_version": "0.2.0",
+  "coordinate_unit": "m",
+  "deterministic": true,
+  "random_rules": {
+    "generator": "NativeRNG",
+    "hit_resolution": "no_random_draw",
+    "agent_seed_scope": "per_side"
+  },
+  "timing": {
+    "tick_duration": 1.0,
+    "tick_unit": "native_tick",
+    "deployment_simultaneous": true,
+    "combat_simultaneous": true,
+    "wait_allowed": true,
+    "no_progress_ticks": null
+  },
+  "movement": {
+    "default_move_range": 1.5,
+    "operator_type_ranges": {
+      "ground_unit": 1.5,
+      "recon_unit": 2.0,
+      "support_unit": 1.0
+    },
+    "boundary_policy": "reject",
+    "impassable_terrain": ["blocked"],
+    "terrain_multipliers": {"open": 1.0, "rough": 0.75, "blocked": 0.0},
+    "allow_position_overlap": true,
+    "minimum_unit_spacing": 0.0,
+    "float_tolerance": 1e-09
+  },
+  "visibility": {
+    "default_sensor_range": 10.0,
+    "operator_type_ranges": {
+      "ground_unit": 10.0,
+      "recon_unit": 12.0,
+      "support_unit": 8.0
+    },
+    "friendly_always_visible": true,
+    "enemy_condition": "alive_deployed_within_sensor_radius",
+    "distance_method": "euclidean_2d",
+    "inclusive_boundary": true,
+    "occlusion_enabled": false,
+    "elevation_enabled": false,
+    "concealment_enabled": false
+  },
+  "combat": {
+    "default_attack_range": 2.2,
+    "default_damage": 10.0,
+    "deterministic_hits": true,
+    "consume_ammunition": false,
+    "simultaneous_damage": true,
+    "destroyed_actor_executes_submitted_action": true,
+    "multi_attack_resolution": "aggregate_then_apply",
+    "invalidated_target_policy": "committed_target_receives_damage",
+    "minimum_health": 0.0,
+    "destroyed_threshold": 0.0,
+    "float_tolerance": 1e-09
+  },
+  "terminal": {
+    "max_ticks": 500,
+    "elimination": true,
+    "objective_score_to_win": null,
+    "mission_score_enabled": true,
+    "mutual_elimination_result": "draw",
+    "tie_result": "draw",
+    "evaluation_order": ["elimination", "objective", "max_ticks"]
+  },
+  "operator_types": "../operators/operator_types.json",
+  "weapon_types": "../weapons/weapon_types.json",
+  "terrain_types": "../terrain/terrain_types.json"
+}

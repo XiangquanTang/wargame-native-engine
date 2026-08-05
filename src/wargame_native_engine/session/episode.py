@@ -11,15 +11,15 @@ from wargame_native_engine.agents.protocol import (
 from wargame_native_engine.io.replay import ReplayWriter
 from wargame_native_engine.io.serialization import canonical_hash
 from wargame_native_engine.session.game_session import GameSession
-from wargame_native_engine.version import RULESET_VERSION
 
 
 def make_run_id(*, scenario_hash: str, seed: int,
-                agents: Mapping[str, str], max_ticks: int) -> str:
+                agents: Mapping[str, str], max_ticks: int,
+                ruleset_hash: str = "") -> str:
     return "run-" + canonical_hash({
         "scenario_hash": scenario_hash, "seed": int(seed),
         "agents": dict(agents), "max_ticks": int(max_ticks),
-        "ruleset_version": RULESET_VERSION,
+        "ruleset_hash": ruleset_hash,
     })[:20]
 
 
@@ -53,10 +53,13 @@ class EpisodeRunner:
         started = time.monotonic()
         agent_ids = {side: self.agents[side].agent_id
                      for side in self.session.scenario.side_order}
+        agent_seeds = {side: getattr(self.agents[side], "seed", None)
+                       for side in self.session.scenario.side_order}
         max_ticks = self.session.max_ticks
         run_id = make_run_id(
             scenario_hash=self.session.scenario.scenario_hash, seed=seed,
             agents=agent_ids, max_ticks=max_ticks,
+            ruleset_hash=self.session.backend.ruleset.content_hash,
         )
         writer: ReplayWriter | None = None
         failure: BaseException | None = None
@@ -67,13 +70,15 @@ class EpisodeRunner:
                 self.output_dir, run_id=run_id,
                 scenario=self.session.scenario, seed=seed,
                 agents=agent_ids, max_ticks=max_ticks,
+                ruleset=self.session.backend.ruleset,
+                agent_seeds=agent_seeds,
                 project_commit=self.project_commit,
             )
             writer.record_initial_state(self.session.snapshot())
             for side in self.session.scenario.side_order:
                 self.agents[side].reset(AgentResetContext(
                     self.session.session_id, self.session.scenario.scenario_id,
-                    side, seed, RULESET_VERSION,
+                    side, seed, self.session.backend.ruleset.ruleset_version,
                 ))
             while not self.session.is_terminal():
                 batch: dict[str, AgentAction | None] = {}

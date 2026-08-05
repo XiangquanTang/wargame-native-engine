@@ -1,0 +1,10 @@
+{
+  "schema_version": "native-terrain-types/1.0",
+  "config_id": "native-terrain-types",
+  "config_version": "1.0.0",
+  "profiles": {
+    "open": {"passable": true, "movement_multiplier": 1.0},
+    "rough": {"passable": true, "movement_multiplier": 0.75},
+    "blocked": {"passable": false, "movement_multiplier": 0.0}
+  }
+}

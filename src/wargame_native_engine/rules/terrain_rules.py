@@ -3,4 +3,7 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True, slots=True)
 class TerrainRules:
-    blocked_tolerance: float = 1e-9
+    profiles: tuple[tuple[str, tuple[tuple[str, object], ...]], ...]
+
+    def profile(self, terrain_type: str) -> dict[str, object]:
+        return dict(dict(self.profiles).get(terrain_type, ()))

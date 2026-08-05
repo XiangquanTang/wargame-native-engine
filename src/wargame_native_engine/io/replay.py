@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 from typing import Any, Mapping
+import warnings
 
 from wargame_native_engine.core.action import EngineAction
 from wargame_native_engine.core.engine import NativeEngine
@@ -13,17 +14,20 @@ from wargame_native_engine.io.scenario import NativeScenario
 from wargame_native_engine.io.serialization import (
     canonical_hash, file_sha256, json_clone,
 )
-from wargame_native_engine.version import ENGINE_VERSION, RULESET_VERSION
+from wargame_native_engine.rules.config import Ruleset, load_ruleset
+from wargame_native_engine.version import ENGINE_VERSION
 
 
-REPLAY_SCHEMA_VERSION = "native-replay/1.0"
+REPLAY_SCHEMA_VERSION = "native-replay/2.0"
 
 
 class ReplayWriter:
     def __init__(self, root: str | Path, *, run_id: str,
                  scenario: NativeScenario, seed: int,
                  agents: Mapping[str, str], max_ticks: int,
-                 project_commit: str | None) -> None:
+                 ruleset: Ruleset,
+                 project_commit: str | None,
+                 agent_seeds: Mapping[str, int | None] | None = None) -> None:
         self.root = Path(root)
         if self.root.exists() and any(self.root.iterdir()):
             raise FileExistsError(f"refusing to overwrite non-empty replay: {self.root}")
@@ -34,7 +38,9 @@ class ReplayWriter:
         self.manifest: dict[str, Any] = {
             "schema_version": REPLAY_SCHEMA_VERSION,
             "engine_version": ENGINE_VERSION,
-            "ruleset_version": RULESET_VERSION,
+            "ruleset_id": ruleset.ruleset_id,
+            "ruleset_version": ruleset.ruleset_version,
+            "ruleset_hash": ruleset.content_hash,
             "run_id": run_id,
             "scenario_id": scenario.scenario_id,
             "scenario_hash": scenario.scenario_hash,
@@ -42,6 +48,7 @@ class ReplayWriter:
             "seed": int(seed),
             "max_ticks": int(max_ticks),
             "agents": dict(agents),
+            "agent_seeds": dict(agent_seeds or {}),
             "project_commit": project_commit,
             "started_at": datetime.now(timezone.utc).isoformat(),
             "status": "running",
@@ -148,14 +155,38 @@ class ReplayVerification:
     ticks: int
 
 
-def replay_actions(scenario: NativeScenario,
-                   root: str | Path) -> ReplayVerification:
+def replay_actions(scenario: NativeScenario, root: str | Path, *,
+                   ruleset: Ruleset | str | Path | None = None,
+                   strict: bool = True,
+                   seed: int | None = None) -> ReplayVerification:
     bundle = ReplayReader().read(root)
-    if bundle["manifest"]["scenario_hash"] != scenario.scenario_hash:
-        raise ValueError("replay scenario hash mismatch")
+    active_ruleset = (ruleset if isinstance(ruleset, Ruleset)
+                      else load_ruleset(ruleset))
+    manifest = bundle["manifest"]
+    mismatches: list[str] = []
+    expected = {
+        "scenario_hash": scenario.scenario_hash,
+        "ruleset_id": active_ruleset.ruleset_id,
+        "ruleset_version": active_ruleset.ruleset_version,
+        "ruleset_hash": active_ruleset.content_hash,
+    }
+    for name, value in expected.items():
+        if manifest.get(name) != value:
+            mismatches.append(name)
+    if bundle["initial_state"].get("seed") != manifest.get("seed"):
+        mismatches.append("seed")
+    if seed is not None and int(manifest.get("seed")) != int(seed):
+        mismatches.append("seed")
+    if mismatches:
+        message = "replay compatibility mismatch: " + ", ".join(sorted(set(mismatches)))
+        if strict:
+            raise ValueError(message)
+        warnings.warn(message + "; continuing in non-strict mode", RuntimeWarning,
+                      stacklevel=2)
     engine = NativeEngine(scenario,
-                          max_ticks=int(bundle["manifest"]["max_ticks"]))
-    engine.reset(int(bundle["manifest"]["seed"]))
+                          max_ticks=int(manifest["max_ticks"]),
+                          ruleset=active_ruleset)
+    engine.reset(int(manifest["seed"]))
     grouped: dict[int, dict[str, EngineAction]] = {}
     for record in bundle["actions"]:
         grouped.setdefault(int(record["tick_before"]), {})[str(record["side"])] = (
@@ -165,7 +196,7 @@ def replay_actions(scenario: NativeScenario,
             break
         engine.step(grouped[tick])
     actual = engine.result()
-    expected = str(bundle["summary"]["result"]["world_hash"])
+    expected_hash = str(bundle["summary"]["result"]["world_hash"])
     engine.close()
-    return ReplayVerification(expected == actual.world_hash, expected,
+    return ReplayVerification(expected_hash == actual.world_hash, expected_hash,
                               actual.world_hash, actual.ticks)

@@ -11,6 +11,7 @@ from wargame_native_engine.agents import (
 )
 from wargame_native_engine.backends.native import NativeEngineBackend
 from wargame_native_engine.io.scenario import load_scenario
+from wargame_native_engine.rules.config import default_ruleset_path, load_ruleset
 from wargame_native_engine.session.episode import EpisodeRunner
 from wargame_native_engine.session.game_session import GameSession
 
@@ -19,12 +20,13 @@ def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(
         description="Run one game using Native simplified rules")
     value.add_argument("--scenario", required=True, type=Path)
+    value.add_argument("--ruleset", type=Path, default=default_ruleset_path())
     value.add_argument("--red-agent", default="first-valid",
                        choices=("first-valid", "random-legal"))
     value.add_argument("--blue-agent", default="first-valid",
                        choices=("first-valid", "random-legal"))
     value.add_argument("--seed", type=int, default=42)
-    value.add_argument("--max-ticks", type=int, default=500)
+    value.add_argument("--max-ticks", type=int)
     value.add_argument("--output", type=Path,
                        default=Path("local_data/runs/minimal_demo"))
     return value
@@ -33,12 +35,13 @@ def parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
-        if args.max_ticks < 1:
+        if args.max_ticks is not None and args.max_ticks < 1:
             raise ValueError("max-ticks must be positive")
         _validate_output(args.output)
         scenario = load_scenario(args.scenario)
+        ruleset = load_ruleset(args.ruleset)
         session = GameSession(NativeEngineBackend(
-            scenario, max_ticks=args.max_ticks))
+            scenario, max_ticks=args.max_ticks, ruleset=ruleset))
         agents = {
             "red": _agent(args.red_agent, args.seed),
             "blue": _agent(args.blue_agent, args.seed + 1),

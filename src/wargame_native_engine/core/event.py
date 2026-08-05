@@ -25,6 +25,25 @@ class EventType(str, Enum):
     GAME_TRUNCATED = "game_truncated"
 
 
+EVENT_PRIORITY = {
+    EventType.ACTION_REJECTED: 0,
+    EventType.OPERATOR_DEPLOYED: 10,
+    EventType.DEPLOYMENT_ENDED: 11,
+    EventType.COMBAT_STARTED: 12,
+    EventType.OPERATOR_MOVED: 20,
+    EventType.OPERATOR_STATE_CHANGED: 21,
+    EventType.WAITED: 22,
+    EventType.ATTACK_DECLARED: 30,
+    EventType.TARGET_HIT: 31,
+    EventType.OPERATOR_DAMAGED: 32,
+    EventType.OPERATOR_DESTROYED: 33,
+    EventType.OBJECTIVE_CONTROLLED: 40,
+    EventType.GAME_TERMINATED: 90,
+    EventType.GAME_TRUNCATED: 91,
+    EventType.ENGINE_RESET: 99,
+}
+
+
 @dataclass(frozen=True, slots=True)
 class EngineEvent:
     tick: int
@@ -46,3 +65,10 @@ class EngineEvent:
         if include_id:
             value["event_id"] = self.event_id
         return value
+
+
+def event_sort_key(value: EngineEvent) -> tuple[Any, ...]:
+    return (value.tick, EVENT_PRIORITY[value.event_type], value.side or "",
+            -1 if value.actor_id is None else value.actor_id,
+            -1 if value.target_id is None else value.target_id,
+            value.event_id)

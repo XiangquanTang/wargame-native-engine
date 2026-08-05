@@ -1,0 +1,10 @@
+{
+  "schema_version": "native-operator-types/1.0",
+  "config_id": "native-operator-types",
+  "config_version": "1.0.0",
+  "profiles": {
+    "ground_unit": {"move_range": 1.5, "sensor_range": 10.0, "max_health": 40.0},
+    "recon_unit": {"move_range": 2.0, "sensor_range": 12.0, "max_health": 30.0},
+    "support_unit": {"move_range": 1.0, "sensor_range": 8.0, "max_health": 50.0}
+  }
+}

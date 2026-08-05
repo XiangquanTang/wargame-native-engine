@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Mapping
+from pathlib import Path
 
 from wargame_native_engine.core.action import EngineAction, ValidAction
 from wargame_native_engine.core.engine import NativeEngine
@@ -8,6 +9,7 @@ from wargame_native_engine.core.observation import SideObservation
 from wargame_native_engine.core.result import GameResult, StepResult
 from wargame_native_engine.core.world import WorldState
 from wargame_native_engine.io.scenario import NativeScenario
+from wargame_native_engine.rules.config import Ruleset
 
 
 class NativeEngineBackend:
@@ -16,9 +18,12 @@ class NativeEngineBackend:
     backend_id = "native-engine"
 
     def __init__(self, scenario: NativeScenario, *,
-                 max_ticks: int | None = None) -> None:
+                 max_ticks: int | None = None,
+                 ruleset: Ruleset | str | Path | None = None) -> None:
         self.scenario = scenario
-        self.engine = NativeEngine(scenario, max_ticks=max_ticks)
+        self.engine = NativeEngine(scenario, max_ticks=max_ticks,
+                                   ruleset=ruleset)
+        self.ruleset = self.engine.ruleset
         self.max_ticks = self.engine.terminal_rules.max_ticks
 
     def reset(self, seed: int = 42) -> WorldState:

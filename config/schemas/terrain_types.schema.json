@@ -1,0 +1,1 @@
+{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","required":["schema_version","config_id","config_version","profiles"],"properties":{"schema_version":{"const":"native-terrain-types/1.0"},"config_id":{"type":"string"},"config_version":{"type":"string"},"profiles":{"type":"object"}},"additionalProperties":false}
