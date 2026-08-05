@@ -33,3 +33,11 @@
 - Keep source numeric codes `UNKNOWN` unless the curated JSON maps them.
 - Record every direct-fire die, modifier, lookup coordinate, discrete outcome,
   table hash, seed, and Native convention flag in replay evidence.
+- Route Source-compatible Move, Shoot, StopMove and transitions through the
+  same `GameSession -> NativeEngine.step`; never add a controller-owned movement
+  loop or allow direct `WorldState` mutation.
+- Execute only explicitly submitted adjacent-hex paths. Never infer missing
+  cells or add automatic pathfinding.
+- Reject unknown terrain, elevation units, roads and movement codes. Keep
+  Native fatigue and transitions in named state/`extra.native`, not unresolved
+  Source fields.

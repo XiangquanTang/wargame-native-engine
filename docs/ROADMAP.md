@@ -44,3 +44,18 @@ not establish broad fidelity or equivalence to an external engine.
 
 Indirect fire, anti-air, mines, electronic warfare, complex pathfinding, and
 PyQt integration remain outside 0.4.0.
+
+## Phase 4A.2 implemented
+
+- ordered Move, Shoot, StopMove and transition dispatch in the existing step;
+- explicit adjacent paths and center-to-center segment progression;
+- named vehicle terrain, discrete slope and reciprocal road-edge timing;
+- absolute road marching speed and 75-second transitions;
+- personnel height, charge, fatigue and suppression-stop rules;
+- deterministic multi-segment delta-time and dynamic stack rechecks;
+- arrival-driven observation/valid-action refresh and Source movement fields;
+- movement state/evidence in snapshots, state hashes and strict Native Replay.
+
+Full frame recording, replay.zip, external human/Agent gateways,
+HTTP/WebSocket, indirect fire, mines and complex automatic pathfinding remain
+outside Phase 4A.2.

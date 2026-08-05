@@ -169,3 +169,11 @@ python -m wargame_native_engine.cli.run_source_compatible_game \
 
 See `docs/SOURCE_FRAME_COMPATIBILITY.md`, `docs/SOURCE_VISIBILITY.md`, and
 `docs/DIRECT_FIRE_ADJUDICATION.md`.
+
+## Source-compatible movement
+
+Phase 4A.2 routes ordered Move, Shoot, StopMove and transition actions through
+the same `GameSession -> NativeEngine.step` call. Integer delta-time advances
+explicit hex-path segments, timers, observation and valid actions. The small
+fixture is `examples/source_movement_scenario.json`; semantics and field units
+are documented in `docs/SOURCE_MOVEMENT.md`.

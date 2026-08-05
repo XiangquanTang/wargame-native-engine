@@ -62,3 +62,18 @@ This does not replace the synchronous `native_simplified` mode. The scheduler
 is first-arrival-first-adjudication. Personnel uses base 2D6 plus an independent
 correction D6; vehicles use two independent 2D6 rolls. `blood` is authoritative
 for discrete loss and compatibility `health` is derived.
+
+## Unified source-compatible movement
+
+Phase 4A.2 keeps movement in the authoritative lifecycle:
+
+```text
+controller -> GameSession -> NativeEngineBackend -> NativeEngine.step
+           -> ActionRouter -> Movement / DirectFire / transitions
+           -> EventQueue -> WorldState -> Observation -> ValidActions
+           -> SourceFrameExporter
+```
+
+`SourceCompatibleEnvironment` only adapts the resulting world to a frame. It
+does not own a second movement loop. Legacy scenarios without a hex grid retain
+the existing synchronous native-default path.

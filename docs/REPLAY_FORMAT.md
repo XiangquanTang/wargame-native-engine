@@ -7,6 +7,7 @@ manifest.json
 initial_state.json
 actions.jsonl
 events.jsonl
+steps.jsonl
 snapshots/tick-XXXXXXXX.json
 episode_summary.json
 checksums.sha256
@@ -58,3 +59,12 @@ state hash.
 Strict replay reconstructs the request, derives `NativeRNG` from the seed,
 repeats every die and exact JSON lookup, and compares both hashes. A mismatched
 table identity or changed collection is rejected.
+
+## Source-compatible step timing
+
+Native Replay writes `steps.jsonl` in addition to action and event collections.
+Each line records the ordered action list, action sequences, integer
+`delta_time_ms`, tick bounds and resulting world hash. Empty-action steps are
+retained because they advance movement and timers. Strict replay restores the
+same ordered-list versus side-mapping input form. This is an extension of the
+existing Native Replay bundle, not a separate movement replay format.
