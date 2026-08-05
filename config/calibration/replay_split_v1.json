@@ -6,7 +6,7 @@
     {
       "replay_id": "smoke-state-01",
       "source_identifier": "examples/historical_replay_reduced_fixture/smoke-state-01",
-      "source_hash": "d0b27b6502b19d064854a69c08e106ec216d1f162e6596dbd023d57788652d41",
+      "source_hash": "e0fe4c86bdf51117e3aa27fe8d69d5922ae42cf9fa93e0a5141b827fd7dfa5f9",
       "evidence_level": "STATE_TRAJECTORY_LEVEL",
       "scenario_id": "sanitized-smoke-scenario",
       "map_id": "sanitized-grid",

@@ -48,7 +48,8 @@ synchronous damage and validation data are never search parameters.
 Four mutually exclusive, sanitized fixtures are committed:
 
 - `smoke-state-01`: state trajectory derived from the field shape of an already
-  parsed bounded-horizon evaluator run;
+  parsed bounded-horizon evaluator run; its upstream manifest hash is retained
+  while names, IDs, values and geometry are sanitized;
 - `calibration-action-01` and `calibration-action-02`: small, parameter-complete
   action/state/event trajectories for bounded calibration;
 - `validation-action-01`: a distinct action-level trajectory held out until
