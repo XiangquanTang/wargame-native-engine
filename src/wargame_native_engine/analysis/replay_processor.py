@@ -17,6 +17,11 @@ from wargame_native_engine.analysis.analyzer import (
     GreenFrameAnalysisInput,
 )
 from wargame_native_engine.analysis.jsonl import analysis_frames_to_jsonl
+from wargame_native_engine.analysis.legacy_replay_adapter import (
+    LEGACY_SERIALIZED_SOURCE_FORMAT,
+    has_legacy_serialized_members,
+    load_legacy_serialized_replay,
+)
 from wargame_native_engine.compat.source_frame.models import SourceFrame
 from wargame_native_engine.io.importers.historical_replay import (
     HistoricalOperatorState,
@@ -67,6 +72,36 @@ class ReplayAnalysisResult:
     output_path: Path
     frame_count: int
     source_format: str
+    raw_record_count: int | None = None
+    selected_frame_count: int | None = None
+    collapsed_record_count: int | None = None
+
+    def __post_init__(self) -> None:
+        raw_count = (
+            self.frame_count
+            if self.raw_record_count is None
+            else self.raw_record_count
+        )
+        selected_count = (
+            self.frame_count
+            if self.selected_frame_count is None
+            else self.selected_frame_count
+        )
+        collapsed_count = (
+            raw_count - selected_count
+            if self.collapsed_record_count is None
+            else self.collapsed_record_count
+        )
+        object.__setattr__(self, "raw_record_count", raw_count)
+        object.__setattr__(self, "selected_frame_count", selected_count)
+        object.__setattr__(self, "collapsed_record_count", collapsed_count)
+
+
+@dataclass(frozen=True, slots=True)
+class _LoadedAnalysisInputs:
+    source_format: str
+    inputs: tuple[GreenFrameAnalysisInput, ...]
+    raw_record_count: int
 
 
 def analyze_replay_to_jsonl(
@@ -94,7 +129,8 @@ def analyze_replay_to_jsonl(
         raise FileExistsError(f"analysis output already exists: {output}")
     _validate_output_is_separate(source, output)
 
-    detected_format, inputs = _load_analysis_inputs(source, source_format)
+    loaded = _load_analysis_inputs(source, source_format)
+    inputs = loaded.inputs
     if not inputs:
         raise ValueError("replay contains no analyzable frames")
 
@@ -109,20 +145,37 @@ def analyze_replay_to_jsonl(
         input_path=source,
         output_path=output,
         frame_count=len(timeline.frame_analyses),
-        source_format=detected_format,
+        source_format=loaded.source_format,
+        raw_record_count=loaded.raw_record_count,
+        selected_frame_count=len(inputs),
+        collapsed_record_count=loaded.raw_record_count - len(inputs),
     )
 
 
 def _load_analysis_inputs(
     source: Path,
     requested_format: str,
-) -> tuple[str, tuple[GreenFrameAnalysisInput, ...]]:
+) -> _LoadedAnalysisInputs:
     detected_format = requested_format
     if requested_format == "auto":
         detected_format = _detect_source_format(source)
+    elif (
+        requested_format == "historical"
+        and _archive_has_legacy_members(source)
+    ):
+        detected_format = _detect_source_format(source)
     if detected_format == "native":
-        return "native", _native_analysis_inputs(source)
-    return "historical", _historical_analysis_inputs(source)
+        inputs = _native_analysis_inputs(source)
+        return _LoadedAnalysisInputs("native", inputs, len(inputs))
+    if detected_format == LEGACY_SERIALIZED_SOURCE_FORMAT:
+        selection = load_legacy_serialized_replay(source)
+        return _LoadedAnalysisInputs(
+            LEGACY_SERIALIZED_SOURCE_FORMAT,
+            selection.inputs,
+            selection.raw_record_count,
+        )
+    inputs = _historical_analysis_inputs(source)
+    return _LoadedAnalysisInputs("historical", inputs, len(inputs))
 
 
 def _detect_source_format(source: Path) -> str:
@@ -144,9 +197,11 @@ def _detect_source_format(source: Path) -> str:
         return _detect_from_members(members, archive=False)
     if source.is_file() and source.suffix.lower() == ".zip":
         with ZipFile(source) as archive:
+            infos = archive.infolist()
+            legacy_serialized = has_legacy_serialized_members(infos)
             names = {
-                name for name in archive.namelist()
-                if "/" not in name and not name.endswith("/")
+                info.filename for info in infos
+                if "/" not in info.filename and not info.filename.endswith("/")
             }
             marker_names = names & {
                 _NATIVE_MANIFEST_NAME,
@@ -160,7 +215,11 @@ def _detect_source_format(source: Path) -> str:
             for name in names:
                 if _NUMBERED_FRAME_NAME.fullmatch(name):
                     members[name] = b""
-        return _detect_from_members(members, archive=True)
+        return _detect_from_members(
+            members,
+            archive=True,
+            legacy_serialized=legacy_serialized,
+        )
     if source.is_file():
         value = _json_object(source.read_bytes(), source.name)
         if value.get("schema_version") == _NORMALIZED_HISTORICAL_SCHEMA:
@@ -172,6 +231,7 @@ def _detect_from_members(
     members: Mapping[str, bytes],
     *,
     archive: bool,
+    legacy_serialized: bool = False,
 ) -> str:
     names = set(members)
     has_numbered_frames = any(
@@ -202,6 +262,13 @@ def _detect_from_members(
 
     historical_marker = historical_manifest or historical_index
     native_marker = native_manifest or (has_numbered_frames and not archive)
+    if legacy_serialized and (
+        native_manifest or historical_marker or has_numbered_frames
+    ):
+        raise ValueError(
+            "ambiguous replay format: input contains both legacy serialized "
+            "numeric members and Native/Historical format markers"
+        )
     if historical_marker and (native_manifest or has_numbered_frames):
         raise ValueError(
             "ambiguous replay format: input contains both Native/numbered "
@@ -209,9 +276,18 @@ def _detect_from_members(
         )
     if native_marker:
         return "native"
+    if legacy_serialized:
+        return LEGACY_SERIALIZED_SOURCE_FORMAT
     if historical_marker or (archive and has_numbered_frames):
         return "historical"
     raise ValueError("unable to detect replay format: no supported format markers")
+
+
+def _archive_has_legacy_members(source: Path) -> bool:
+    if not source.is_file() or source.suffix.lower() != ".zip":
+        return False
+    with ZipFile(source) as archive:
+        return has_legacy_serialized_members(archive.infolist())
 
 
 def _json_object(payload: bytes, member_name: str) -> Mapping[str, Any]:
