@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+import json
 import os
 from pathlib import Path
 import re
@@ -30,6 +31,14 @@ from wargame_native_engine.io.serialization import json_clone
 FRAME_ANALYSIS_JSONL_NAME = "frame_analysis.native.jsonl"
 _NUMBERED_FRAME_NAME = re.compile(r"^(0|[1-9][0-9]*)\.json$")
 _SOURCE_FORMATS = frozenset({"auto", "native", "historical"})
+_NATIVE_MANIFEST_NAME = "replay_manifest.native.jsonl"
+_NATIVE_REPLAY_FORMAT = "native-source-frame-replay/1.0"
+_HISTORICAL_MANIFEST_SCHEMAS = frozenset({
+    "historical-replay-source/1.0",
+    "game-session-replay/1.0",
+})
+_HISTORICAL_INDEX_SCHEMA = "historical-replay-fixture-index/1.0"
+_NORMALIZED_HISTORICAL_SCHEMA = "historical-replay/1.0"
 _DIRECT_FACTOR_FIELDS = (
     "value",
     "blood",
@@ -118,23 +127,112 @@ def _load_analysis_inputs(
 
 def _detect_source_format(source: Path) -> str:
     if source.is_dir():
-        has_numbered_frames = any(
-            item.is_file() and _NUMBERED_FRAME_NAME.fullmatch(item.name)
+        paths = {
+            item.name: item
             for item in source.iterdir()
-        )
-        return "native" if has_numbered_frames else "historical"
+            if item.is_file()
+        }
+        marker_names = set(paths) & {
+            _NATIVE_MANIFEST_NAME,
+            "manifest.json",
+            "index.json",
+        }
+        members = {name: paths[name].read_bytes() for name in marker_names}
+        for name in paths:
+            if _NUMBERED_FRAME_NAME.fullmatch(name):
+                members[name] = b""
+        return _detect_from_members(members, archive=False)
     if source.is_file() and source.suffix.lower() == ".zip":
         with ZipFile(source) as archive:
-            top_level_names = {
+            names = {
                 name for name in archive.namelist()
                 if "/" not in name and not name.endswith("/")
             }
-        return (
-            "native"
-            if "replay_manifest.native.jsonl" in top_level_names
-            else "historical"
+            marker_names = names & {
+                _NATIVE_MANIFEST_NAME,
+                "manifest.json",
+                "index.json",
+            }
+            members = {
+                name: archive.read(name)
+                for name in marker_names
+            }
+            for name in names:
+                if _NUMBERED_FRAME_NAME.fullmatch(name):
+                    members[name] = b""
+        return _detect_from_members(members, archive=True)
+    if source.is_file():
+        value = _json_object(source.read_bytes(), source.name)
+        if value.get("schema_version") == _NORMALIZED_HISTORICAL_SCHEMA:
+            return "historical"
+    raise ValueError(f"unable to detect replay format: {source}")
+
+
+def _detect_from_members(
+    members: Mapping[str, bytes],
+    *,
+    archive: bool,
+) -> str:
+    names = set(members)
+    has_numbered_frames = any(
+        _NUMBERED_FRAME_NAME.fullmatch(name) for name in names
+    )
+    native_manifest = False
+    if _NATIVE_MANIFEST_NAME in members:
+        manifest = _jsonl_first_object(
+            members[_NATIVE_MANIFEST_NAME],
+            _NATIVE_MANIFEST_NAME,
         )
-    return "historical"
+        native_manifest = (
+            manifest.get("replay_format") == _NATIVE_REPLAY_FORMAT
+        )
+
+    historical_manifest = False
+    if "manifest.json" in members:
+        manifest = _json_object(members["manifest.json"], "manifest.json")
+        historical_manifest = (
+            manifest.get("schema_version") in _HISTORICAL_MANIFEST_SCHEMAS
+        )
+    historical_index = False
+    if "index.json" in members:
+        index = _json_object(members["index.json"], "index.json")
+        historical_index = (
+            index.get("schema_version") == _HISTORICAL_INDEX_SCHEMA
+        )
+
+    historical_marker = historical_manifest or historical_index
+    native_marker = native_manifest or (has_numbered_frames and not archive)
+    if historical_marker and (native_manifest or has_numbered_frames):
+        raise ValueError(
+            "ambiguous replay format: input contains both Native/numbered "
+            "frame markers and Historical manifest/index markers"
+        )
+    if native_marker:
+        return "native"
+    if historical_marker or (archive and has_numbered_frames):
+        return "historical"
+    raise ValueError("unable to detect replay format: no supported format markers")
+
+
+def _json_object(payload: bytes, member_name: str) -> Mapping[str, Any]:
+    try:
+        value = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"invalid replay format marker: {member_name}") from exc
+    if not isinstance(value, Mapping):
+        raise ValueError(f"replay format marker must be an object: {member_name}")
+    return value
+
+
+def _jsonl_first_object(payload: bytes, member_name: str) -> Mapping[str, Any]:
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"invalid replay format marker: {member_name}") from exc
+    lines = [line for line in text.splitlines() if line.strip()]
+    if not lines:
+        raise ValueError(f"invalid replay format marker: {member_name}")
+    return _json_object(lines[0].encode("utf-8"), member_name)
 
 
 def _native_analysis_inputs(

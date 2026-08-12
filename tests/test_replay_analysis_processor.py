@@ -4,8 +4,9 @@ from copy import deepcopy
 import hashlib
 import json
 from pathlib import Path
+import shutil
 from unittest.mock import Mock
-from zipfile import ZipFile
+from zipfile import BadZipFile, ZipFile
 
 import pytest
 
@@ -155,7 +156,6 @@ def test_native_directory_reads_only_integer_json_names_in_numeric_order(
     result = analyze_replay_to_jsonl(
         replay_dir,
         output,
-        source_format="native",
     )
 
     records = _records(output.read_bytes())
@@ -177,7 +177,6 @@ def test_reduced_historical_fixture_uses_importer_order_and_unknowns(
     result = analyze_replay_to_jsonl(
         source,
         output,
-        source_format="historical",
     )
 
     records = _records(output.read_bytes())
@@ -186,10 +185,21 @@ def test_reduced_historical_fixture_uses_importer_order_and_unknowns(
     assert [record["provenance"]["frame_index"] for record in records] == [0, 1, 2]
     assert all(record["provenance"]["frame_hash"] is None for record in records)
     assert all(record["provenance"]["scenario_hash"] is None for record in records)
-    assert all(
-        unit["factor_values"][0]["status"] == "UNKNOWN"
-        for record in records for unit in record["unit_analyses"]
-    )
+    expected_ids = [101, 102, 201, 202]
+    expected_sides = ["red", "red", "blue", "blue"]
+    for record in records:
+        units = record["unit_analyses"]
+        assert len(units) == 4
+        assert [unit["operator_id"] for unit in units] == expected_ids
+        assert [unit["side"] for unit in units] == expected_sides
+        for unit in units:
+            statuses = {
+                value["factor_name"]: value["status"]
+                for value in unit["factor_values"]
+            }
+            assert statuses["base_value"] == "UNKNOWN"
+            assert statuses["health"] == "OBSERVED"
+            assert statuses["weapon"] == "OBSERVED"
     assert {
         item.relative_to(source).as_posix(): item.read_bytes()
         for item in source.rglob("*") if item.is_file()
@@ -223,6 +233,82 @@ def test_auto_routes_numbered_historical_zip_without_native_manifest(
     assert [record["provenance"]["frame_index"] for record in records] == [0, 1]
     assert all(record["provenance"]["frame_hash"] is None for record in records)
     assert source.read_bytes() == before
+
+
+def test_auto_rejects_mixed_historical_directory_and_numbered_frame(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "mixed-directory"
+    shutil.copytree(
+        Path("examples/historical_replay_reduced_fixture/smoke-state-01"),
+        source,
+    )
+    _write_frame(source / "0.json", _source_green(0))
+    before = {item.name: item.read_bytes() for item in source.iterdir()}
+
+    with pytest.raises(ValueError, match="ambiguous replay format"):
+        analyze_replay_to_jsonl(source, tmp_path / "auto.jsonl")
+
+    native = analyze_replay_to_jsonl(
+        source,
+        tmp_path / "native.jsonl",
+        source_format="native",
+    )
+    historical = analyze_replay_to_jsonl(
+        source,
+        tmp_path / "historical.jsonl",
+        source_format="historical",
+    )
+    assert native.source_format == "native" and native.frame_count == 1
+    assert historical.source_format == "historical"
+    assert historical.frame_count == 3
+    assert {item.name: item.read_bytes() for item in source.iterdir()} == before
+
+
+def test_auto_rejects_native_zip_with_historical_manifest(
+    native_replay: tuple[Path, tuple[dict[str, object], ...]],
+    tmp_path: Path,
+) -> None:
+    original, _ = native_replay
+    source = tmp_path / "mixed.zip"
+    historical_manifest = Path(
+        "examples/historical_replay_reduced_fixture/smoke-state-01/manifest.json"
+    ).read_bytes()
+    with ZipFile(original) as existing, ZipFile(source, "w") as mixed:
+        for name in existing.namelist():
+            mixed.writestr(name, existing.read(name))
+        mixed.writestr("manifest.json", historical_manifest)
+    before = source.read_bytes()
+
+    with pytest.raises(ValueError, match="ambiguous replay format"):
+        analyze_replay_to_jsonl(source, tmp_path / "auto-zip.jsonl")
+
+    native = analyze_replay_to_jsonl(
+        source,
+        tmp_path / "native-zip.jsonl",
+        source_format="native",
+    )
+    historical = analyze_replay_to_jsonl(
+        source,
+        tmp_path / "historical-zip.jsonl",
+        source_format="historical",
+    )
+    assert native.source_format == "native" and native.frame_count == 3
+    assert historical.source_format == "historical"
+    assert historical.frame_count == 3
+    assert source.read_bytes() == before
+
+
+def test_auto_rejects_empty_directory_and_corrupt_zip(tmp_path: Path) -> None:
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    with pytest.raises(ValueError, match="unable to detect replay format"):
+        analyze_replay_to_jsonl(empty, tmp_path / "empty.jsonl")
+
+    corrupt = tmp_path / "corrupt.zip"
+    corrupt.write_bytes(b"not a zip")
+    with pytest.raises(BadZipFile):
+        analyze_replay_to_jsonl(corrupt, tmp_path / "corrupt.jsonl")
 
 
 def test_existing_output_requires_overwrite_then_can_be_replaced(

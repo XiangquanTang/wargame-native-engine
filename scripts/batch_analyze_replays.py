@@ -26,7 +26,14 @@ def build_parser() -> argparse.ArgumentParser:
         description="Serially analyze replay ZIP files under one root.",
     )
     parser.add_argument("--input-root", required=True)
-    parser.add_argument("--output-root", required=True)
+    parser.add_argument(
+        "--output-root",
+        required=True,
+        help=(
+            "Mirror replay parents and write under each full ZIP file name, "
+            "for example day1/game.zip/frame_analysis.native.jsonl"
+        ),
+    )
     parser.add_argument(
         "--format",
         dest="source_format",
@@ -61,6 +68,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
         key=lambda path: path.relative_to(input_root).as_posix(),
     ))
+    plans = tuple(
+        (
+            input_path,
+            output_root
+            / input_path.relative_to(input_root).parent
+            / input_path.name
+            / FRAME_ANALYSIS_JSONL_NAME,
+        )
+        for input_path in inputs
+    )
+    try:
+        _validate_batch_paths(inputs, plans, errors_path)
+    except ValueError as exc:
+        print(f"ValueError: {exc}", file=sys.stderr)
+        return 2
+
     analyzer = EightFactorAnalyzer(
         model_id=args.model_id,
         model_version=args.model_version,
@@ -70,14 +93,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     success = 0
     skipped = 0
     failures: list[Mapping[str, Any]] = []
-    for input_path in inputs:
-        relative = input_path.relative_to(input_root)
-        output_path = (
-            output_root
-            / relative.parent
-            / input_path.stem
-            / FRAME_ANALYSIS_JSONL_NAME
-        )
+    for input_path, output_path in plans:
         if args.resume and output_path.is_file() and output_path.stat().st_size:
             skipped += 1
             continue
@@ -118,6 +134,111 @@ def main(argv: Sequence[str] | None = None) -> int:
     }, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
        allow_nan=False))
     return 1 if failures else 0
+
+
+def _validate_batch_paths(
+    inputs: Sequence[Path],
+    plans: Sequence[tuple[Path, Path]],
+    errors_path: Path,
+) -> None:
+    """Reject aliases and collisions before any replay is processed."""
+
+    input_by_resolved = {_resolved_key(path): path for path in inputs}
+    input_by_platform_key = {
+        _platform_key(path): path for path in inputs
+    }
+    input_by_identity = {
+        identity: path
+        for path in inputs
+        if (identity := _existing_identity(path)) is not None
+    }
+    output_by_resolved: dict[str, tuple[Path, Path]] = {}
+    output_by_identity: dict[tuple[int, int], tuple[Path, Path]] = {}
+    output_by_platform_key: dict[str, tuple[Path, Path]] = {}
+
+    for input_path, output_path in plans:
+        resolved = _resolved_key(output_path)
+        conflicting_input = input_by_resolved.get(resolved)
+        if conflicting_input is None:
+            conflicting_input = input_by_platform_key.get(
+                os.path.normcase(resolved)
+            )
+        if conflicting_input is not None:
+            raise ValueError(
+                f"planned analysis output {output_path} conflicts with "
+                f"input replay {conflicting_input}"
+            )
+
+        identity = _existing_identity(output_path)
+        if identity is not None and identity in input_by_identity:
+            raise ValueError(
+                f"planned analysis output {output_path} conflicts with "
+                f"input replay {input_by_identity[identity]}"
+            )
+
+        prior = output_by_resolved.get(resolved)
+        if prior is not None:
+            raise ValueError(
+                f"planned analysis output collision between {prior[0]} "
+                f"and {input_path}: {output_path}"
+            )
+        output_by_resolved[resolved] = (input_path, output_path)
+
+        if identity is not None:
+            prior_identity = output_by_identity.get(identity)
+            if prior_identity is not None:
+                raise ValueError(
+                    f"planned analysis output alias between {prior_identity[0]} "
+                    f"and {input_path}: {output_path}"
+                )
+            output_by_identity[identity] = (input_path, output_path)
+
+        platform_key = os.path.normcase(resolved)
+        prior_platform = output_by_platform_key.get(platform_key)
+        if prior_platform is not None:
+            raise ValueError(
+                f"planned analysis output case-fold collision between "
+                f"{prior_platform[0]} and {input_path}: {output_path}"
+            )
+        output_by_platform_key[platform_key] = (input_path, output_path)
+
+    for input_path in inputs:
+        if _paths_alias(errors_path, input_path):
+            raise ValueError(
+                f"errors path {errors_path} conflicts with "
+                f"input replay {input_path}"
+            )
+    for input_path, output_path in plans:
+        if _paths_alias(errors_path, output_path):
+            raise ValueError(
+                f"errors path {errors_path} conflicts with planned analysis "
+                f"output for {input_path}: {output_path}"
+            )
+
+
+def _resolved_key(path: Path) -> str:
+    return str(path.resolve(strict=False))
+
+
+def _platform_key(path: Path) -> str:
+    return os.path.normcase(_resolved_key(path))
+
+
+def _existing_identity(path: Path) -> tuple[int, int] | None:
+    try:
+        value = path.stat()
+    except FileNotFoundError:
+        return None
+    return value.st_dev, value.st_ino
+
+
+def _paths_alias(first: Path, second: Path) -> bool:
+    if _platform_key(first) == _platform_key(second):
+        return True
+    try:
+        return os.path.samefile(first, second)
+    except FileNotFoundError:
+        return False
 
 
 def _atomic_write(path: Path, payload: bytes) -> None:
