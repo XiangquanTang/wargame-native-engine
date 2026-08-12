@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Native 复盘态势查看器</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header>
+    <div>
+      <p class="eyebrow">LOCAL · READ ONLY · GREEN</p>
+      <h1>复盘态势与八因子分析</h1>
+    </div>
+    <div id="compatibility" class="badges"></div>
+  </header>
+
+  <main>
+    <section class="battle-panel panel">
+      <div class="section-title">
+        <div>
+          <h2>坐标态势视图</h2>
+          <p>仅显示 SourceFrame 事实坐标，不推断地形、道路或障碍</p>
+        </div>
+        <div class="frame-readout">
+          Frame <strong id="frame-index">0</strong>
+          <span>cur_step <strong id="cur-step">—</strong></span>
+        </div>
+      </div>
+      <canvas id="battlefield" aria-label="战场单位坐标画布"></canvas>
+      <div class="legend">
+        <span><i class="red-dot"></i>RED</span>
+        <span><i class="blue-dot"></i>BLUE</span>
+        <span><i class="passenger-dot"></i>Passenger</span>
+        <span><i class="destroyed-dot"></i>Destroyed</span>
+      </div>
+    </section>
+
+    <aside class="analysis-panel">
+      <section class="panel summary">
+        <div class="section-title"><h2>当前帧分析</h2></div>
+        <div class="metric-grid">
+          <article class="metric red"><span>RED EFFECTIVE POWER</span><strong id="red-power">—</strong></article>
+          <article class="metric blue"><span>BLUE EFFECTIVE POWER</span><strong id="blue-power">—</strong></article>
+          <article class="metric advantage"><span>NORMALIZED ADVANTAGE</span><strong id="normalized-advantage">—</strong></article>
+          <article class="metric"><span>LABEL / RAW</span><strong id="advantage-label">—</strong><small id="raw-advantage">—</small></article>
+        </div>
+      </section>
+
+      <section class="panel factor-panel">
+        <div class="section-title">
+          <div><h2>选中单位八因子</h2><p id="selected-unit">点击战场单位</p></div>
+          <strong id="effective-power">—</strong>
+        </div>
+        <div id="unit-validity" class="unit-validity"></div>
+        <div class="factor-table-wrap">
+          <table>
+            <thead><tr><th>因子</th><th>值 / 状态</th><th>公式与证据</th></tr></thead>
+            <tbody id="factor-table"></tbody>
+          </table>
+        </div>
+      </section>
+    </aside>
+
+    <section class="panel chart-panel">
+      <div class="section-title">
+        <div><h2>力量与相对优势曲线</h2><p>UNKNOWN 保留为断点，不按 0 绘制</p></div>
+        <div class="legend"><span class="red-text">RED power</span><span class="blue-text">BLUE power</span><span class="gold-text">Normalized advantage</span></div>
+      </div>
+      <canvas id="timeline-chart" aria-label="力量和优势时间线"></canvas>
+    </section>
+
+    <section class="panel controls">
+      <input id="frame-slider" type="range" min="0" value="0" aria-label="时间轴">
+      <div class="control-row">
+        <button id="previous-frame" type="button">上一帧</button>
+        <button id="play-pause" type="button">播放</button>
+        <button id="next-frame" type="button">下一帧</button>
+        <label>速度
+          <select id="playback-speed">
+            <option value="0.5">0.5x</option>
+            <option value="1" selected>1x</option>
+            <option value="2">2x</option>
+            <option value="4">4x</option>
+          </select>
+        </label>
+        <label>跳转 Frame
+          <input id="frame-jump" type="number" min="0" value="0">
+        </label>
+        <button id="jump-button" type="button">跳转</button>
+        <span id="playback-position">0 / 0</span>
+      </div>
+    </section>
+
+    <section class="panel evidence-panel">
+      <article><h2>Actions</h2><pre id="actions">[]</pre></article>
+      <article><h2>Judge info</h2><pre id="judge-info">[]</pre></article>
+      <article><h2>Analysis warnings</h2><pre id="warnings">[]</pre></article>
+    </section>
+  </main>
+
+  <div id="error-banner" role="alert" hidden></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

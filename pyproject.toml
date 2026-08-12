@@ -30,6 +30,9 @@ wargame-native-source-compatible = "wargame_native_engine.cli.run_source_compati
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+"wargame_native_engine.viewer" = ["static/*.html", "static/*.js", "static/*.css"]
+
 [tool.pytest.ini_options]
 addopts = "-ra"
 testpaths = ["tests"]

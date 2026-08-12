@@ -1,0 +1,305 @@
+"""Validated, immutable data projection for the local replay viewer."""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from wargame_native_engine.analysis.jsonl import analysis_sidecar_from_jsonl
+from wargame_native_engine.analysis.models import (
+    AnalysisEvent,
+    AnalysisSidecarLoadResult,
+    FrameAnalysis,
+)
+from wargame_native_engine.analysis.serialization import frame_analysis_to_record
+from wargame_native_engine.compat.source_frame.importer import SourceFrameImporter
+from wargame_native_engine.compat.source_frame.mapping import SourceMappings
+from wargame_native_engine.compat.source_frame.models import (
+    SourceFrame,
+    SourceUnitState,
+)
+from wargame_native_engine.io.importers.source_replay_archive import (
+    SourceReplayArchive,
+    SourceReplayArchiveImporter,
+)
+from wargame_native_engine.io.serialization import json_clone
+
+
+REPLAY_ARCHIVE_NAME = "replay.zip"
+ANALYSIS_SIDECAR_NAME = "frame_analysis.native.jsonl"
+PLAYBACK_COMPATIBILITY = "source-numbered-frame-playback/1.0"
+NATIVE_REPLAY_FORMAT = "native-source-frame-replay/1.0"
+_SOURCE_MAPPINGS = SourceMappings()
+
+
+class ReplayViewerLoadError(ValueError):
+    """Raised when replay facts and analysis cannot be aligned safely."""
+
+
+@dataclass(frozen=True, slots=True)
+class ReplayView:
+    """One fully validated replay and its reconstructed analysis timeline."""
+
+    replay_dir: Path
+    archive: SourceReplayArchive
+    analysis: AnalysisSidecarLoadResult
+    playback_compatibility: str
+    strict_replay_supported: bool
+    model_id: str
+    model_version: str
+    model_hash: str | None
+
+    @property
+    def frame_count(self) -> int:
+        return len(self.archive.frames)
+
+    def replay_record(self) -> dict[str, object]:
+        manifest = self.archive.manifest
+        return {
+            "frame_count": self.frame_count,
+            "first_frame_index": 0,
+            "last_frame_index": self.frame_count - 1,
+            "perspective": "GREEN",
+            "playback_compatibility": self.playback_compatibility,
+            "strict_replay_supported": self.strict_replay_supported,
+            "model_provenance": {
+                "model_id": self.model_id,
+                "model_version": self.model_version,
+                "model_hash": self.model_hash,
+            },
+            "scenario_hash": (
+                self.analysis.timeline.frame_analyses[0].provenance.scenario_hash
+            ),
+            "termination": manifest.get("termination"),
+            "truncated": manifest.get("truncated"),
+            "winner": manifest.get("winner"),
+            "outcome": manifest.get("outcome"),
+        }
+
+    def frame_record(self, frame_index: int) -> dict[str, object]:
+        index = self._checked_index(frame_index)
+        frame = self.archive.frames[index]
+        return _frame_record(index, self.archive.frame_names[index], frame)
+
+    def analysis_record(self, frame_index: int) -> dict[str, object]:
+        index = self._checked_index(frame_index)
+        frame = self.analysis.timeline.frame_analyses[index]
+        events = tuple(
+            event for event in self.analysis.events
+            if event.frame_index == index
+        )
+        return frame_analysis_to_record(frame, events=events)
+
+    def timeline_record(self) -> dict[str, object]:
+        timeline = self.analysis.timeline
+        red_power: list[float | None] = []
+        blue_power: list[float | None] = []
+        labels: list[str] = []
+        for frame in timeline.frame_analyses:
+            sides = {side.side: side for side in frame.side_analyses}
+            red_power.append(
+                sides["red"].effective_power if "red" in sides else None
+            )
+            blue_power.append(
+                sides["blue"].effective_power if "blue" in sides else None
+            )
+            labels.append(frame.advantage.label)
+        return {
+            "frame_indices": list(timeline.frame_indices),
+            "red_effective_power": red_power,
+            "blue_effective_power": blue_power,
+            "raw_advantages": list(timeline.raw_advantages),
+            "normalized_advantages": list(timeline.normalized_advantages),
+            "delta_advantages": list(timeline.delta_advantages),
+            "advantage_labels": labels,
+        }
+
+    def _checked_index(self, frame_index: int) -> int:
+        if type(frame_index) is not int:
+            raise TypeError("frame index must be an int")
+        if not 0 <= frame_index < self.frame_count:
+            raise IndexError(
+                f"frame index {frame_index} is outside 0..{self.frame_count - 1}"
+            )
+        return frame_index
+
+
+def load_replay_view(replay_dir: str | Path) -> ReplayView:
+    """Load and strictly align a replay ZIP with its external analysis JSONL."""
+
+    root = Path(replay_dir)
+    replay_path = root / REPLAY_ARCHIVE_NAME
+    analysis_path = root / ANALYSIS_SIDECAR_NAME
+    if not replay_path.is_file():
+        raise ReplayViewerLoadError(f"missing replay archive: {replay_path}")
+    if not analysis_path.is_file():
+        raise ReplayViewerLoadError(f"missing analysis sidecar: {analysis_path}")
+
+    try:
+        archive = SourceReplayArchiveImporter(
+            frame_importer=_ViewerSourceFrameImporter()
+        ).import_path(replay_path)
+    except Exception as exc:
+        raise ReplayViewerLoadError(f"failed to load replay archive: {exc}") from exc
+    try:
+        analysis = analysis_sidecar_from_jsonl(analysis_path.read_bytes())
+    except Exception as exc:
+        raise ReplayViewerLoadError(f"failed to load analysis sidecar: {exc}") from exc
+
+    frame_count = len(archive.frames)
+    if frame_count == 0:
+        raise ReplayViewerLoadError("replay must contain at least one frame")
+    expected_names = tuple(f"{index}.json" for index in range(frame_count))
+    if archive.frame_names != expected_names:
+        raise ReplayViewerLoadError(
+            "replay frame names must be continuous from 0.json; "
+            f"got {archive.frame_names!r}"
+        )
+
+    analysis_frames = analysis.timeline.frame_analyses
+    if len(analysis_frames) != frame_count:
+        raise ReplayViewerLoadError(
+            "replay/analysis frame count mismatch: "
+            f"{frame_count} replay frames, {len(analysis_frames)} analysis frames"
+        )
+
+    model_identity: tuple[str, str, str | None] | None = None
+    for index, (frame, frame_analysis) in enumerate(
+        zip(archive.frames, analysis_frames)
+    ):
+        provenance = frame_analysis.provenance
+        if provenance.frame_index != index:
+            raise ReplayViewerLoadError(
+                f"analysis frame index mismatch at frame {index}: "
+                f"got {provenance.frame_index}"
+            )
+        if provenance.frame_hash != frame.source_hash:
+            raise ReplayViewerLoadError(
+                f"analysis frame hash mismatch at frame {index}: "
+                f"expected {frame.source_hash}, got {provenance.frame_hash}"
+            )
+        if provenance.perspective != "GREEN":
+            raise ReplayViewerLoadError(
+                f"analysis perspective at frame {index} must be GREEN"
+            )
+        _validate_explicit_frame_perspective(frame, index)
+        identity = (
+            provenance.model_id,
+            provenance.model_version,
+            provenance.model_hash,
+        )
+        if model_identity is None:
+            model_identity = identity
+        elif identity != model_identity:
+            raise ReplayViewerLoadError(
+                f"analysis model provenance mismatch at frame {index}"
+            )
+
+    assert model_identity is not None
+    manifest = archive.manifest
+    manifest_perspective = manifest.get("perspective")
+    if manifest_perspective is not None and manifest_perspective != "GREEN":
+        raise ReplayViewerLoadError("replay manifest perspective must be GREEN")
+    strict_replay_supported = (
+        manifest.get("replay_format") == NATIVE_REPLAY_FORMAT
+    )
+    playback_compatibility = str(
+        manifest.get("source_frame_compatibility_version")
+        or PLAYBACK_COMPATIBILITY
+    )
+    return ReplayView(
+        replay_dir=root,
+        archive=archive,
+        analysis=analysis,
+        playback_compatibility=playback_compatibility,
+        strict_replay_supported=strict_replay_supported,
+        model_id=model_identity[0],
+        model_version=model_identity[1],
+        model_hash=model_identity[2],
+    )
+
+
+def _validate_explicit_frame_perspective(frame: SourceFrame, index: int) -> None:
+    extra = frame.raw.get("extra")
+    if not isinstance(extra, Mapping):
+        return
+    native = extra.get("native")
+    if not isinstance(native, Mapping) or "perspective" not in native:
+        return
+    if native["perspective"] != "GREEN":
+        raise ReplayViewerLoadError(
+            f"replay frame {index} perspective must be GREEN"
+        )
+
+
+class _ViewerSourceFrameImporter(SourceFrameImporter):
+    """Adapt optional display evidence without changing the fact importer."""
+
+    def from_dict(
+        self,
+        value: Mapping[str, Any],
+        *,
+        source_hash: str,
+    ) -> SourceFrame:
+        if "actions" in value and "judge_info" in value:
+            return super().from_dict(value, source_hash=source_hash)
+        display_value = dict(value)
+        display_value.setdefault("actions", [])
+        display_value.setdefault("judge_info", [])
+        return super().from_dict(display_value, source_hash=source_hash)
+
+
+def _frame_record(
+    frame_index: int,
+    frame_name: str,
+    frame: SourceFrame,
+) -> dict[str, object]:
+    units = [
+        _viewer_unit(unit, "operator", _SOURCE_MAPPINGS)
+        for unit in frame.operators
+    ] + [
+        _viewer_unit(unit, "passenger", _SOURCE_MAPPINGS)
+        for unit in frame.passengers
+    ]
+    return {
+        "frame_index": frame_index,
+        "frame_name": frame_name,
+        "source_hash": frame.source_hash,
+        "time": json_clone(frame.time.raw),
+        "operators": [json_clone(unit.raw) for unit in frame.operators],
+        "passengers": [json_clone(unit.raw) for unit in frame.passengers],
+        "actions": json_clone(frame.actions),
+        "judge_info": json_clone(frame.judge_info),
+        "done": json_clone(frame.raw.get("done")),
+        "winner": json_clone(frame.raw.get("winner")),
+        "outcome": json_clone(frame.raw.get("outcome")),
+        "scenario_id": frame.scenario_id,
+        "terrain_id": json_clone(frame.terrain_id),
+        "viewer_units": units,
+    }
+
+
+def _viewer_unit(
+    unit: SourceUnitState,
+    category: str,
+    mappings: SourceMappings,
+) -> dict[str, object]:
+    row, column = unit.row_col
+    state = mappings.unit_state(unit).value
+    return {
+        "operator_id": unit.obj_id,
+        "category": category,
+        "side": str(mappings.side(unit.color).native_effective_value),
+        "current_hex": unit.current_hex,
+        "row": row,
+        "column": column,
+        "blood": unit.blood,
+        "max_blood": unit.max_blood,
+        "alive": unit.alive,
+        "state": state,
+        "stopped": unit.stopped,
+        "lose_control": bool(unit.raw.get("lose_control", False)),
+        "can_to_move": json_clone(unit.raw.get("can_to_move")),
+    }
