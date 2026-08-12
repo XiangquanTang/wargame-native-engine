@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Any
+from unittest.mock import Mock
 from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
 import pytest
@@ -22,6 +24,7 @@ from wargame_native_engine.io.importers.source_replay_archive import (
 )
 from wargame_native_engine.io.replay import replay_source_archive
 from wargame_native_engine.io.scenario import load_scenario
+import wargame_native_engine.replay.source_frame_recorder as recorder_module
 from wargame_native_engine.replay.source_frame_recorder import (
     ANALYSIS_SIDECAR_NAME,
     SourceFrameRecorder,
@@ -375,6 +378,301 @@ def test_analysis_sidecar_rejects_invalid_utf8_frame_before_zip_creation(
         recorder.package_zip(target, analysis_analyzer=EightFactorAnalyzer())
 
     assert not target.exists()
+    assert list(target.parent.glob(f".{target.name}.*")) == []
+
+
+@pytest.mark.parametrize(
+    "member_name",
+    ["0.json", "1.json", "steps.jsonl", "replay_manifest.native.jsonl"],
+)
+@pytest.mark.parametrize("analysis_enabled", [False, True])
+def test_archive_output_cannot_replace_any_authoritative_member(
+    tmp_path: Path,
+    member_name: str,
+    analysis_enabled: bool,
+) -> None:
+    case = f"{member_name}-{analysis_enabled}"
+    recorder = _finalized_recorder(tmp_path / case, frame_count=2)
+    facts_before = _fact_snapshot(recorder)
+    entries_before = _workdir_entries(recorder)
+    analyzer = Mock(spec=EightFactorAnalyzer) if analysis_enabled else None
+    target = recorder.root / member_name
+
+    with pytest.raises(
+        ValueError,
+        match=rf"archive output .* authoritative replay member {member_name}",
+    ):
+        recorder.package_zip(target, analysis_analyzer=analyzer)
+
+    assert _fact_snapshot(recorder) == facts_before
+    assert _workdir_entries(recorder) == entries_before
+    assert list(target.parent.glob(f".{target.name}.*")) == []
+    if analyzer is not None:
+        analyzer.analyze_green_frames.assert_not_called()
+
+
+def test_archive_output_rejects_normalized_parent_path_alias(
+    tmp_path: Path,
+) -> None:
+    recorder = _finalized_recorder(tmp_path / "normalized-alias", frame_count=2)
+    facts_before = _fact_snapshot(recorder)
+    entries_before = _workdir_entries(recorder)
+    analyzer = Mock(spec=EightFactorAnalyzer)
+    target = recorder.root / "not-created" / ".." / "steps.jsonl"
+
+    with pytest.raises(
+        ValueError,
+        match=r"archive output .* authoritative replay member steps.jsonl",
+    ):
+        recorder.package_zip(target, analysis_analyzer=analyzer)
+
+    assert _fact_snapshot(recorder) == facts_before
+    assert _workdir_entries(recorder) == entries_before
+    assert list(recorder.root.glob(".steps.jsonl.*")) == []
+    analyzer.analyze_green_frames.assert_not_called()
+
+
+@pytest.mark.parametrize("alias_kind", ["symlink", "hardlink"])
+def test_archive_output_rejects_existing_samefile_alias(
+    tmp_path: Path,
+    alias_kind: str,
+) -> None:
+    recorder = _finalized_recorder(
+        tmp_path / f"samefile-{alias_kind}",
+        frame_count=2,
+    )
+    facts_before = _fact_snapshot(recorder)
+    entries_before = _workdir_entries(recorder)
+    fact = recorder.root / "steps.jsonl"
+    target = tmp_path / f"{alias_kind}-steps-alias.zip"
+    try:
+        if alias_kind == "symlink":
+            target.symlink_to(fact)
+        else:
+            os.link(fact, target)
+    except (NotImplementedError, OSError) as exc:
+        pytest.skip(f"{alias_kind} is not supported: {exc}")
+    alias_before = target.read_bytes()
+    analyzer = Mock(spec=EightFactorAnalyzer)
+
+    with pytest.raises(
+        ValueError,
+        match=r"archive output .* authoritative replay member steps.jsonl",
+    ):
+        recorder.package_zip(target, analysis_analyzer=analyzer)
+
+    assert _fact_snapshot(recorder) == facts_before
+    assert _workdir_entries(recorder) == entries_before
+    assert target.read_bytes() == alias_before
+    assert list(target.parent.glob(f".{target.name}.*")) == []
+    analyzer.analyze_green_frames.assert_not_called()
+
+
+@pytest.mark.parametrize("analysis_enabled", [False, True])
+@pytest.mark.parametrize(
+    "output_case",
+    ["default", "inside", "external-new", "external-existing"],
+)
+def test_legal_archive_outputs_remain_supported_and_repeatable(
+    tmp_path: Path,
+    output_case: str,
+    analysis_enabled: bool,
+) -> None:
+    recorder = _finalized_recorder(
+        tmp_path / f"legal-{output_case}-{analysis_enabled}",
+        frame_count=2,
+    )
+    facts_before = _fact_snapshot(recorder)
+    analyzer = EightFactorAnalyzer() if analysis_enabled else None
+    if output_case == "default":
+        output = None
+        expected_target = recorder.root / "replay.zip"
+    elif output_case == "inside":
+        output = recorder.root / "replay.zip"
+        expected_target = output
+    else:
+        output = tmp_path / f"{output_case}-{analysis_enabled}.zip"
+        expected_target = output
+        if output_case == "external-existing":
+            output.write_bytes(b"old non-fact archive target")
+
+    first = recorder.package_zip(output, analysis_analyzer=analyzer)
+    first_payload = first.read_bytes()
+    second = recorder.package_zip(output, analysis_analyzer=analyzer)
+
+    assert first == expected_target
+    assert second == expected_target
+    assert second.read_bytes() == first_payload
+    assert _fact_snapshot(recorder) == facts_before
+    with ZipFile(second) as archive:
+        names = archive.namelist()
+    assert (ANALYSIS_SIDECAR_NAME in names) is analysis_enabled
+
+
+@pytest.mark.parametrize("target_exists", [False, True])
+def test_invalid_json_analysis_failure_preserves_target_and_facts(
+    tmp_path: Path,
+    target_exists: bool,
+) -> None:
+    recorder = _finalized_recorder(
+        tmp_path / f"invalid-json-{target_exists}",
+        frame_count=2,
+    )
+    _replace_frame_and_manifest(recorder.root, 0, b"{not valid JSON\n")
+    facts_before = _fact_snapshot(recorder)
+    entries_before = _workdir_entries(recorder)
+    target = tmp_path / f"invalid-json-{target_exists}.zip"
+    old_target = _prepare_target(target, target_exists)
+
+    with pytest.raises(json.JSONDecodeError):
+        recorder.package_zip(target, analysis_analyzer=EightFactorAnalyzer())
+
+    _assert_failed_package_state(
+        recorder,
+        target,
+        old_target,
+        facts_before,
+        entries_before,
+    )
+
+
+@pytest.mark.parametrize("target_exists", [False, True])
+def test_zip_member_write_failure_is_atomic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    target_exists: bool,
+) -> None:
+    recorder = _finalized_recorder(
+        tmp_path / f"writestr-failure-{target_exists}",
+        frame_count=2,
+    )
+    facts_before = _fact_snapshot(recorder)
+    entries_before = _workdir_entries(recorder)
+    target = tmp_path / f"writestr-failure-{target_exists}.zip"
+    old_target = _prepare_target(target, target_exists)
+
+    def fail_writestr(*args, **kwargs) -> None:
+        raise OSError("injected ZipFile.writestr failure")
+
+    monkeypatch.setattr(recorder_module.ZipFile, "writestr", fail_writestr)
+    with pytest.raises(OSError, match="injected ZipFile.writestr failure"):
+        recorder.package_zip(target, analysis_analyzer=EightFactorAnalyzer())
+
+    _assert_failed_package_state(
+        recorder,
+        target,
+        old_target,
+        facts_before,
+        entries_before,
+    )
+
+
+@pytest.mark.parametrize("target_exists", [False, True])
+def test_zip_close_failure_is_atomic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    target_exists: bool,
+) -> None:
+    recorder = _finalized_recorder(
+        tmp_path / f"close-failure-{target_exists}",
+        frame_count=2,
+    )
+    facts_before = _fact_snapshot(recorder)
+    entries_before = _workdir_entries(recorder)
+    target = tmp_path / f"close-failure-{target_exists}.zip"
+    old_target = _prepare_target(target, target_exists)
+
+    class CloseFailZipFile(ZipFile):
+        _raise_on_close = True
+
+        def close(self) -> None:
+            super().close()
+            if self._raise_on_close:
+                self._raise_on_close = False
+                raise OSError("injected ZipFile.close failure")
+
+    monkeypatch.setattr(recorder_module, "ZipFile", CloseFailZipFile)
+    with pytest.raises(OSError, match="injected ZipFile.close failure"):
+        recorder.package_zip(target, analysis_analyzer=EightFactorAnalyzer())
+
+    _assert_failed_package_state(
+        recorder,
+        target,
+        old_target,
+        facts_before,
+        entries_before,
+    )
+
+
+def test_os_replace_failure_preserves_existing_target_and_facts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorder = _finalized_recorder(
+        tmp_path / "replace-failure",
+        frame_count=2,
+    )
+    facts_before = _fact_snapshot(recorder)
+    entries_before = _workdir_entries(recorder)
+    target = tmp_path / "replace-failure.zip"
+    old_target = _prepare_target(target, True)
+
+    def fail_replace(*args, **kwargs) -> None:
+        raise OSError("injected os.replace failure")
+
+    monkeypatch.setattr(recorder_module.os, "replace", fail_replace)
+    with pytest.raises(OSError, match="injected os.replace failure"):
+        recorder.package_zip(target, analysis_analyzer=EightFactorAnalyzer())
+
+    _assert_failed_package_state(
+        recorder,
+        target,
+        old_target,
+        facts_before,
+        entries_before,
+    )
+
+
+def _fact_snapshot(recorder: SourceFrameRecorder) -> dict[str, bytes]:
+    return {
+        path.name: path.read_bytes()
+        for path in sorted(recorder.root.iterdir())
+        if path.is_file()
+        and (
+            path.name in FACT_SIDECARS
+            or (path.name.endswith(".json") and path.name[:-5].isdigit())
+        )
+    }
+
+
+def _workdir_entries(recorder: SourceFrameRecorder) -> tuple[str, ...]:
+    return tuple(sorted(path.name for path in recorder.root.iterdir()))
+
+
+def _prepare_target(target: Path, target_exists: bool) -> bytes | None:
+    if not target_exists:
+        return None
+    payload = b"pre-existing non-fact archive target"
+    target.write_bytes(payload)
+    return payload
+
+
+def _assert_failed_package_state(
+    recorder: SourceFrameRecorder,
+    target: Path,
+    old_target: bytes | None,
+    facts_before: dict[str, bytes],
+    entries_before: tuple[str, ...],
+) -> None:
+    assert _fact_snapshot(recorder) == facts_before
+    assert _workdir_entries(recorder) == entries_before
+    if old_target is None:
+        assert not target.exists()
+    else:
+        assert target.read_bytes() == old_target
+        assert hashlib.sha256(target.read_bytes()).hexdigest() == hashlib.sha256(
+            old_target
+        ).hexdigest()
     assert list(target.parent.glob(f".{target.name}.*")) == []
 
 

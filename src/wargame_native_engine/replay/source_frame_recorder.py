@@ -6,7 +6,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
 from wargame_native_engine.analysis.analyzer import (
@@ -119,15 +119,19 @@ class SourceFrameRecorder:
         if not self._finalized:
             raise RuntimeError("recorder_not_finalized")
         target = Path(output) if output is not None else self.root / "replay.zip"
-        member_paths = [
+        authoritative_member_paths = [
             path for path in self.root.iterdir()
-            if path.is_file() and path != target
-            and (_is_numbered_frame(path.name)
-                 or path.name in {
-                     "steps.jsonl",
-                     "replay_manifest.native.jsonl",
-                 })
+            if path.is_file()
+            and (_is_numbered_frame(path.name) or path.name in {
+                "steps.jsonl",
+                "replay_manifest.native.jsonl",
+            })
         ]
+        _validate_archive_output_does_not_alias_facts(
+            target,
+            authoritative_member_paths,
+        )
+        member_paths = authoritative_member_paths
         member_paths.sort(key=lambda path: _member_sort_key(path.name))
         members = [(path.name, path.read_bytes()) for path in member_paths]
 
@@ -218,6 +222,27 @@ def _member_sort_key(name: str) -> tuple[int, int | str]:
     if _is_numbered_frame(name):
         return (0, int(name[:-5]))
     return (1, name)
+
+
+def _validate_archive_output_does_not_alias_facts(
+    output: Path,
+    authoritative_member_paths: Sequence[Path],
+) -> None:
+    output_resolved = output.resolve(strict=False)
+    for member_path in authoritative_member_paths:
+        aliases_member = output_resolved == member_path.resolve(strict=False)
+        if not aliases_member and output.exists() and member_path.exists():
+            try:
+                aliases_member = os.path.samefile(output, member_path)
+            except FileNotFoundError:
+                # Either path may disappear between the existence and samefile
+                # checks; the normal packaging read will then fail safely.
+                aliases_member = False
+        if aliases_member:
+            raise ValueError(
+                f"archive output {output} conflicts with authoritative "
+                f"replay member {member_path.name}"
+            )
 
 
 def _build_analysis_sidecar(
