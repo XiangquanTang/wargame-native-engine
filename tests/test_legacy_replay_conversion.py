@@ -14,6 +14,7 @@ from wargame_native_engine.analysis import EightFactorAnalyzer
 from wargame_native_engine.analysis.legacy_replay_adapter import (
     load_legacy_serialized_replay,
 )
+from wargame_native_engine.compat.source_frame.importer import SourceFrameImporter
 from wargame_native_engine.io.importers.source_replay_archive import (
     SourceReplayArchiveImporter,
 )
@@ -167,6 +168,79 @@ def test_conversion_preserves_missing_legacy_time_metadata_as_unknown(
     assert all(frame.time.max_time is None for frame in imported.frames)
     assert all(frame.time.max_step is None for frame in imported.frames)
     assert all(frame.time.stage is None for frame in imported.frames)
+
+
+@pytest.mark.parametrize("field_name", ["max_time", "max_step", "stage"])
+def test_source_time_compatibility_field_is_none_only_when_missing(
+    field_name: str,
+) -> None:
+    value = _frame(4, "missing-time-field")
+    del value["time"][field_name]
+
+    imported = SourceFrameImporter().from_dict(value, source_hash="fixture-hash")
+
+    assert getattr(imported.time, field_name) is None
+    assert imported.time.cur_step == 4
+    assert imported.time.tick == 4
+
+
+@pytest.mark.parametrize("field_name", ["max_time", "max_step", "stage"])
+@pytest.mark.parametrize(
+    ("source_value", "expected_value"),
+    [(17, 17), ("17", 17), (17.9, 17), (True, 1)],
+)
+def test_source_time_compatibility_field_preserves_parent_int_conversion(
+    field_name: str,
+    source_value: Any,
+    expected_value: int,
+) -> None:
+    value = _frame(4, "present-time-field")
+    value["time"][field_name] = source_value
+
+    imported = SourceFrameImporter().from_dict(value, source_hash="fixture-hash")
+
+    assert getattr(imported.time, field_name) == expected_value
+
+
+@pytest.mark.parametrize("field_name", ["max_time", "max_step", "stage"])
+def test_source_time_compatibility_field_rejects_explicit_null(
+    field_name: str,
+) -> None:
+    value = _frame(4, "null-time-field")
+    value["time"][field_name] = None
+
+    with pytest.raises(TypeError):
+        SourceFrameImporter().from_dict(value, source_hash="fixture-hash")
+
+
+@pytest.mark.parametrize("field_name", ["max_time", "max_step", "stage"])
+@pytest.mark.parametrize(
+    ("source_value", "error_type"),
+    [([], TypeError), ({"invalid": 1}, TypeError), ("not-an-int", ValueError)],
+)
+def test_source_time_compatibility_field_preserves_parent_rejections(
+    field_name: str,
+    source_value: Any,
+    error_type: type[Exception],
+) -> None:
+    value = _frame(4, "invalid-time-field")
+    value["time"][field_name] = source_value
+
+    with pytest.raises(error_type):
+        SourceFrameImporter().from_dict(value, source_hash="fixture-hash")
+
+
+@pytest.mark.parametrize("field_name", ["cur_step", "tick"])
+def test_required_source_time_field_behavior_is_unchanged(field_name: str) -> None:
+    missing = _frame(4, "missing-required-time-field")
+    del missing["time"][field_name]
+    with pytest.raises(KeyError):
+        SourceFrameImporter().from_dict(missing, source_hash="fixture-hash")
+
+    explicit_null = _frame(4, "null-required-time-field")
+    explicit_null["time"][field_name] = None
+    with pytest.raises(TypeError):
+        SourceFrameImporter().from_dict(explicit_null, source_hash="fixture-hash")
 
 
 @pytest.mark.parametrize("existing", [False, True])

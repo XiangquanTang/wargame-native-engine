@@ -59,9 +59,9 @@ class SourceFrameImporter:
         return SourceFrame(
             source_hash=source_hash, operators=operators, passengers=passengers,
             time=SourceTimeState(int(time["cur_step"]), int(time["tick"]),
-                                 _optional_int(time.get("max_time")),
-                                 _optional_int(time.get("max_step")),
-                                 _optional_int(time.get("stage")),
+                                 _optional_time_int(time, "max_time"),
+                                 _optional_time_int(time, "max_step"),
+                                 _optional_time_int(time, "stage"),
                                  json_clone(time)),
             jm_points=tuple(SourceIndirectPoint(json_clone(_mapping(item, "jm_point")))
                             for item in _sequence(value["jm_points"], "jm_points")),
@@ -204,6 +204,12 @@ class SourceFrameImporter:
 
 def _optional_int(value: Any) -> int | None:
     return None if value is None else int(value)
+
+
+def _optional_time_int(time: Mapping[str, Any], field_name: str) -> int | None:
+    if field_name not in time:
+        return None
+    return int(time[field_name])
 
 
 def _mapping(value: Any, name: str) -> Mapping[str, Any]:
