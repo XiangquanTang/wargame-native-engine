@@ -9,7 +9,15 @@ import tempfile
 from typing import Any, Mapping
 from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
+from wargame_native_engine.analysis.analyzer import (
+    EightFactorAnalyzer,
+    GreenFrameAnalysisInput,
+)
+from wargame_native_engine.analysis.jsonl import analysis_frames_to_jsonl
 from wargame_native_engine.io.serialization import canonical_hash, file_sha256, json_clone
+
+
+ANALYSIS_SIDECAR_NAME = "frame_analysis.native.jsonl"
 
 
 class SourceFrameRecorder:
@@ -102,16 +110,41 @@ class SourceFrameRecorder:
         self._finalized = True
         return json_clone(manifest)
 
-    def package_zip(self, output: str | Path | None = None) -> Path:
+    def package_zip(
+        self,
+        output: str | Path | None = None,
+        *,
+        analysis_analyzer: EightFactorAnalyzer | None = None,
+    ) -> Path:
         if not self._finalized:
             raise RuntimeError("recorder_not_finalized")
         target = Path(output) if output is not None else self.root / "replay.zip"
-        members = [path for path in self.root.iterdir()
-                   if path.is_file() and path != target
-                   and (_is_numbered_frame(path.name)
-                        or path.name in {"steps.jsonl",
-                                         "replay_manifest.native.jsonl"})]
-        members.sort(key=lambda path: _member_sort_key(path.name))
+        member_paths = [
+            path for path in self.root.iterdir()
+            if path.is_file() and path != target
+            and (_is_numbered_frame(path.name)
+                 or path.name in {
+                     "steps.jsonl",
+                     "replay_manifest.native.jsonl",
+                 })
+        ]
+        member_paths.sort(key=lambda path: _member_sort_key(path.name))
+        members = [(path.name, path.read_bytes()) for path in member_paths]
+
+        if analysis_analyzer is not None:
+            sidecar_payload = _build_analysis_sidecar(
+                members,
+                analysis_analyzer,
+            )
+            first_fact_sidecar = next(
+                index for index, (name, _) in enumerate(members)
+                if not _is_numbered_frame(name)
+            )
+            members.insert(
+                first_fact_sidecar,
+                (ANALYSIS_SIDECAR_NAME, sidecar_payload),
+            )
+
         target.parent.mkdir(parents=True, exist_ok=True)
         descriptor, temporary = tempfile.mkstemp(
             prefix=f".{target.name}.", dir=target.parent)
@@ -119,11 +152,11 @@ class SourceFrameRecorder:
         try:
             with ZipFile(temporary, "w", compression=ZIP_DEFLATED,
                          compresslevel=9) as archive:
-                for path in members:
-                    info = ZipInfo(path.name, date_time=(1980, 1, 1, 0, 0, 0))
+                for name, payload in members:
+                    info = ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
                     info.compress_type = ZIP_DEFLATED
                     info.external_attr = 0o100644 << 16
-                    archive.writestr(info, path.read_bytes(), compresslevel=9)
+                    archive.writestr(info, payload, compresslevel=9)
             os.replace(temporary, target)
         finally:
             if os.path.exists(temporary):
@@ -185,3 +218,89 @@ def _member_sort_key(name: str) -> tuple[int, int | str]:
     if _is_numbered_frame(name):
         return (0, int(name[:-5]))
     return (1, name)
+
+
+def _build_analysis_sidecar(
+    members: list[tuple[str, bytes]],
+    analyzer: EightFactorAnalyzer,
+) -> bytes:
+    """Build and validate the derived sidecar before any ZIP is created."""
+
+    numbered = [
+        (int(name[:-5]), name, payload)
+        for name, payload in members
+        if _is_numbered_frame(name)
+    ]
+    if not numbered:
+        raise ValueError("analysis sidecar requires numbered frames")
+
+    actual_names = [name for _, name, _ in numbered]
+    expected_names = [f"{index}.json" for index in range(len(numbered))]
+    if actual_names != expected_names:
+        raise ValueError(
+            "analysis sidecar numbered frames must be continuous from 0"
+        )
+
+    manifest_payloads = [
+        payload for name, payload in members
+        if name == "replay_manifest.native.jsonl"
+    ]
+    if len(manifest_payloads) != 1:
+        raise ValueError("analysis sidecar requires one finalized manifest")
+    manifest_records = _read_jsonl_payload(manifest_payloads[0])
+    if len(manifest_records) != 1:
+        raise ValueError(
+            "analysis sidecar requires one finalized manifest record"
+        )
+    manifest = manifest_records[0]
+
+    frame_count = manifest.get("frame_count")
+    if type(frame_count) is not int or frame_count != len(numbered):
+        raise ValueError("analysis sidecar manifest frame_count mismatch")
+
+    frame_hashes = [
+        hashlib.sha256(payload).hexdigest()
+        for _, _, payload in numbered
+    ]
+    if manifest.get("frame_hashes") != frame_hashes:
+        raise ValueError("analysis sidecar numbered frame hash mismatch")
+
+    inputs: list[GreenFrameAnalysisInput] = []
+    scenario_hash = manifest.get("scenario_hash")
+    for frame_index, name, payload in numbered:
+        value = json.loads(payload.decode("utf-8"))
+        if not isinstance(value, Mapping):
+            raise ValueError(
+                f"analysis sidecar frame {name} root must be an object"
+            )
+        inputs.append(GreenFrameAnalysisInput(
+            frame_index=frame_index,
+            frame=value,
+            frame_hash=frame_hashes[frame_index],
+            scenario_hash=scenario_hash,
+        ))
+
+    timeline = analyzer.analyze_green_frames(tuple(inputs))
+    if timeline.frame_indices != tuple(range(frame_count)):
+        raise ValueError("analysis sidecar timeline frame index mismatch")
+    text = analysis_frames_to_jsonl(timeline.frame_analyses)
+    payload = text.encode("utf-8")
+    if not payload or not payload.endswith(b"\n"):
+        raise ValueError(
+            "analysis sidecar JSONL must be non-empty and newline-terminated"
+        )
+    if len(text.splitlines()) != frame_count:
+        raise ValueError("analysis sidecar JSONL frame_count mismatch")
+    return payload
+
+
+def _read_jsonl_payload(payload: bytes) -> list[Mapping[str, Any]]:
+    result: list[Mapping[str, Any]] = []
+    for line in payload.decode("utf-8").splitlines():
+        if not line.strip():
+            continue
+        value = json.loads(line)
+        if not isinstance(value, Mapping):
+            raise ValueError("JSONL record must be an object")
+        result.append(value)
+    return result

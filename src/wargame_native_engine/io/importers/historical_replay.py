@@ -381,7 +381,8 @@ class HistoricalReplayImporter:
             metadata={"source_archive_manifest": json_clone(manifest),
                       "frame_names": list(archive.frame_names),
                       "native_sidecars_ignored_as_frames": [
-                          "steps.jsonl", "replay_manifest.native.jsonl"]},
+                          "steps.jsonl", "replay_manifest.native.jsonl",
+                          "frame_analysis.native.jsonl"]},
             warnings=archive.warnings,
         )
         return HistoricalImportResult(
