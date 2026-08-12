@@ -12,20 +12,27 @@
       <p class="eyebrow">LOCAL · READ ONLY · GREEN</p>
       <h1>复盘态势与八因子分析</h1>
     </div>
-    <div id="compatibility" class="badges"></div>
+    <div class="compatibility-wrap">
+      <div id="compatibility" class="badges"></div>
+      <p id="strict-evidence-note" class="strict-evidence-note"></p>
+    </div>
   </header>
 
   <main>
     <section class="battle-panel panel">
       <div class="section-title">
         <div>
-          <h2>坐标态势视图</h2>
-          <p>仅显示 SourceFrame 事实坐标，不推断地形、道路或障碍</p>
+          <h2>六角地图态势视图</h2>
+          <p id="map-mode">正在加载地图配置…</p>
         </div>
         <div class="frame-readout">
           Frame <strong id="frame-index">0</strong>
           <span>cur_step <strong id="cur-step">—</strong></span>
         </div>
+      </div>
+      <div class="map-tools">
+        <button id="reset-map-view" type="button">适配全部地图</button>
+        <span>滚轮缩放 · 拖动平移 · 点击单位</span>
       </div>
       <canvas id="battlefield" aria-label="战场单位坐标画布"></canvas>
       <div class="legend">
@@ -100,6 +107,7 @@
   </main>
 
   <div id="error-banner" role="alert" hidden></div>
+  <script src="/static/map_renderer.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

@@ -30,8 +30,19 @@ from wargame_native_engine.viewer import (
 
 @pytest.fixture
 def native_bundle(tmp_path: Path) -> Path:
+    return _make_native_bundle(tmp_path, {
+        "scenario_id": "viewer-fixture",
+        "scenario_hash": "s" * 64,
+        "ruleset_id": "native-simplified",
+        "ruleset_version": "1.0",
+        "ruleset_hash": "r" * 64,
+        "episode_seed": 7,
+    })
+
+
+def _make_native_bundle(tmp_path: Path, metadata: dict) -> Path:
     recorder = SourceFrameRecorder(tmp_path / "recording")
-    recorder.start({"scenario_hash": "s" * 64}, started_at="2026-01-01T00:00:00Z")
+    recorder.start(metadata, started_at="2026-01-01T00:00:00Z")
     initial = _frame(0, perspective=True)
     recorder.record_initial(initial, initial_state_hash="a" * 64)
     following = _frame(1, perspective=True)
@@ -80,7 +91,7 @@ def legacy_bundle(tmp_path: Path) -> Path:
     return output
 
 
-def test_loads_native_replay_and_analysis_as_strict_playback(
+def test_loads_native_replay_with_available_strict_replay_evidence(
     native_bundle: Path,
 ) -> None:
     before = _tree_hashes(native_bundle)
@@ -89,7 +100,12 @@ def test_loads_native_replay_and_analysis_as_strict_playback(
 
     assert view.frame_count == 2
     assert view.archive.frame_names == ("0.json", "1.json")
-    assert view.replay_record()["strict_replay_supported"] is True
+    replay = view.replay_record()
+    assert replay["strict_replay_evidence_status"] == "Available"
+    assert "strict_replay_supported" not in replay
+    assert replay["strict_replay_evidence_note"] == (
+        "Evidence availability does not mean replay verified."
+    )
     assert view.replay_record()["perspective"] == "GREEN"
     assert view.frame_record(0)["time"]["cur_step"] == 0
     assert view.frame_record(1)["actions"][0]["action_type"] == "MOVE"
@@ -102,7 +118,7 @@ def test_loads_legacy_conversion_with_unknown_and_missing_time_fields(
     view = load_replay_view(legacy_bundle)
 
     assert view.frame_count == 2
-    assert view.replay_record()["strict_replay_supported"] is False
+    assert view.replay_record()["strict_replay_evidence_status"] == "Unavailable"
     assert view.replay_record()["playback_compatibility"] == (
         "source-numbered-frame-playback/1.0"
     )
@@ -262,15 +278,19 @@ def test_http_api_and_static_assets_are_read_only(legacy_bundle: Path) -> None:
         frame = _get_json(base + "/api/frame/0")
         analysis = _get_json(base + "/api/analysis/0")
         timeline = _get_json(base + "/api/timeline")
+        map_record = _get_json(base + "/api/map")
         index = urlopen(base + "/", timeout=5).read().decode("utf-8")
         script = urlopen(base + "/static/app.js", timeout=5).read().decode("utf-8")
+        map_script = urlopen(base + "/static/map_renderer.js", timeout=5).read().decode("utf-8")
         styles = urlopen(base + "/static/styles.css", timeout=5).read().decode("utf-8")
 
         assert replay["frame_count"] == 2
         assert frame["frame_index"] == analysis["provenance"]["frame_index"] == 0
         assert len(timeline["frame_indices"]) == 2
-        assert "坐标态势视图" in index
+        assert map_record["mode"] == "coordinate-fallback"
+        assert "六角地图态势视图" in index
         assert "currentFrameIndex" in script
+        assert "hexToPixel" in map_script
         assert "--red" in styles
         with pytest.raises(HTTPError) as out_of_range:
             urlopen(base + "/api/frame/99", timeout=5)
@@ -299,6 +319,61 @@ def test_frontend_uses_one_frame_index_for_all_synchronized_views() -> None:
     assert 'factor.status === "UNKNOWN" ? "UNKNOWN"' in script
     assert "currentFrame.actions ?? []" in script
     assert "currentFrame.judge_info ?? []" in script
+    assert 'requestJson("/api/map")' in script
+    assert "strict_replay_supported" not in script
+    assert "Strict replay evidence:" in script
+
+
+def test_incomplete_native_evidence_is_not_reported_as_supported(
+    tmp_path: Path,
+) -> None:
+    output = _make_native_bundle(tmp_path, {"scenario_hash": "s" * 64})
+
+    replay = load_replay_view(output).replay_record()
+
+    assert replay["strict_replay_evidence_status"] == "Incomplete"
+    assert "strict_replay_supported" not in replay
+
+
+def test_explicit_map_config_is_loaded_and_must_match_replay(
+    native_bundle: Path,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "map.json"
+    value = {
+        "map_id": "7",
+        "coordinate_system": "odd-r",
+        "max_row": 2,
+        "max_column": 4,
+        "map_data": [[
+            {"r": 0, "c": 0, "elev": 0, "cond": 0,
+             "roads": [0] * 6, "rivers": [0] * 6},
+            {"r": 0, "c": 1, "elev": 10, "cond": 1,
+             "roads": [1, 0, 0, 0, 0, 0], "rivers": [0] * 6},
+            {"r": 0, "c": 2, "elev": 20, "cond": 4,
+             "roads": [0] * 6, "rivers": [0, 1, 0, 0, 0, 0]},
+        ], [
+            {"r": 1, "c": 0, "elev": 30, "cond": 2,
+             "roads": [0] * 6, "rivers": [0] * 6},
+            {"r": 1, "c": 1, "elev": 40, "cond": 3,
+             "roads": [0] * 6, "rivers": [0] * 6},
+            {"r": 1, "c": 2, "elev": 50, "cond": 0,
+             "roads": [0] * 6, "rivers": [0] * 6},
+        ]],
+    }
+    path.write_text(json.dumps(value), encoding="utf-8")
+
+    view = load_replay_view(native_bundle, map_config=path)
+
+    assert view.map_record()["mode"] == "configured-hex-map"
+    assert view.map_record()["bounds"] == {
+        "min_row": 0, "max_row": 1,
+        "min_column": 0, "max_column": 3,
+    }
+    value["map_id"] = "wrong"
+    path.write_text(json.dumps(value), encoding="utf-8")
+    with pytest.raises(ReplayViewerLoadError, match="map_id does not match"):
+        load_replay_view(native_bundle, map_config=path)
 
 
 def test_viewer_cli_defaults_to_loopback_only() -> None:
@@ -306,6 +381,7 @@ def test_viewer_cli_defaults_to_loopback_only() -> None:
 
     assert arguments.host == "127.0.0.1"
     assert arguments.port == 8000
+    assert arguments.map_config is None
 
 
 def test_analysis_model_provenance_must_be_consistent(native_bundle: Path) -> None:

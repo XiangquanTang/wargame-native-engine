@@ -15,6 +15,7 @@ from wargame_native_engine.viewer.replay_view import ReplayView
 _STATIC_ROOT = Path(__file__).with_name("static")
 _STATIC_FILES = {
     "/": ("index.html", "text/html; charset=utf-8"),
+    "/static/map_renderer.js": ("map_renderer.js", "text/javascript; charset=utf-8"),
     "/static/app.js": ("app.js", "text/javascript; charset=utf-8"),
     "/static/styles.css": ("styles.css", "text/css; charset=utf-8"),
 }
@@ -49,6 +50,9 @@ class ReplayViewerRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/timeline":
             self._send_json(HTTPStatus.OK, self.server.view.timeline_record())
             return
+        if path == "/api/map":
+            self._send_json(HTTPStatus.OK, self.server.view.map_record())
+            return
         for prefix, getter in (
             ("/api/frame/", self.server.view.frame_record),
             ("/api/analysis/", self.server.view.analysis_record),
@@ -60,7 +64,9 @@ class ReplayViewerRequestHandler(BaseHTTPRequestHandler):
 
     def do_HEAD(self) -> None:  # noqa: N802 - stdlib handler API
         path = unquote(urlsplit(self.path).path)
-        if path in _STATIC_FILES or path in {"/api/replay", "/api/timeline"}:
+        if path in _STATIC_FILES or path in {
+            "/api/replay", "/api/timeline", "/api/map",
+        }:
             self.send_response(HTTPStatus.OK)
             self.end_headers()
             return

@@ -18,6 +18,10 @@ def build_parser() -> argparse.ArgumentParser:
         description="View one local replay and its external eight-factor analysis.",
     )
     parser.add_argument("--replay-dir", required=True)
+    parser.add_argument(
+        "--map-config",
+        help="optional explicit odd-r basic-map JSON; no filename inference",
+    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     return parser
@@ -26,7 +30,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        view = load_replay_view(args.replay_dir)
+        view = load_replay_view(args.replay_dir, map_config=args.map_config)
         server = create_replay_viewer_server(
             view,
             host=args.host,

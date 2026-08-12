@@ -25,6 +25,11 @@ from wargame_native_engine.io.importers.source_replay_archive import (
     SourceReplayArchiveImporter,
 )
 from wargame_native_engine.io.serialization import json_clone
+from wargame_native_engine.viewer.map_config import (
+    ViewerMapConfig,
+    coordinate_fallback_record,
+    load_viewer_map_config,
+)
 
 
 REPLAY_ARCHIVE_NAME = "replay.zip"
@@ -32,6 +37,21 @@ ANALYSIS_SIDECAR_NAME = "frame_analysis.native.jsonl"
 PLAYBACK_COMPATIBILITY = "source-numbered-frame-playback/1.0"
 NATIVE_REPLAY_FORMAT = "native-source-frame-replay/1.0"
 _SOURCE_MAPPINGS = SourceMappings()
+_STRICT_REPLAY_MANIFEST_FIELDS = frozenset({
+    "scenario_id",
+    "scenario_hash",
+    "ruleset_id",
+    "ruleset_version",
+    "ruleset_hash",
+    "episode_seed",
+    "initial_state_hash",
+    "final_state_hash",
+})
+_STRICT_REPLAY_STEP_FIELDS = frozenset({
+    "delta_time_ms",
+    "ordered_actions",
+    "expected_state_hash",
+})
 
 
 class ReplayViewerLoadError(ValueError):
@@ -46,7 +66,8 @@ class ReplayView:
     archive: SourceReplayArchive
     analysis: AnalysisSidecarLoadResult
     playback_compatibility: str
-    strict_replay_supported: bool
+    strict_replay_evidence_status: str
+    map_data: Mapping[str, object]
     model_id: str
     model_version: str
     model_hash: str | None
@@ -63,7 +84,10 @@ class ReplayView:
             "last_frame_index": self.frame_count - 1,
             "perspective": "GREEN",
             "playback_compatibility": self.playback_compatibility,
-            "strict_replay_supported": self.strict_replay_supported,
+            "strict_replay_evidence_status": self.strict_replay_evidence_status,
+            "strict_replay_evidence_note": (
+                "Evidence availability does not mean replay verified."
+            ),
             "model_provenance": {
                 "model_id": self.model_id,
                 "model_version": self.model_version,
@@ -77,6 +101,9 @@ class ReplayView:
             "winner": manifest.get("winner"),
             "outcome": manifest.get("outcome"),
         }
+
+    def map_record(self) -> dict[str, object]:
+        return json_clone(self.map_data)
 
     def frame_record(self, frame_index: int) -> dict[str, object]:
         index = self._checked_index(frame_index)
@@ -126,7 +153,11 @@ class ReplayView:
         return frame_index
 
 
-def load_replay_view(replay_dir: str | Path) -> ReplayView:
+def load_replay_view(
+    replay_dir: str | Path,
+    *,
+    map_config: str | Path | None = None,
+) -> ReplayView:
     """Load and strictly align a replay ZIP with its external analysis JSONL."""
 
     root = Path(replay_dir)
@@ -202,9 +233,42 @@ def load_replay_view(replay_dir: str | Path) -> ReplayView:
     manifest_perspective = manifest.get("perspective")
     if manifest_perspective is not None and manifest_perspective != "GREEN":
         raise ReplayViewerLoadError("replay manifest perspective must be GREEN")
-    strict_replay_supported = (
-        manifest.get("replay_format") == NATIVE_REPLAY_FORMAT
+    strict_replay_evidence_status = _strict_replay_evidence_status(archive)
+    try:
+        loaded_map: ViewerMapConfig | None = (
+            None if map_config is None else load_viewer_map_config(map_config)
+        )
+    except (OSError, ValueError) as exc:
+        raise ReplayViewerLoadError(f"failed to load map config: {exc}") from exc
+    map_data = (
+        coordinate_fallback_record(archive.frames)
+        if loaded_map is None
+        else loaded_map.to_record()
     )
+    if loaded_map is not None and loaded_map.map_id is not None:
+        replay_map_ids = {
+            str(frame.terrain_id)
+            for frame in archive.frames
+            if frame.terrain_id is not None
+        }
+        if replay_map_ids and replay_map_ids != {loaded_map.map_id}:
+            raise ReplayViewerLoadError(
+                "map config map_id does not match replay terrain_id: "
+                f"config={loaded_map.map_id!r}, replay={sorted(replay_map_ids)!r}"
+            )
+    if loaded_map is not None:
+        for frame_index, frame in enumerate(archive.frames):
+            for unit in (*frame.operators, *frame.passengers):
+                row, column = unit.row_col
+                if not (
+                    0 <= row < loaded_map.rows
+                    and 0 <= column < loaded_map.columns
+                ):
+                    raise ReplayViewerLoadError(
+                        "replay unit is outside map config bounds at frame "
+                        f"{frame_index}: unit={unit.obj_id}, row={row}, "
+                        f"column={column}"
+                    )
     playback_compatibility = str(
         manifest.get("source_frame_compatibility_version")
         or PLAYBACK_COMPATIBILITY
@@ -214,11 +278,28 @@ def load_replay_view(replay_dir: str | Path) -> ReplayView:
         archive=archive,
         analysis=analysis,
         playback_compatibility=playback_compatibility,
-        strict_replay_supported=strict_replay_supported,
+        strict_replay_evidence_status=strict_replay_evidence_status,
+        map_data=map_data,
         model_id=model_identity[0],
         model_version=model_identity[1],
         model_hash=model_identity[2],
     )
+
+
+def _strict_replay_evidence_status(archive: SourceReplayArchive) -> str:
+    """Classify evidence presence without claiming strict verification."""
+
+    manifest = archive.manifest
+    has_native_manifest = manifest.get("replay_format") == NATIVE_REPLAY_FORMAT
+    has_any_evidence = bool(manifest) or bool(archive.steps)
+    if not has_native_manifest:
+        return "Incomplete" if has_any_evidence else "Unavailable"
+    manifest_complete = _STRICT_REPLAY_MANIFEST_FIELDS <= set(manifest)
+    steps_complete = bool(archive.steps) and all(
+        _STRICT_REPLAY_STEP_FIELDS <= set(step)
+        for step in archive.steps
+    )
+    return "Available" if manifest_complete and steps_complete else "Incomplete"
 
 
 def _validate_explicit_frame_perspective(frame: SourceFrame, index: int) -> None:
@@ -277,6 +358,7 @@ def _frame_record(
         "outcome": json_clone(frame.raw.get("outcome")),
         "scenario_id": frame.scenario_id,
         "terrain_id": json_clone(frame.terrain_id),
+        "cities": [json_clone(city.raw) for city in frame.cities],
         "viewer_units": units,
     }
 
@@ -288,18 +370,56 @@ def _viewer_unit(
 ) -> dict[str, object]:
     row, column = unit.row_col
     state = mappings.unit_state(unit).value
+    health_ratio = unit.blood / unit.max_blood
     return {
         "operator_id": unit.obj_id,
         "category": category,
         "side": str(mappings.side(unit.color).native_effective_value),
+        "name": unit.name,
+        "type_code": unit.type_code,
+        "sub_type_code": unit.sub_type_code,
+        "icon_key": _unit_icon_key(unit.type_code, unit.sub_type_code),
         "current_hex": unit.current_hex,
         "row": row,
         "column": column,
         "blood": unit.blood,
         "max_blood": unit.max_blood,
+        "health_ratio": health_ratio,
         "alive": unit.alive,
+        "destroyed": not unit.alive,
         "state": state,
         "stopped": unit.stopped,
+        "marching": unit.marching,
+        "suppressed": unit.suppressed,
+        "move_state": json_clone(unit.raw.get("move_state")),
+        "direction": json_clone(unit.raw.get("direction")),
         "lose_control": bool(unit.raw.get("lose_control", False)),
         "can_to_move": json_clone(unit.raw.get("can_to_move")),
+        "on_board": unit.on_board,
+        "carrier_id": unit.car_id,
+        "launcher_id": unit.launcher_id,
     }
+
+
+def _unit_icon_key(type_code: int, sub_type_code: int) -> str:
+    subtype = {
+        0: "tank",
+        1: "armored_vehicle",
+        2: "infantry",
+        3: "artillery",
+        4: "unmanned_ground_vehicle",
+        5: "drone",
+        6: "helicopter",
+        7: "loitering_munition",
+        8: "helicopter",
+        9: "armored_vehicle",
+        10: "armored_vehicle",
+    }.get(sub_type_code)
+    if subtype is not None:
+        return subtype
+    return {
+        1: "infantry",
+        2: "armored_vehicle",
+        3: "drone",
+        4: "facility",
+    }.get(type_code, "unit_fallback")

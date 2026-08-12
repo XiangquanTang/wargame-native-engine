@@ -28,12 +28,18 @@ main { padding: 18px; display: grid; grid-template-columns: minmax(540px, 1.6fr)
 .frame-readout { color: var(--muted); text-align: right; }
 .frame-readout span { margin-left: 12px; }
 #battlefield { width: 100%; height: 410px; flex: 1; background: linear-gradient(#101b24cc, #101b24cc), repeating-linear-gradient(0deg, transparent 0 29px, #29405055 30px), repeating-linear-gradient(90deg, transparent 0 29px, #29405055 30px); border: 1px solid #223744; border-radius: 4px; cursor: crosshair; }
+.map-tools { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 11px; margin: -4px 0 10px; }
+.map-tools button { padding: 5px 8px; }
+#battlefield { cursor: grab; }
+#battlefield:active { cursor: grabbing; }
 .legend { display: flex; gap: 14px; align-items: center; color: var(--muted); font-size: 11px; margin-top: 9px; flex-wrap: wrap; }
 .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 5px; }
 .red-dot { background: var(--red); }.blue-dot { background: var(--blue); }.passenger-dot { background: transparent; border: 2px solid var(--gold); }.destroyed-dot { background: #667; opacity: .65; }
 .badges { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.compatibility-wrap { display: grid; justify-items: end; gap: 5px; max-width: 620px; }
+.strict-evidence-note { color: var(--muted); font-size: 10px; text-align: right; }
 .badge { padding: 5px 9px; border: 1px solid var(--line); background: var(--panel-2); border-radius: 99px; font-size: 11px; }
-.badge.yes { border-color: #2f7553; color: var(--green); }.badge.no { border-color: #704247; color: #ff9196; }
+.badge.yes { border-color: #2f7553; color: var(--green); }.badge.warn { border-color: #806b31; color: var(--gold); }.badge.no { border-color: #704247; color: #ff9196; }
 .summary, .factor-panel { padding: 14px; }
 .metric-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .metric { background: var(--panel-2); border-left: 3px solid var(--line); padding: 10px; min-height: 73px; }

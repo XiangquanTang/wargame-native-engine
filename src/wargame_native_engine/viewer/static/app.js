@@ -10,13 +10,14 @@ let currentFrameIndex = 0;
 let frameCount = 0;
 let replayMetadata = null;
 let timelineData = null;
+let mapData = null;
 let currentFrame = null;
 let currentAnalysis = null;
 let selectedUnitId = null;
 let requestToken = 0;
 let playbackTimer = null;
 let playbackRate = 1;
-let hitTargets = [];
+let mapRenderer = null;
 
 const $ = (id) => document.getElementById(id);
 
@@ -91,40 +92,7 @@ function fitCanvas(canvas) {
 }
 
 function renderBattlefield() {
-  const canvas = $("battlefield");
-  const [context, width, height] = fitCanvas(canvas);
-  context.clearRect(0, 0, width, height);
-  const units = currentFrame.viewer_units || [];
-  hitTargets = [];
-  if (!units.length) {
-    context.fillStyle = "#8fa6b5"; context.fillText("No units in this frame", 20, 30); return;
-  }
-  const rows = units.map((unit) => unit.row);
-  const columns = units.map((unit) => unit.column);
-  const minRow = Math.min(...rows), maxRow = Math.max(...rows);
-  const minColumn = Math.min(...columns), maxColumn = Math.max(...columns);
-  const margin = 38;
-  const x = (column) => margin + ((column - minColumn) / Math.max(1, maxColumn - minColumn)) * (width - margin * 2);
-  const y = (row) => height - margin - ((row - minRow) / Math.max(1, maxRow - minRow)) * (height - margin * 2);
-  for (const unit of units) {
-    const px = x(unit.column), py = y(unit.row);
-    const selected = unit.operator_id === selectedUnitId;
-    context.beginPath();
-    context.arc(px, py, selected ? 12 : 9, 0, Math.PI * 2);
-    context.fillStyle = !unit.alive ? "#65717b" : unit.side === "red" ? "#ff5b62" : unit.side === "blue" ? "#45a8ff" : "#a2abb0";
-    context.fill();
-    if (unit.category === "passenger") {
-      context.strokeStyle = "#ffc857"; context.lineWidth = 3; context.stroke();
-    }
-    if (selected) { context.strokeStyle = "#fff"; context.lineWidth = 2; context.stroke(); }
-    if (unit.lose_control || unit.can_to_move === false) {
-      context.strokeStyle = "#ffc857"; context.lineWidth = 2;
-      context.beginPath(); context.moveTo(px - 10, py - 10); context.lineTo(px + 10, py + 10); context.stroke();
-    }
-    context.fillStyle = "#e8f1f5"; context.font = "11px ui-monospace";
-    context.fillText(String(unit.operator_id), px + 12, py + 4);
-    hitTargets.push({ x: px, y: py, radius: 15, operatorId: unit.operator_id });
-  }
+  if (mapRenderer) mapRenderer.render(currentFrame, selectedUnitId);
 }
 
 function renderFactors() {
@@ -210,31 +178,40 @@ function showError(message) {
 
 async function initialize() {
   try {
-    [replayMetadata, timelineData] = await Promise.all([
-      requestJson("/api/replay"), requestJson("/api/timeline"),
+    [replayMetadata, timelineData, mapData] = await Promise.all([
+      requestJson("/api/replay"), requestJson("/api/timeline"), requestJson("/api/map"),
     ]);
     frameCount = replayMetadata.frame_count;
     $("frame-slider").max = String(frameCount - 1);
     $("frame-jump").max = String(frameCount - 1);
     const playbackBadge = document.createElement("span");
     playbackBadge.className = "badge yes"; playbackBadge.textContent = "Playback compatible";
+    const strictStatus = replayMetadata.strict_replay_evidence_status;
     const strictBadge = document.createElement("span");
-    strictBadge.className = `badge ${replayMetadata.strict_replay_supported ? "yes" : "no"}`;
-    strictBadge.textContent = `Strict replay: ${replayMetadata.strict_replay_supported ? "Yes" : "No"}`;
+    strictBadge.className = `badge ${strictStatus === "Available" ? "yes" : strictStatus === "Incomplete" ? "warn" : "no"}`;
+    strictBadge.textContent = `Strict replay evidence: ${strictStatus}`;
+    strictBadge.title = replayMetadata.strict_replay_evidence_note;
     const modelBadge = document.createElement("span");
     modelBadge.className = "badge";
     modelBadge.textContent = `${replayMetadata.model_provenance.model_id} ${replayMetadata.model_provenance.model_version}`;
     $("compatibility").replaceChildren(playbackBadge, strictBadge, modelBadge);
+    $("strict-evidence-note").textContent = replayMetadata.strict_replay_evidence_note;
+    $("map-mode").textContent = mapData.mode === "configured-hex-map"
+      ? `Odd-r hex map · ${mapData.map_id ?? "unnamed"} · ${mapData.rows}×${mapData.columns}`
+      : "Coordinate fallback · no terrain configuration";
+    mapRenderer = new window.ReplayMapRenderer.MapRenderer($("battlefield"), {
+      onUnitSelected: (operatorId) => {
+        selectedUnitId = operatorId;
+        renderBattlefield();
+        renderFactors();
+      },
+    });
+    mapRenderer.setMap(mapData);
     await setCurrentFrameIndex(0);
   } catch (error) { showError(error.message); }
 }
 
-$("battlefield").addEventListener("click", (event) => {
-  const rect = event.currentTarget.getBoundingClientRect();
-  const point = { x: event.clientX - rect.left, y: event.clientY - rect.top };
-  const hit = hitTargets.find((target) => Math.hypot(target.x - point.x, target.y - point.y) <= target.radius);
-  if (hit) { selectedUnitId = hit.operatorId; renderBattlefield(); renderFactors(); }
-});
+$("reset-map-view").addEventListener("click", () => mapRenderer?.resetView());
 $("previous-frame").addEventListener("click", () => setCurrentFrameIndex(Math.max(0, currentFrameIndex - 1)));
 $("next-frame").addEventListener("click", () => setCurrentFrameIndex(Math.min(frameCount - 1, currentFrameIndex + 1)));
 $("play-pause").addEventListener("click", () => playbackTimer === null ? startPlayback() : pausePlayback());
