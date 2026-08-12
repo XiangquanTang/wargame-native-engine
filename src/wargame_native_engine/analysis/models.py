@@ -166,3 +166,11 @@ class AnalysisEvent:
             field_name="previous_frame_index",
         )
         _validate_frame_index(self.frame_index)
+
+
+@dataclass(frozen=True, slots=True)
+class AnalysisSidecarLoadResult:
+    """A reconstructed timeline plus events persisted in analysis JSONL."""
+
+    timeline: AnalysisTimeline
+    events: tuple[AnalysisEvent, ...]
