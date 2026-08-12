@@ -12,6 +12,7 @@ from wargame_native_engine.analysis.green_frame_contract import (
 )
 from wargame_native_engine.analysis.models import (
     AnalysisTimeline,
+    FrameAnalysis,
     _validate_frame_index,
 )
 from wargame_native_engine.analysis.timeline import build_analysis_timeline
@@ -54,6 +55,22 @@ class EightFactorAnalyzer:
     model_version: str = _DEFAULT_MODEL_VERSION
     model_hash: str | None = _DEFAULT_MODEL_HASH
 
+    def analyze_green_frame(
+        self,
+        item: GreenFrameAnalysisInput,
+    ) -> FrameAnalysis:
+        """Analyze one detached GREEN frame without retaining batch state."""
+
+        return build_green_frame_analysis(
+            item.frame,
+            frame_index=item.frame_index,
+            frame_hash=item.frame_hash,
+            scenario_hash=item.scenario_hash,
+            model_id=self.model_id,
+            model_version=self.model_version,
+            model_hash=self.model_hash,
+        )
+
     def analyze_green_frames(
         self,
         inputs: Sequence[GreenFrameAnalysisInput],
@@ -65,16 +82,5 @@ class EightFactorAnalyzer:
         their exceptions are intentionally allowed to propagate unchanged.
         """
 
-        frame_analyses = tuple(
-            build_green_frame_analysis(
-                item.frame,
-                frame_index=item.frame_index,
-                frame_hash=item.frame_hash,
-                scenario_hash=item.scenario_hash,
-                model_id=self.model_id,
-                model_version=self.model_version,
-                model_hash=self.model_hash,
-            )
-            for item in inputs
-        )
+        frame_analyses = tuple(self.analyze_green_frame(item) for item in inputs)
         return build_analysis_timeline(frame_analyses)

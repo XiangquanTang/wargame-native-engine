@@ -14,6 +14,11 @@ from wargame_native_engine.analysis.models import (
     AnalysisSidecarLoadResult,
     AnalysisTimeline,
 )
+from wargame_native_engine.analysis.replay_processor import (
+    FRAME_ANALYSIS_JSONL_NAME,
+    ReplayAnalysisResult,
+    analyze_replay_to_jsonl,
+)
 from wargame_native_engine.analysis.serialization import (
     ANALYSIS_SCHEMA,
     AnalysisSidecarFormatError,
@@ -29,8 +34,11 @@ __all__ = [
     "AnalysisSidecarLoadResult",
     "AnalysisTimeline",
     "EightFactorAnalyzer",
+    "FRAME_ANALYSIS_JSONL_NAME",
     "GreenFrameAnalysisInput",
+    "ReplayAnalysisResult",
     "analysis_frames_to_jsonl",
+    "analyze_replay_to_jsonl",
     "analysis_sidecar_from_jsonl",
     "build_analysis_timeline",
     "detect_advantage_label_changes",
