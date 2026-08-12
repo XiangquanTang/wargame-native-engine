@@ -41,9 +41,9 @@ class UnitState(str, Enum):
 class SourceTimeState:
     cur_step: int
     tick: int
-    max_time: int
-    max_step: int
-    stage: int
+    max_time: int | None
+    max_step: int | None
+    stage: int | None
     raw: Mapping[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:

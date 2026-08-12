@@ -62,7 +62,10 @@ class SourceReplayArchiveImporter:
             frames.append((numeric, name, frame,
                            hashlib.sha256(payload).hexdigest()))
         frames.sort(key=lambda item: (
-            int(item[2].time.stage), int(item[2].time.cur_step), item[0]))
+            _optional_stage_sort_key(item[2].time.stage),
+            int(item[2].time.cur_step),
+            item[0],
+        ))
         steps = _jsonl(values.get("steps.jsonl", b""))
         manifest_values = _jsonl(values.get("replay_manifest.native.jsonl", b""))
         manifest = manifest_values[0] if manifest_values else {}
@@ -131,3 +134,9 @@ def _directory_hash(path: Path) -> str:
         digest.update(item.read_bytes())
         digest.update(b"\0")
     return digest.hexdigest()
+
+
+def _optional_stage_sort_key(stage: int | None) -> tuple[int, int]:
+    """Sort known stages normally while retaining deterministic unknown order."""
+
+    return (0, 0) if stage is None else (1, int(stage))
