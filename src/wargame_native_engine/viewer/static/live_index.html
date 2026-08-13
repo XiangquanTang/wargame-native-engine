@@ -28,7 +28,7 @@
       </div>
       <div class="map-tools">
         <button id="reset-map-view" type="button">适配地图</button>
-        <span>滚轮缩放 · 拖动平移 · 点击己方单位筛选动作</span>
+        <span>滚轮缩放 · 拖动平移 · 点击己方单位 · 双击合法目标提交</span>
       </div>
       <canvas id="battlefield" aria-label="当前方可见六角地图"></canvas>
       <p id="hex-info" class="hex-info">移动鼠标查看六边形坐标</p>
@@ -43,10 +43,14 @@
     <aside class="panel command-panel">
       <div class="section-title"><h2>当前 Native valid_actions</h2></div>
       <p id="selected-unit">未选择单位</p>
-      <label for="action-select">动作</label>
+      <pre id="selected-unit-detail" class="unit-detail">请选择己方可操作单位</pre>
+      <div id="action-groups" class="action-groups"></div>
+      <label for="action-select">精确动作（安全回退选择器）</label>
       <select id="action-select"></select>
-      <button id="submit-action" type="button">提交一次联合推进</button>
+      <pre id="action-preview" class="action-preview">尚未预选动作</pre>
+      <button id="submit-action" type="button">确认提交所选 action_id</button>
       <p class="boundary-note">动作由 CommandGateway 按当前 action_id 解析；不补路、不猜目标、不直接修改 WorldState。</p>
+      <p class="boundary-note">当前模式：人工一方 vs NoOp。MOVE仅显示规则引擎返回的显式相邻路径；SHOOT仅显示当前可见合法目标。</p>
       <div class="section-title status-title"><h2>状态</h2></div>
       <pre id="command-status">等待操作</pre>
       <button id="publish-match" type="button">发布 replay 与 analysis</button>
@@ -59,6 +63,7 @@
   </main>
   <div id="error-banner" role="alert" hidden></div>
   <script src="/static/map_renderer.js"></script>
+  <script src="/static/live_actions.js"></script>
   <script src="/static/live_app.js"></script>
 </body>
 </html>

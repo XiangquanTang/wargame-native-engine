@@ -222,6 +222,7 @@ def test_http_surface_is_fixed_and_publication_aligns_replay_analysis(
             for path, content_type in (
                 ("/", "text/html"),
                 ("/static/live_app.js", "text/javascript"),
+                ("/static/live_actions.js", "text/javascript"),
                 ("/static/map_renderer.js", "text/javascript"),
                 ("/static/styles.css", "text/css"),
                 ("/static/live_styles.css", "text/css"),
@@ -303,6 +304,39 @@ def test_stale_command_and_invalid_request_id_fail_before_advance(
         fixture.close()
 
 
+def test_http_submits_exact_server_move_id_and_refreshes_side_view(
+    tmp_path: Path,
+) -> None:
+    fixture = Fixture(tmp_path)
+    try:
+        with running_server(fixture.server) as address:
+            initial = as_json(request(address, "GET", "/api/view")[1])
+            move = next(
+                item for item in initial["valid_actions"]
+                if item["action"]["action_type"] == "MOVE"
+            )
+            assert move["action"]["parameters"]["path"] == [102]
+            status, payload, _ = request(address, "POST", "/api/command", {
+                "request_id": "map-double-click-102",
+                "expected_step": initial["step_index"],
+                "valid_action_id": move["action_id"],
+            })
+            current = as_json(payload)["current"]
+
+            assert status == 200
+            assert current["step_index"] == 1
+            assert current["perspective"] == "RED"
+            assert any(
+                item["action_type"] == "MOVE"
+                and item["actor_id"] == 1
+                and item["parameters"]["path"] == [102]
+                for item in current["frame"]["actions"]
+            )
+            assert "GREEN" not in json.dumps(current, sort_keys=True)
+    finally:
+        fixture.close()
+
+
 def test_static_client_has_one_step_index_and_no_referee_analysis_endpoint() -> None:
     source = Path(
         "src/wargame_native_engine/viewer/static/live_app.js"
@@ -314,6 +348,15 @@ def test_static_client_has_one_step_index_and_no_referee_analysis_endpoint() -> 
     assert source.count("let currentStepIndex") == 1
     assert "currentView.step_index" in source
     assert 'requestJson("/api/command"' in source
+    assert "valid_action_id: exact?.action_id ?? null" in source
+    assert "expected_step: currentStepIndex" in source
+    assert "actionsForMoveTarget" in source
+    assert "actionsForShootTarget" in source
+    assert "onHexActivated" in source
+    assert "onUnitActivated" in source
+    assert "commandPending" in source
+    assert "pathfind" not in source.lower()
+    assert "new EngineAction" not in source
     assert "/api/referee" not in source
     assert "GREEN / 八因子不暴露给控制端" in html
     assert "summarizeMapLayers(mapData)" in source
@@ -322,6 +365,9 @@ def test_static_client_has_one_step_index_and_no_referee_analysis_endpoint() -> 
     assert 'id="map-layer-summary"' in html
     assert "道路" in html
     assert "河流" in html
+    assert "/static/live_actions.js" in html
+    assert "双击合法目标提交" in html
+    assert "不补路" in html
 
 
 def test_local_control_cli_defaults_to_loopback_and_requires_output() -> None:

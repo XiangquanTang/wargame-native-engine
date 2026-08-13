@@ -2,6 +2,17 @@
 .command-panel { padding: 15px; display: flex; flex-direction: column; gap: 10px; }
 .command-panel select { width: 100%; min-height: 42px; background: var(--panel-2); color: var(--text); border: 1px solid var(--line); }
 .command-panel button { width: 100%; }
+.unit-detail, .action-preview { margin: 0; max-height: 150px; border: 1px solid var(--line); background: #0e1720; padding: 8px; }
+.action-groups { display: grid; gap: 9px; max-height: 360px; overflow: auto; }
+.action-group { border: 1px solid var(--line); padding: 7px; background: #101a23; }
+.action-group h3 { margin: 0 0 6px; color: var(--gold); font: 600 11px/1.2 ui-monospace, monospace; }
+.action-buttons { display: grid; gap: 5px; }
+.action-button { text-align: left; font-size: 11px; overflow-wrap: anywhere; }
+.action-button.selected { border-color: var(--gold); background: #59471d; }
+.action-button.move { border-left: 3px solid var(--green); }
+.action-button.shoot { border-left: 3px solid var(--red); }
+.action-button.stop_move, .action-button.weapon_lock, .action-button.weapon_unfold { border-left: 3px solid var(--blue); }
+.action-button.wait { border-left: 3px solid var(--muted); }
 .boundary-note { color: var(--muted); font-size: 11px; }
 .status-title { margin-top: 12px; margin-bottom: 0; }
 .observation-panel { grid-column: 1 / -1; padding: 14px; }

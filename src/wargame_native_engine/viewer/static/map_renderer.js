@@ -257,14 +257,18 @@
   class MapRenderer {
     constructor(canvas, {
       onUnitSelected = null,
+      onUnitActivated = null,
       onHexHovered = null,
       onHexSelected = null,
+      onHexActivated = null,
     } = {}) {
       this.canvas = canvas;
       this.context = canvas.getContext("2d");
       this.onUnitSelected = onUnitSelected;
+      this.onUnitActivated = onUnitActivated;
       this.onHexHovered = onHexHovered;
       this.onHexSelected = onHexSelected;
+      this.onHexActivated = onHexActivated;
       this.map = null;
       this.frame = null;
       this.selectedUnitId = null;
@@ -277,6 +281,10 @@
       this.selectedHex = null;
       this.hoveredHexKey = null;
       this.cellByKey = new Map();
+      this.actionTargets = {
+        moves: [], shootTargetIds: new Set(),
+        previewMovePosition: null, previewShootTargetId: null,
+      };
       this._bindEvents();
     }
 
@@ -289,6 +297,23 @@
       this.scale = 1;
       this.offsetX = 0;
       this.offsetY = 0;
+    }
+
+    setActionTargets({
+      moves = [],
+      shoot_target_ids: shootTargetIds = [],
+      preview_move_position: previewMovePosition = null,
+      preview_shoot_target_id: previewShootTargetId = null,
+    } = {}) {
+      this.actionTargets = {
+        moves: Array.isArray(moves) ? moves.slice() : [],
+        shootTargetIds: new Set(Array.isArray(shootTargetIds)
+          ? shootTargetIds.map(String) : []),
+        previewMovePosition: previewMovePosition === null
+          ? null : String(previewMovePosition),
+        previewShootTargetId: previewShootTargetId === null
+          ? null : String(previewShootTargetId),
+      };
     }
 
     render(frame, selectedUnitId) {
@@ -307,6 +332,7 @@
       this._drawMap(context);
       this._drawScenarioFeatures(context, this.map?.scenario?.features || []);
       this._drawObjectives(context, frame?.cities || []);
+      this._drawActionTargets(context);
       this._drawUnits(context, frame?.viewer_units || []);
       this._drawSelectedHex(context);
     }
@@ -399,6 +425,17 @@
         this.hoveredHexKey = null;
         if (this.onHexHovered) this.onHexHovered(null);
       });
+      this.canvas.addEventListener("dblclick", (event) => {
+        event.preventDefault();
+        const point = this._eventPoint(event);
+        const hit = this._unitAtScreenPoint(point);
+        if (hit && this.onUnitActivated) {
+          this.onUnitActivated(hit.operatorId);
+          return;
+        }
+        const value = this._hexAtScreenPoint(point);
+        if (value && this.onHexActivated) this.onHexActivated(value);
+      });
     }
 
     _resizeCanvas() {
@@ -422,6 +459,12 @@
 
     _worldBounds() {
       return computeWorldBounds(this.map, this.frame?.viewer_units || []);
+    }
+
+    _unitAtScreenPoint(point) {
+      return [...this.hitTargets].reverse().find((target) => (
+        Math.hypot(target.x - point.x, target.y - point.y) <= target.radius
+      )) || null;
     }
 
     _hexAtScreenPoint(point) {
@@ -654,6 +697,29 @@
       context.stroke();
     }
 
+    _drawActionTargets(context) {
+      for (const target of this.actionTargets.moves) {
+        if (!Number.isInteger(target.row) || !Number.isInteger(target.column)) continue;
+        const vertices = hexVertices(
+          target.row, target.column, this.map.hex_size,
+        ).map((point) => this._screen(point));
+        context.beginPath();
+        vertices.forEach((point, index) => index
+          ? context.lineTo(point.x, point.y)
+          : context.moveTo(point.x, point.y));
+        context.closePath();
+        const preview = String(target.position_id)
+          === this.actionTargets.previewMovePosition;
+        context.fillStyle = preview ? "#ffc85755" : "#61d09533";
+        context.fill();
+        context.strokeStyle = preview ? "#ffc857" : "#61d095";
+        context.lineWidth = preview ? 3 : 2;
+        context.setLineDash(preview ? [] : [6, 4]);
+        context.stroke();
+        context.setLineDash([]);
+      }
+    }
+
     _drawUnits(context, units) {
       for (const stack of stackUnits(units)) {
         const center = this._screen(hexToPixel(stack[0].row, stack[0].column, this.map.hex_size));
@@ -675,6 +741,9 @@
 
     _drawUnit(context, unit, x, y) {
       const selected = unit.operator_id === this.selectedUnitId;
+      const shootTarget = this.actionTargets.shootTargetIds.has(String(unit.operator_id));
+      const previewShoot = String(unit.operator_id)
+        === this.actionTargets.previewShootTargetId;
       const radius = selected ? 12 : 9;
       const color = unit.destroyed ? "#777777" : unitSideColor(unit.side);
       context.save(); context.translate(x, y);
@@ -697,6 +766,13 @@
       }
       if (unit.stopped) {
         context.fillStyle = "#ffffff"; context.fillRect(-2, -2, 4, 4);
+      }
+      if (shootTarget) {
+        context.beginPath(); context.arc(0, 0, radius + 8, 0, Math.PI * 2);
+        context.strokeStyle = previewShoot ? "#ffc857" : "#ff5b62";
+        context.lineWidth = previewShoot ? 4 : 2;
+        context.setLineDash(previewShoot ? [] : [4, 3]);
+        context.stroke(); context.setLineDash([]);
       }
       const health = typeof unit.health_ratio === "number" ? Math.max(0, Math.min(1, unit.health_ratio)) : null;
       if (health !== null) {

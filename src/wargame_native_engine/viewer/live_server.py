@@ -17,6 +17,7 @@ _STATIC_ROOT = Path(__file__).with_name("static")
 _STATIC_FILES = {
     "/": ("live_index.html", "text/html; charset=utf-8"),
     "/static/map_renderer.js": ("map_renderer.js", "text/javascript; charset=utf-8"),
+    "/static/live_actions.js": ("live_actions.js", "text/javascript; charset=utf-8"),
     "/static/live_app.js": ("live_app.js", "text/javascript; charset=utf-8"),
     "/static/styles.css": ("styles.css", "text/css; charset=utf-8"),
     "/static/live_styles.css": ("live_styles.css", "text/css; charset=utf-8"),
