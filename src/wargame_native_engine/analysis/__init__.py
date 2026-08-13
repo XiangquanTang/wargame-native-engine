@@ -9,6 +9,10 @@ from wargame_native_engine.analysis.jsonl import (
     analysis_frames_to_jsonl,
     analysis_sidecar_from_jsonl,
 )
+from wargame_native_engine.analysis.live import (
+    LiveAnalyzedSession,
+    LiveAnalysisUpdate,
+)
 from wargame_native_engine.analysis.models import (
     AnalysisEvent,
     AnalysisSidecarLoadResult,
@@ -36,6 +40,8 @@ __all__ = [
     "EightFactorAnalyzer",
     "FRAME_ANALYSIS_JSONL_NAME",
     "GreenFrameAnalysisInput",
+    "LiveAnalyzedSession",
+    "LiveAnalysisUpdate",
     "ReplayAnalysisResult",
     "analysis_frames_to_jsonl",
     "analyze_replay_to_jsonl",

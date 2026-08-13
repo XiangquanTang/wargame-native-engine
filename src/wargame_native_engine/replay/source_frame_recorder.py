@@ -14,6 +14,10 @@ from wargame_native_engine.analysis.analyzer import (
     GreenFrameAnalysisInput,
 )
 from wargame_native_engine.analysis.jsonl import analysis_frames_to_jsonl
+from wargame_native_engine.compat.source_frame.serialization import (
+    canonical_green_frame_payload,
+    canonical_source_json,
+)
 from wargame_native_engine.io.serialization import canonical_hash, file_sha256, json_clone
 
 
@@ -173,7 +177,7 @@ class SourceFrameRecorder:
         if perspective != "GREEN":
             raise ValueError("recorder accepts GREEN frames only")
         index = len(self._frame_hashes)
-        payload = (_canonical_json(value) + "\n").encode("utf-8")
+        payload = canonical_green_frame_payload(value)
         self._atomic_write(self.root / f"{index}.json", payload)
         self._frame_hashes.append(hashlib.sha256(payload).hexdigest())
 
@@ -205,8 +209,7 @@ class SourceFrameRecorder:
 
 
 def _canonical_json(value: Any) -> str:
-    return json.dumps(json_clone(value), ensure_ascii=False, sort_keys=True,
-                      separators=(",", ":"), allow_nan=False)
+    return canonical_source_json(value)
 
 
 def _read_jsonl(path: Path) -> list[Mapping[str, Any]]:
