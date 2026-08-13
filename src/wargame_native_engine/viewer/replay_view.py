@@ -20,6 +20,7 @@ from wargame_native_engine.compat.source_frame.models import (
     SourceFrame,
     SourceUnitState,
 )
+from wargame_native_engine.core.action import EngineAction
 from wargame_native_engine.io.importers.source_replay_archive import (
     SourceReplayArchive,
     SourceReplayArchiveImporter,
@@ -37,20 +38,14 @@ ANALYSIS_SIDECAR_NAME = "frame_analysis.native.jsonl"
 PLAYBACK_COMPATIBILITY = "source-numbered-frame-playback/1.0"
 NATIVE_REPLAY_FORMAT = "native-source-frame-replay/1.0"
 _SOURCE_MAPPINGS = SourceMappings()
-_STRICT_REPLAY_MANIFEST_FIELDS = frozenset({
+_STRICT_REPLAY_MANIFEST_STRING_FIELDS = frozenset({
     "scenario_id",
     "scenario_hash",
     "ruleset_id",
     "ruleset_version",
     "ruleset_hash",
-    "episode_seed",
     "initial_state_hash",
     "final_state_hash",
-})
-_STRICT_REPLAY_STEP_FIELDS = frozenset({
-    "delta_time_ms",
-    "ordered_actions",
-    "expected_state_hash",
 })
 
 
@@ -294,12 +289,70 @@ def _strict_replay_evidence_status(archive: SourceReplayArchive) -> str:
     has_any_evidence = bool(manifest) or bool(archive.steps)
     if not has_native_manifest:
         return "Incomplete" if has_any_evidence else "Unavailable"
-    manifest_complete = _STRICT_REPLAY_MANIFEST_FIELDS <= set(manifest)
-    steps_complete = bool(archive.steps) and all(
-        _STRICT_REPLAY_STEP_FIELDS <= set(step)
-        for step in archive.steps
+    manifest_complete = all(
+        _is_nonempty_string(manifest.get(field_name))
+        for field_name in _STRICT_REPLAY_MANIFEST_STRING_FIELDS
+    ) and _is_nonnegative_exact_int(manifest.get("episode_seed"))
+    manifest_counts_complete = (
+        _is_positive_exact_int(manifest.get("frame_count"))
+        and _is_positive_exact_int(manifest.get("step_count"))
+        and manifest["frame_count"] == len(archive.frames)
+        and manifest["step_count"] == len(archive.steps)
+        and manifest["frame_count"] == manifest["step_count"] + 1
     )
-    return "Available" if manifest_complete and steps_complete else "Incomplete"
+    steps_complete = bool(archive.steps) and all(
+        _strict_replay_step_is_usable(step, expected_index=index)
+        for index, step in enumerate(archive.steps, start=1)
+    )
+    return (
+        "Available"
+        if manifest_complete and manifest_counts_complete and steps_complete
+        else "Incomplete"
+    )
+
+
+def _strict_replay_step_is_usable(
+    step: Mapping[str, Any],
+    *,
+    expected_index: int,
+) -> bool:
+    if step.get("step_index") != expected_index or type(
+        step.get("step_index")
+    ) is not int:
+        return False
+    if not _is_positive_exact_int(step.get("delta_time_ms")):
+        return False
+    if not _is_nonempty_string(step.get("expected_state_hash")):
+        return False
+    ordered_actions = step.get("ordered_actions")
+    if not isinstance(ordered_actions, list):
+        return False
+    try:
+        for action in ordered_actions:
+            if not isinstance(action, Mapping):
+                return False
+            EngineAction.from_dict(action)
+    except (KeyError, TypeError, ValueError):
+        return False
+    action_sequences = step.get("action_sequences")
+    if action_sequences is not None and (
+        not isinstance(action_sequences, list)
+        or any(not _is_nonnegative_exact_int(value) for value in action_sequences)
+    ):
+        return False
+    return True
+
+
+def _is_nonempty_string(value: object) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _is_nonnegative_exact_int(value: object) -> bool:
+    return type(value) is int and value >= 0
+
+
+def _is_positive_exact_int(value: object) -> bool:
+    return type(value) is int and value > 0
 
 
 def _validate_explicit_frame_perspective(frame: SourceFrame, index: int) -> None:

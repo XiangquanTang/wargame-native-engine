@@ -12,6 +12,8 @@
     "#8d6124", "#6a431c", "#4a3217", "#332611",
   ];
   const DIRECTION_ANGLES = [0, -60, -120, 180, 120, 60];
+  const SELECTED_UNIT_SCREEN_RADIUS = 19;
+  const MAX_STACK_SCREEN_SPREAD = 30;
 
   function hexToPixel(row, column, hexSize) {
     if (!Number.isInteger(row) || !Number.isInteger(column) || row < 0 || column < 0) {
@@ -82,6 +84,72 @@
       ));
   }
 
+  function stackSpread(unitCount) {
+    return unitCount > 1 ? 18 + Math.min(12, unitCount * 1.5) : 0;
+  }
+
+  function computeWorldBounds(mapData, units = []) {
+    const hexSize = mapData?.hex_size;
+    const bounds = mapData?.bounds;
+    if (!(Number.isFinite(hexSize) && hexSize > 0) || !bounds) {
+      return { minX: 0, minY: 0, maxX: 1, maxY: 1 };
+    }
+
+    let pointCount = 0;
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    // Fit once while reserving the renderer's worst-case screen-space stack.
+    // Later frames may add a larger boundary stack without resetting pan/zoom.
+    let screenPadding = SELECTED_UNIT_SCREEN_RADIUS + MAX_STACK_SCREEN_SPREAD;
+    const addPoint = (point) => {
+      pointCount += 1;
+      minX = Math.min(minX, point.x);
+      maxX = Math.max(maxX, point.x);
+      minY = Math.min(minY, point.y);
+      maxY = Math.max(maxY, point.y);
+    };
+    const addHex = (row, column) => {
+      if (!Number.isInteger(row) || !Number.isInteger(column) || row < 0 || column < 0) return;
+      hexVertices(row, column, hexSize).forEach(addPoint);
+    };
+    const minRow = bounds.min_row;
+    const maxRow = bounds.max_row;
+    const minColumn = bounds.min_column;
+    const maxColumn = bounds.max_column;
+    if ([minRow, maxRow, minColumn, maxColumn].every((value) => (
+      Number.isInteger(value) && value >= 0
+    )) && minRow <= maxRow && minColumn <= maxColumn) {
+      const representativeRows = new Set([minRow, maxRow]);
+      for (const parity of [0, 1]) {
+        const row = minRow + ((parity - minRow % 2 + 2) % 2);
+        if (row <= maxRow) representativeRows.add(row);
+      }
+      for (const row of representativeRows) {
+        addHex(row, minColumn);
+        addHex(row, maxColumn);
+      }
+    }
+    for (const cell of mapData.cells || []) addHex(cell.row, cell.column);
+
+    for (const stack of stackUnits(units)) {
+      const unit = stack[0];
+      if (!Number.isInteger(unit.row) || !Number.isInteger(unit.column)
+          || unit.row < 0 || unit.column < 0) continue;
+      const center = hexToPixel(unit.row, unit.column, hexSize);
+      addPoint(center);
+    }
+
+    if (!pointCount) hexVertices(0, 0, hexSize).forEach(addPoint);
+    if (![minX, minY, maxX, maxY].every(Number.isFinite)) {
+      return { minX: 0, minY: 0, maxX: 1, maxY: 1 };
+    }
+    if (maxX <= minX) { minX -= 0.5; maxX += 0.5; }
+    if (maxY <= minY) { minY -= 0.5; maxY += 0.5; }
+    return { minX, minY, maxX, maxY, screenPadding };
+  }
+
   function unitSideColor(side) {
     if (side === "red") return "#e84545";
     if (side === "blue") return "#3388e8";
@@ -115,7 +183,9 @@
     setMap(map) {
       this.map = map;
       this.hasFitted = false;
-      this.resetView();
+      this.scale = 1;
+      this.offsetX = 0;
+      this.offsetY = 0;
     }
 
     render(frame, selectedUnitId) {
@@ -142,7 +212,7 @@
       const bounds = this._worldBounds();
       const width = Math.max(1, this.canvas.clientWidth);
       const height = Math.max(1, this.canvas.clientHeight);
-      const margin = 28;
+      const margin = 28 + Math.max(0, bounds.screenPadding || 0);
       const worldWidth = Math.max(1, bounds.maxX - bounds.minX);
       const worldHeight = Math.max(1, bounds.maxY - bounds.minY);
       this.scale = Math.min(
@@ -230,20 +300,7 @@
     }
 
     _worldBounds() {
-      const size = this.map.hex_size;
-      const bounds = this.map.bounds;
-      const corners = [
-        hexVertices(bounds.min_row, bounds.min_column, size),
-        hexVertices(bounds.min_row, bounds.max_column, size),
-        hexVertices(bounds.max_row, bounds.min_column, size),
-        hexVertices(bounds.max_row, bounds.max_column, size),
-      ].flat();
-      return {
-        minX: Math.min(...corners.map((point) => point.x)),
-        maxX: Math.max(...corners.map((point) => point.x)),
-        minY: Math.min(...corners.map((point) => point.y)),
-        maxY: Math.max(...corners.map((point) => point.y)),
-      };
+      return computeWorldBounds(this.map, this.frame?.viewer_units || []);
     }
 
     _screen(point) {
@@ -351,7 +408,7 @@
     _drawUnits(context, units) {
       for (const stack of stackUnits(units)) {
         const center = this._screen(hexToPixel(stack[0].row, stack[0].column, this.map.hex_size));
-        const spread = stack.length > 1 ? 18 + Math.min(12, stack.length * 1.5) : 0;
+        const spread = stackSpread(stack.length);
         stack.forEach((unit, index) => {
           const angle = stack.length > 1 ? Math.PI * 2 * index / stack.length - Math.PI / 2 : 0;
           const x = center.x + Math.cos(angle) * spread;
@@ -427,10 +484,12 @@
 
   const api = {
     MapRenderer,
+    computeWorldBounds,
     directionalSegment,
     hexToPixel,
     hexVertices,
     riverEdgeSegment,
+    stackSpread,
     stackUnits,
     unitSideColor,
   };

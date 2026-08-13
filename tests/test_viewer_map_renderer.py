@@ -147,6 +147,57 @@ def test_map_renderer_has_stack_selection_zoom_and_pan_contracts() -> None:
     assert "unit.category === \"passenger\"" in source
     assert "unit.destroyed" in source
     assert "unit.lose_control || unit.can_to_move === false" in source
+    assert "function computeWorldBounds(mapData, units = [])" in source
+    assert "const representativeRows = new Set([minRow, maxRow])" in source
+    assert "return computeWorldBounds(this.map, this.frame?.viewer_units || [])" in source
+
+
+@pytest.mark.parametrize(("min_row", "max_row"), [
+    (0, 0),
+    (1, 1),
+    (0, 1),
+    (0, 2),
+    (1, 3),
+])
+def test_odd_r_complete_bounds_cover_every_row_parity(
+    min_row: int,
+    max_row: int,
+) -> None:
+    bounds = _expected_odd_r_bounds(
+        min_row=min_row,
+        max_row=max_row,
+        min_column=0,
+        max_column=5,
+        hex_size=18.0,
+    )
+
+    assert all(math.isfinite(value) for value in bounds.values())
+    assert bounds["maxX"] > bounds["minX"]
+    assert bounds["maxY"] > bounds["minY"]
+    if min_row <= 1 <= max_row:
+        odd_right = _web_reference_hex_to_pixel(1, 5, 18.0)[0]
+        assert bounds["maxX"] >= odd_right + math.sqrt(3.0) * 18.0 / 2
+
+
+def test_middle_odd_row_stack_reserves_fit_padding_beyond_hex() -> None:
+    hex_size = 18.0
+    map_bounds = _expected_odd_r_bounds(
+        min_row=0,
+        max_row=2,
+        min_column=0,
+        max_column=5,
+        hex_size=hex_size,
+    )
+    center_x, center_y = _web_reference_hex_to_pixel(1, 5, hex_size)
+    stack_extent = 30 + 19
+    assert center_x + math.sqrt(3.0) * hex_size / 2 == pytest.approx(
+        map_bounds["maxX"]
+    )
+    assert center_y < map_bounds["maxY"]
+    assert stack_extent == 49
+    source = MAP_RENDERER.read_text(encoding="utf-8")
+    assert "let screenPadding = SELECTED_UNIT_SCREEN_RADIUS + MAX_STACK_SCREEN_SPREAD" in source
+    assert "const margin = 28 + Math.max(0, bounds.screenPadding || 0)" in source
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is not installed")
@@ -158,6 +209,11 @@ def test_map_renderer_executes_in_node_when_available() -> None:
         "const s=r.stackUnits([{row:1,column:1,operator_id:2,category:'passenger'},"
         "{row:1,column:1,operator_id:1,category:'operator'}]);"
         "if(s.length!==1||s[0][0].operator_id!==1)process.exit(3);"
+        "const m={hex_size:18,bounds:{min_row:0,max_row:2,min_column:0,max_column:5},cells:[]};"
+        "const u=[1,2,3].map(i=>({row:1,column:5,operator_id:i,category:'operator'}));"
+        "const b=r.computeWorldBounds(m,u);"
+        "const expected=r.hexToPixel(1,5,18).x+Math.sqrt(3)*18/2;"
+        "if(Math.abs(b.maxX-expected)>1e-9||b.screenPadding!==49)process.exit(4);"
     )
     subprocess.run(
         ["node", "-e", script, str(MAP_RENDERER)],
@@ -177,6 +233,35 @@ def _web_reference_hex_to_pixel(
         column * width + (width / 2 if row % 2 else 0) + width / 2,
         row * hex_size * 1.5 + hex_size,
     )
+
+
+def _expected_odd_r_bounds(
+    *,
+    min_row: int,
+    max_row: int,
+    min_column: int,
+    max_column: int,
+    hex_size: float,
+) -> dict[str, float]:
+    points = []
+    for row in range(min_row, max_row + 1):
+        for column in (min_column, max_column):
+            center_x, center_y = _web_reference_hex_to_pixel(
+                row,
+                column,
+                hex_size,
+            )
+            points.extend((
+                (center_x + hex_size * math.cos(math.radians(60 * index - 90)),
+                 center_y + hex_size * math.sin(math.radians(60 * index - 90)))
+                for index in range(6)
+            ))
+    return {
+        "minX": min(point[0] for point in points),
+        "minY": min(point[1] for point in points),
+        "maxX": max(point[0] for point in points),
+        "maxY": max(point[1] for point in points),
+    }
 
 
 def _map_config() -> dict:

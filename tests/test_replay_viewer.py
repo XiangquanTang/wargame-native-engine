@@ -40,22 +40,35 @@ def native_bundle(tmp_path: Path) -> Path:
     })
 
 
-def _make_native_bundle(tmp_path: Path, metadata: dict) -> Path:
+def _make_native_bundle(
+    tmp_path: Path,
+    metadata: dict,
+    *,
+    include_step: bool = True,
+    step_overrides: dict | None = None,
+) -> Path:
     recorder = SourceFrameRecorder(tmp_path / "recording")
     recorder.start(metadata, started_at="2026-01-01T00:00:00Z")
     initial = _frame(0, perspective=True)
     recorder.record_initial(initial, initial_state_hash="a" * 64)
     following = _frame(1, perspective=True)
-    following["actions"] = [{"action_type": "MOVE", "operator_id": 1}]
+    following["actions"] = [{
+        "side": "red",
+        "actor_id": 1,
+        "action_type": "MOVE",
+        "target_id": None,
+        "target_position": None,
+        "parameters": {},
+    }]
     following["judge_info"] = [{"event": "arrived"}]
-    recorder.record_step(
-        following,
-        {
+    if include_step:
+        step_record = {
             "delta_time_ms": 100,
             "ordered_actions": following["actions"],
             "expected_state_hash": "b" * 64,
-        },
-    )
+        }
+        step_record.update(step_overrides or {})
+        recorder.record_step(following, step_record)
     recorder.finalize(
         {"terminal": False, "truncated": True, "winner": None, "reason": "test"},
         final_state_hash="b" * 64,
@@ -335,6 +348,72 @@ def test_incomplete_native_evidence_is_not_reported_as_supported(
     assert "strict_replay_supported" not in replay
 
 
+def test_native_manifest_without_steps_is_incomplete(tmp_path: Path) -> None:
+    output = _make_native_bundle(
+        tmp_path,
+        _complete_native_metadata(),
+        include_step=False,
+    )
+
+    assert load_replay_view(output).strict_replay_evidence_status == "Incomplete"
+
+
+def test_native_steps_without_manifest_are_incomplete(tmp_path: Path) -> None:
+    output = _make_native_bundle(tmp_path, _complete_native_metadata())
+    _remove_zip_member(output / "replay.zip", "replay_manifest.native.jsonl")
+
+    assert load_replay_view(output).strict_replay_evidence_status == "Incomplete"
+
+
+@pytest.mark.parametrize(("manifest_field", "invalid_value"), [
+    ("scenario_hash", None),
+    ("ruleset_hash", None),
+    ("episode_seed", None),
+    ("episode_seed", True),
+    ("scenario_id", ""),
+    ("ruleset_id", "   "),
+    ("initial_state_hash", ""),
+])
+def test_native_manifest_unusable_values_are_incomplete(
+    tmp_path: Path,
+    manifest_field: str,
+    invalid_value: object,
+) -> None:
+    metadata = _complete_native_metadata()
+    if manifest_field in {"initial_state_hash"}:
+        output = _make_native_bundle(tmp_path, metadata)
+        _rewrite_native_manifest(
+            output / "replay.zip",
+            {manifest_field: invalid_value},
+        )
+    else:
+        metadata[manifest_field] = invalid_value
+        output = _make_native_bundle(tmp_path, metadata)
+
+    assert load_replay_view(output).strict_replay_evidence_status == "Incomplete"
+
+
+@pytest.mark.parametrize(("step_field", "invalid_value"), [
+    ("delta_time_ms", None),
+    ("delta_time_ms", True),
+    ("ordered_actions", None),
+    ("expected_state_hash", None),
+    ("expected_state_hash", ""),
+])
+def test_native_step_unusable_values_are_incomplete(
+    tmp_path: Path,
+    step_field: str,
+    invalid_value: object,
+) -> None:
+    output = _make_native_bundle(
+        tmp_path,
+        _complete_native_metadata(),
+        step_overrides={step_field: invalid_value},
+    )
+
+    assert load_replay_view(output).strict_replay_evidence_status == "Incomplete"
+
+
 def test_explicit_map_config_is_loaded_and_must_match_replay(
     native_bundle: Path,
     tmp_path: Path,
@@ -483,6 +562,51 @@ def _write_records(root: Path, records: list[dict]) -> None:
     (root / "frame_analysis.native.jsonl").write_bytes(
         b"".join(_json_bytes(record) for record in records)
     )
+
+
+def _complete_native_metadata() -> dict:
+    return {
+        "scenario_id": "viewer-fixture",
+        "scenario_hash": "s" * 64,
+        "ruleset_id": "native-simplified",
+        "ruleset_version": "1.0",
+        "ruleset_hash": "r" * 64,
+        "episode_seed": 7,
+    }
+
+
+def _remove_zip_member(path: Path, removed_name: str) -> None:
+    replacement = path.with_suffix(".replacement.zip")
+    with ZipFile(path) as source, ZipFile(replacement, "w") as target:
+        for info in source.infolist():
+            if info.filename != removed_name:
+                target.writestr(info, source.read(info))
+    replacement.replace(path)
+
+
+def _rewrite_native_manifest(path: Path, updates: dict) -> None:
+    replacement = path.with_suffix(".replacement.zip")
+    with ZipFile(path) as source:
+        entries = [(info, source.read(info)) for info in source.infolist()]
+    manifest_name = "replay_manifest.native.jsonl"
+    rewritten = []
+    for info, payload in entries:
+        if info.filename == manifest_name:
+            manifest = json.loads(payload)
+            manifest.update(updates)
+            deterministic = {
+                key: value
+                for key, value in manifest.items()
+                if key not in {"started_at", "deterministic_content_hash"}
+            }
+            from wargame_native_engine.io.serialization import canonical_hash
+            manifest["deterministic_content_hash"] = canonical_hash(deterministic)
+            payload = _json_bytes(manifest)
+        rewritten.append((info, payload))
+    with ZipFile(replacement, "w") as target:
+        for info, payload in rewritten:
+            target.writestr(info, payload)
+    replacement.replace(path)
 
 
 def _tree_hashes(root: Path) -> dict[str, str]:
