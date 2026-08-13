@@ -36,6 +36,10 @@ main { padding: 18px; display: grid; grid-template-columns: minmax(540px, 1.6fr)
 .legend { display: flex; gap: 14px; align-items: center; color: var(--muted); font-size: 11px; margin-top: 9px; flex-wrap: wrap; }
 .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 5px; }
 .red-dot { background: var(--red); }.blue-dot { background: var(--blue); }.passenger-dot { background: transparent; border: 2px solid var(--gold); }.destroyed-dot { background: #667; opacity: .65; }
+.legend .elevation-swatch { width: 36px; border-radius: 2px; background: linear-gradient(90deg, #f7e7b2, #8d6124, #332611); }
+.legend .road-swatch { width: 30px; height: 4px; border-radius: 0; background: #c4a15e; }
+.legend .river-swatch { width: 30px; height: 4px; border-radius: 0; background: #3e9be6; }
+.legend .unknown-elevation-swatch { width: 18px; border-radius: 2px; background: repeating-linear-gradient(135deg, #4d555b 0 3px, #87939a 3px 5px); }
 .badges { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
 .compatibility-wrap { display: grid; justify-items: end; gap: 5px; max-width: 620px; }
 .strict-evidence-note { color: var(--muted); font-size: 10px; text-align: right; }

@@ -25,6 +25,7 @@
           <h2>六角地图态势视图</h2>
           <p id="map-mode">正在加载地图配置…</p>
           <p id="map-elevation"></p>
+          <p id="map-layer-summary"></p>
           <p id="scenario-mode"></p>
         </div>
         <div class="frame-readout">
@@ -39,6 +40,10 @@
       <canvas id="battlefield" aria-label="战场单位坐标画布"></canvas>
       <p id="hex-info" class="hex-info">移动鼠标或点击六边形查看真实坐标与地形</p>
       <div class="legend">
+        <span><i class="elevation-swatch"></i>Low→High elevation</span>
+        <span><i class="road-swatch"></i>Road</span>
+        <span><i class="river-swatch"></i>River</span>
+        <span><i class="unknown-elevation-swatch"></i>Unknown elevation</span>
         <span><i class="red-dot"></i>RED</span>
         <span><i class="blue-dot"></i>BLUE</span>
         <span><i class="passenger-dot"></i>Passenger</span>

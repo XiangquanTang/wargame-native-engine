@@ -12,6 +12,7 @@
     "#8d6124", "#6a431c", "#4a3217", "#332611",
   ];
   const DIRECTION_ANGLES = [0, -60, -120, 180, 120, 60];
+  const DIRECTION_LABELS = ["E", "NE", "NW", "W", "SW", "SE"];
   const SELECTED_UNIT_SCREEN_RADIUS = 19;
   const MAX_STACK_SCREEN_SPREAD = 30;
 
@@ -94,6 +95,57 @@
       { x: midpoint.x - tangent.x * half, y: midpoint.y - tangent.y * half },
       { x: midpoint.x + tangent.x * half, y: midpoint.y + tangent.y * half },
     ];
+  }
+
+  function edgeFacts(values) {
+    if (!Array.isArray(values) || values.length !== 6) return [];
+    return values.flatMap((value, direction) => (
+      Number.isInteger(value) && value > 0
+        ? [{ direction, label: DIRECTION_LABELS[direction], type: value }]
+        : []
+    ));
+  }
+
+  function formatEdgeFacts(values) {
+    const facts = edgeFacts(values);
+    return facts.length
+      ? facts.map((item) => `${item.label}(d${item.direction})=type${item.type}`).join(",")
+      : "none";
+  }
+
+  function summarizeMapLayers(mapData) {
+    const cells = Array.isArray(mapData?.cells) ? mapData.cells : [];
+    const terrainCounts = {};
+    const roadTypes = new Set();
+    const riverTypes = new Set();
+    let elevationCount = 0;
+    let roadEdgeCount = 0;
+    let riverEdgeCount = 0;
+    for (const cell of cells) {
+      const semantic = typeof cell.terrain_semantic === "string"
+        ? cell.terrain_semantic : "unknown";
+      terrainCounts[semantic] = (terrainCounts[semantic] || 0) + 1;
+      if (typeof cell.elevation === "number" && Number.isFinite(cell.elevation)) {
+        elevationCount += 1;
+      }
+      for (const fact of edgeFacts(cell.roads)) {
+        roadEdgeCount += 1;
+        roadTypes.add(fact.type);
+      }
+      for (const fact of edgeFacts(cell.rivers)) {
+        riverEdgeCount += 1;
+        riverTypes.add(fact.type);
+      }
+    }
+    return {
+      configured_cell_count: cells.length,
+      elevation_cell_count: elevationCount,
+      terrain_counts: Object.fromEntries(Object.entries(terrainCounts).sort()),
+      road_edge_count: roadEdgeCount,
+      road_types: Array.from(roadTypes).sort((left, right) => left - right),
+      river_edge_count: riverEdgeCount,
+      river_types: Array.from(riverTypes).sort((left, right) => left - right),
+    };
   }
 
   function stackUnits(units) {
@@ -452,13 +504,51 @@
       if (cell.terrain_semantic === "water") {
         context.fillStyle = "#397fc0dd"; context.fill();
       }
+      if (configured && (typeof cell.elevation !== "number"
+          || !Number.isFinite(cell.elevation))) {
+        this._drawUnknownElevation(context, vertices);
+      }
       this._drawTerrainSymbol(context, cell);
       (cell.roads || []).forEach((roadType, direction) => {
         if (roadType) this._drawRoad(context, cell, direction, roadType);
       });
       (cell.rivers || []).forEach((riverType, direction) => {
-        if (riverType) this._drawRiver(context, cell, direction);
+        if (riverType) this._drawRiver(context, cell, direction, riverType);
       });
+      this._drawElevationLabel(context, cell);
+    }
+
+    _drawUnknownElevation(context, vertices) {
+      context.save();
+      context.beginPath();
+      vertices.forEach((point, index) => index
+        ? context.lineTo(point.x, point.y)
+        : context.moveTo(point.x, point.y));
+      context.closePath();
+      context.clip();
+      context.strokeStyle = "#b7c1c744";
+      context.lineWidth = 1;
+      const minX = Math.min(...vertices.map((point) => point.x));
+      const maxX = Math.max(...vertices.map((point) => point.x));
+      const minY = Math.min(...vertices.map((point) => point.y));
+      const maxY = Math.max(...vertices.map((point) => point.y));
+      for (let x = minX - (maxY - minY); x <= maxX; x += 8) {
+        context.beginPath();
+        context.moveTo(x, maxY);
+        context.lineTo(x + (maxY - minY), minY);
+        context.stroke();
+      }
+      context.restore();
+    }
+
+    _drawElevationLabel(context, cell) {
+      if (typeof cell.elevation !== "number" || !Number.isFinite(cell.elevation)
+          || this.map.hex_size * this.scale < 24) return;
+      const center = this._screen(hexToPixel(cell.row, cell.column, this.map.hex_size));
+      context.fillStyle = "#101010cc";
+      context.font = "9px ui-monospace";
+      context.textAlign = "center";
+      context.fillText(String(cell.elevation), center.x, center.y + 3);
     }
 
     _drawTerrainSymbol(context, cell) {
@@ -491,12 +581,15 @@
       context.setLineDash(roadType === 2 ? [5, 3] : []); context.stroke(); context.setLineDash([]);
     }
 
-    _drawRiver(context, cell, direction) {
+    _drawRiver(context, cell, direction, riverType) {
       const [start, end] = riverEdgeSegment(cell.row, cell.column, direction, this.map.hex_size);
       const a = this._screen(start), b = this._screen(end);
       context.beginPath(); context.moveTo(a.x, a.y); context.lineTo(b.x, b.y);
       context.strokeStyle = "#3e9be6";
-      context.lineWidth = Math.max(1.8, this.map.hex_size * this.scale * 0.2);
+      context.lineWidth = Math.max(
+        1.8,
+        this.map.hex_size * this.scale * (riverType === 2 ? 0.25 : 0.2),
+      );
       context.stroke();
     }
 
@@ -656,10 +749,13 @@
     MapRenderer,
     computeWorldBounds,
     directionalSegment,
+    edgeFacts,
+    formatEdgeFacts,
     hexToPixel,
     hexVertices,
     pixelToHex,
     riverEdgeSegment,
+    summarizeMapLayers,
     stackSpread,
     stackUnits,
     unitSideColor,

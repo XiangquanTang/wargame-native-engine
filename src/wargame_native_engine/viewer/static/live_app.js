@@ -55,7 +55,7 @@ function renderActions() {
 
 function renderHexInfo(value) {
   $("hex-info").textContent = value
-    ? `row=${value.row} column=${value.column} position=${value.position_id} · terrain=${value.terrain_semantic} · elevation=${value.elevation ?? "UNKNOWN"} · units=${(value.units || []).map((unit) => unit.operator_id).join(",") || "none"}`
+    ? `row=${value.row} column=${value.column} position=${value.position_id} · terrain=${value.terrain_semantic} (${value.terrain_code ?? "UNKNOWN"}) · elevation=${value.elevation ?? "UNKNOWN"} level=${value.terrain_level ?? "UNKNOWN"} · roads=${window.ReplayMapRenderer.formatEdgeFacts(value.roads)} · rivers=${window.ReplayMapRenderer.formatEdgeFacts(value.rivers)} · units=${(value.units || []).map((unit) => unit.operator_id).join(",") || "none"}`
     : "移动鼠标查看六边形坐标";
 }
 
@@ -139,6 +139,10 @@ async function initialize() {
       sessionData.perspective === "RED" ? "no" : "yes",
     );
     $("map-mode").textContent = `${mapData.map_id} · odd-r · side facts only`;
+    const layers = window.ReplayMapRenderer.summarizeMapLayers(mapData);
+    $("map-layer-summary").textContent = mapData.mode === "configured-hex-map"
+      ? `Elevation ${mapData.elevation?.minimum ?? "UNKNOWN"}..${mapData.elevation?.maximum ?? "UNKNOWN"} · road edges ${layers.road_edge_count} [${layers.road_types.join(",") || "none"}] · river edges ${layers.river_edge_count} [${layers.river_types.join(",") || "none"}]`
+      : "Coordinate-only fallback · map facts unavailable";
     mapRenderer = new window.ReplayMapRenderer.MapRenderer($("battlefield"), {
       onUnitSelected: (operatorId) => {
         selectedUnitId = operatorId;

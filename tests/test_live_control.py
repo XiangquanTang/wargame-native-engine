@@ -316,6 +316,12 @@ def test_static_client_has_one_step_index_and_no_referee_analysis_endpoint() -> 
     assert 'requestJson("/api/command"' in source
     assert "/api/referee" not in source
     assert "GREEN / 八因子不暴露给控制端" in html
+    assert "summarizeMapLayers(mapData)" in source
+    assert "formatEdgeFacts(value.roads)" in source
+    assert "formatEdgeFacts(value.rivers)" in source
+    assert 'id="map-layer-summary"' in html
+    assert "道路" in html
+    assert "河流" in html
 
 
 def test_local_control_cli_defaults_to_loopback_and_requires_output() -> None:

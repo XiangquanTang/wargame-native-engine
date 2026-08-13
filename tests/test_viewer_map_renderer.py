@@ -30,6 +30,10 @@ EXTERNAL_SNAPSHOT = Path(
     "/home/txq/wargame/wargame_benchmark_lab/local_data/"
     "sdk_data_snapshot/phase9a_multireplay_pilot"
 )
+EXTERNAL_REPLAYS = Path(
+    "/home/txq/wargame/wargame_benchmark_lab/local_data/"
+    "replay_sources/phase9a_multireplay_pilot"
+)
 
 
 def test_explicit_map_config_loads_old_renderer_odd_r_subset(
@@ -154,6 +158,59 @@ def test_all_five_sample_map_scenario_bindings_are_display_compatible() -> None:
         assert loaded_scenario.features
         assert loaded_scenario.source_sha256
 
+    replay_paths = sorted(EXTERNAL_REPLAYS.rglob("*.zip"))
+    assert len(replay_paths) == 5
+    expected_bindings = {
+        ("123", "2201010105"),
+        ("221", "2201010101"),
+        ("96", "2020331196"),
+        ("9601", "201033029601"),
+    }
+    actual_bindings = {
+        (path.relative_to(EXTERNAL_REPLAYS).parts[0],
+         path.relative_to(EXTERNAL_REPLAYS).parts[1])
+        for path in replay_paths
+    }
+    assert actual_bindings == expected_bindings
+
+
+@pytest.mark.skipif(
+    not EXTERNAL_SNAPSHOT.is_dir(),
+    reason="five-sample read-only snapshot is unavailable",
+)
+def test_real_maps_preserve_elevation_terrain_road_and_river_facts() -> None:
+    expected = {
+        "123": (10_000, 0.0, 70.0, 1_951, 675),
+        "221": (4_200, 0.0, 70.0, 949, 283),
+        "96": (7_084, 1_780.0, 2_300.0, 3_113, 261),
+        "9601": (7_084, 1_780.0, 2_300.0, 3_113, 261),
+    }
+    for map_id, values in expected.items():
+        source = EXTERNAL_SNAPSHOT / "maps" / map_id / "basic.json"
+        before = hashlib.sha256(source.read_bytes()).hexdigest()
+        loaded = load_viewer_map_config(
+            source,
+            coordinate_system_override=(
+                "odd-r" if map_id in {"96", "9601"} else None
+            ),
+        )
+        elevations = [
+            cell.elevation for cell in loaded.cells
+            if cell.elevation is not None
+        ]
+        actual = (
+            len(loaded.cells),
+            min(elevations),
+            max(elevations),
+            sum(sum(value > 0 for value in cell.roads) for cell in loaded.cells),
+            sum(sum(value > 0 for value in cell.rivers) for cell in loaded.cells),
+        )
+        assert actual == values
+        assert {cell.terrain_semantic for cell in loaded.cells} <= {
+            "open", "forest", "settlement", "soft_ground", "water",
+        }
+        assert hashlib.sha256(source.read_bytes()).hexdigest() == before
+
 
 def test_map_config_rejects_wrong_geometry_and_bad_edges(tmp_path: Path) -> None:
     path = tmp_path / "bad.json"
@@ -167,6 +224,22 @@ def test_map_config_rejects_wrong_geometry_and_bad_edges(tmp_path: Path) -> None
     value["map_data"][0][0]["roads"] = [1, 2]
     path.write_text(json.dumps(value), encoding="utf-8")
     with pytest.raises(ViewerMapConfigError, match="six"):
+        load_viewer_map_config(path)
+
+    value["map_data"][0][0]["roads"] = [True, 0, 0, 0, 0, 0]
+    path.write_text(json.dumps(value), encoding="utf-8")
+    with pytest.raises(ViewerMapConfigError, match="non-negative ints"):
+        load_viewer_map_config(path)
+
+    value["map_data"][0][0]["roads"] = [-1, 0, 0, 0, 0, 0]
+    path.write_text(json.dumps(value), encoding="utf-8")
+    with pytest.raises(ViewerMapConfigError, match="non-negative ints"):
+        load_viewer_map_config(path)
+
+    value["map_data"][0][0]["roads"] = [0] * 6
+    value["map_data"][0][0]["elev"] = float("inf")
+    path.write_text(json.dumps(value), encoding="utf-8")
+    with pytest.raises(ViewerMapConfigError, match="finite"):
         load_viewer_map_config(path)
 
 
@@ -256,6 +329,11 @@ def test_map_renderer_has_stack_selection_zoom_and_pan_contracts() -> None:
     assert "function pixelToHex(x, y, hexSize, bounds = null)" in source
     assert "this.onHexSelected" in source
     assert "this._drawScenarioFeatures" in source
+    assert "function edgeFacts(values)" in source
+    assert "function summarizeMapLayers(mapData)" in source
+    assert "this._drawUnknownElevation(context, vertices)" in source
+    assert "this._drawElevationLabel(context, cell)" in source
+    assert "formatEdgeFacts" in source
 
 
 @pytest.mark.parametrize(("min_row", "max_row"), [
@@ -322,6 +400,11 @@ def test_map_renderer_executes_in_node_when_available() -> None:
         "if(Math.abs(b.maxX-expected)>1e-9||b.screenPadding!==49)process.exit(4);"
         "const h=r.pixelToHex(p.x,p.y,36,{min_row:0,max_row:2,min_column:0,max_column:2});"
         "if(!h||h.row!==1||h.column!==0)process.exit(5);"
+        "const f=r.edgeFacts([1,0,2,0,0,3]);"
+        "if(f.map(x=>x.label).join(',')!=='E,NW,SE')process.exit(6);"
+        "if(r.formatEdgeFacts([0,0,0,0,0,0])!=='none')process.exit(7);"
+        "const q=r.summarizeMapLayers({cells:[{terrain_semantic:'forest',elevation:10,roads:[1,0,0,0,0,0],rivers:[0,2,0,0,0,0]}]});"
+        "if(q.elevation_cell_count!==1||q.road_edge_count!==1||q.river_types[0]!==2)process.exit(8);"
     )
     subprocess.run(
         ["node", "-e", script, str(MAP_RENDERER)],

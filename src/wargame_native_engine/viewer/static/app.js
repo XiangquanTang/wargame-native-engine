@@ -106,7 +106,8 @@ function renderHexInfo(value, mode) {
     `${mode} row=${value.row} column=${value.column} position=${value.position_id}`,
     `terrain=${value.terrain_semantic} (${formatNumber(value.terrain_code)})`,
     `elevation=${formatNumber(value.elevation)} level=${formatNumber(value.terrain_level)}`,
-    `roads=${JSON.stringify(value.roads)} rivers=${JSON.stringify(value.rivers)}`,
+    `roads=${window.ReplayMapRenderer.formatEdgeFacts(value.roads)}`,
+    `rivers=${window.ReplayMapRenderer.formatEdgeFacts(value.rivers)}`,
     `units=${unitIds.length ? unitIds.join(", ") : "none"}`,
   ].join(" · ");
 }
@@ -219,6 +220,10 @@ async function initialize() {
     $("map-elevation").textContent = elevation?.mode === "episode"
       ? `Elevation ${formatNumber(elevation.minimum)}..${formatNumber(elevation.maximum)} · ${elevation.levels} levels`
       : "Elevation unavailable";
+    const layers = window.ReplayMapRenderer.summarizeMapLayers(mapData);
+    $("map-layer-summary").textContent = mapData.mode === "configured-hex-map"
+      ? `Facts: ${layers.configured_cell_count} cells · elevation ${layers.elevation_cell_count} · road edges ${layers.road_edge_count} [${layers.road_types.join(",") || "none"}] · river edges ${layers.river_edge_count} [${layers.river_types.join(",") || "none"}]`
+      : "Facts: coordinate-only fallback; terrain, elevation, roads and rivers unavailable";
     $("scenario-mode").textContent = mapData.scenario
       ? `Scenario ${mapData.scenario.scenario_id} · ${mapData.scenario.features.length} static features · dynamic units from replay`
       : "No explicit Scenario overlay";

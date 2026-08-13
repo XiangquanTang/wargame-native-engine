@@ -23,7 +23,7 @@
   <main class="live-main">
     <section class="battle-panel panel">
       <div class="section-title">
-        <div><h2>当前方可见态势</h2><p id="map-mode">正在加载…</p></div>
+        <div><h2>当前方可见态势</h2><p id="map-mode">正在加载…</p><p id="map-layer-summary"></p></div>
         <div class="frame-readout">Step <strong id="step-index">0</strong></div>
       </div>
       <div class="map-tools">
@@ -32,6 +32,12 @@
       </div>
       <canvas id="battlefield" aria-label="当前方可见六角地图"></canvas>
       <p id="hex-info" class="hex-info">移动鼠标查看六边形坐标</p>
+      <div class="legend map-fact-legend">
+        <span><i class="elevation-swatch"></i>低→高海拔</span>
+        <span><i class="road-swatch"></i>道路</span>
+        <span><i class="river-swatch"></i>河流</span>
+        <span><i class="unknown-elevation-swatch"></i>未知海拔</span>
+      </div>
     </section>
 
     <aside class="panel command-panel">
