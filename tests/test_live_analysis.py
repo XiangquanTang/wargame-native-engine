@@ -10,6 +10,8 @@ from zipfile import ZipFile
 
 import pytest
 
+import wargame_native_engine.analysis.live as live_module
+
 from scripts.run_minimal_source_replay import (
     _blue_controller,
     _red_controller,
@@ -18,6 +20,7 @@ from scripts.run_minimal_source_replay import (
 from wargame_native_engine.analysis import (
     EightFactorAnalyzer,
     GreenFrameAnalysisInput,
+    LiveAnalysisDesynchronizedError,
     LiveAnalyzedSession,
     analysis_frames_to_jsonl,
     analyze_replay_to_jsonl,
@@ -150,6 +153,7 @@ def test_environment_step_failure_does_not_append_analysis() -> None:
     live, _ = _new_live()
     live.setup(42)
     before = live.current_timeline
+    before_jsonl = live.analysis_jsonl()
     live.environment.step_views = Mock(  # type: ignore[method-assign]
         side_effect=RuntimeError("step failed before GREEN frame")
     )
@@ -158,20 +162,65 @@ def test_environment_step_failure_does_not_append_analysis() -> None:
         live.step([])
 
     assert live.current_timeline == before
+    assert live.latest_analysis == before.frame_analyses[-1]
+    assert live.frame_analyses == before.frame_analyses
+    assert live.analysis_jsonl() == before_jsonl
     assert live.environment.step_views.call_count == 1  # type: ignore[attr-defined]
 
 
-def test_analyzer_failure_propagates_after_one_committed_step_and_requires_reset(
+def test_setup_analyzer_failure_rejects_current_analysis_until_reset(
 ) -> None:
+    delegate = EightFactorAnalyzer()
+
+    class FailFirstAnalysis:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.enabled = True
+
+        def analyze_green_frame(self, item):
+            self.calls += 1
+            if self.enabled:
+                raise ValueError("injected setup analysis failure")
+            return delegate.analyze_green_frame(item)
+
+    analyzer = FailFirstAnalysis()
+    live, _ = _new_live(analyzer=analyzer)  # type: ignore[arg-type]
+    original_setup = live.environment.setup_views
+    live.environment.setup_views = Mock(  # type: ignore[method-assign]
+        wraps=original_setup
+    )
+    live.environment.step_views = Mock(  # type: ignore[method-assign]
+        wraps=live.environment.step_views
+    )
+
+    with pytest.raises(ValueError, match="injected setup analysis failure"):
+        live.setup(42)
+
+    assert live.environment.setup_views.call_count == 1  # type: ignore[attr-defined]
+    _assert_current_analysis_desynchronized(live)
+    with pytest.raises(LiveAnalysisDesynchronizedError) as error:
+        live.step([])
+    assert str(error.value) == "live_analysis_desynchronized_reset_required"
+    assert live.environment.step_views.call_count == 0  # type: ignore[attr-defined]
+
+    analyzer.enabled = False
+    recovered = live.reset(43)
+    assert recovered.frame_index == 0
+    assert live.current_timeline.frame_indices == (0,)
+    assert live.environment.setup_views.call_count == 2  # type: ignore[attr-defined]
+
+
+def test_mid_step_analyzer_failure_rejects_stale_prefix_until_reset() -> None:
     delegate = EightFactorAnalyzer()
 
     class FailSecondAnalysis:
         def __init__(self) -> None:
             self.calls = 0
+            self.enabled = True
 
         def analyze_green_frame(self, item):
             self.calls += 1
-            if self.calls == 2:
+            if self.enabled and self.calls == 2:
                 raise ValueError("injected live analysis failure")
             return delegate.analyze_green_frame(item)
 
@@ -186,10 +235,158 @@ def test_analyzer_failure_propagates_after_one_committed_step_and_requires_reset
         live.step([] if action is None else [action], delta_time_seconds=20)
 
     assert live.environment.session.step.call_count == 1  # type: ignore[attr-defined]
-    assert live.current_timeline.frame_indices == (0,)
-    with pytest.raises(RuntimeError, match="desynchronized_reset_required"):
+    assert live.environment.last_bundle.green["time"]["cur_step"] == 20
+    assert len(live._frame_analyses) == 1
+    _assert_current_analysis_desynchronized(live)
+    with pytest.raises(LiveAnalysisDesynchronizedError) as error:
         live.step([])
+    assert str(error.value) == "live_analysis_desynchronized_reset_required"
     assert live.environment.session.step.call_count == 1  # type: ignore[attr-defined]
+
+    analyzer.enabled = False
+    recovered = live.reset(43)
+    assert recovered.frame_index == 0
+    assert live.current_timeline.frame_indices == (0,)
+
+
+def test_terminal_step_analyzer_failure_rejects_stale_analysis_and_recovers(
+) -> None:
+    delegate = EightFactorAnalyzer()
+
+    class FailTerminalAnalysis:
+        def __init__(self) -> None:
+            self.enabled = True
+
+        def analyze_green_frame(self, item):
+            if self.enabled and item.frame["time"]["stage"] == 3:
+                raise ValueError("injected terminal analysis failure")
+            return delegate.analyze_green_frame(item)
+
+    analyzer = FailTerminalAnalysis()
+    live, scenario = _new_live(analyzer=analyzer)  # type: ignore[arg-type]
+    update = live.setup(42)
+    original = live.environment.session.step
+    live.environment.session.step = Mock(wraps=original)  # type: ignore[method-assign]
+    max_steps = scenario.terminal_rules.max_ticks // 20 + 2
+
+    for _ in range(max_steps):
+        actions = [
+            value
+            for value in (
+                _red_controller(update.source_result.red),
+                _blue_controller(update.source_result.blue),
+            )
+            if value is not None
+        ]
+        try:
+            update = live.step(actions, delta_time_seconds=20)
+        except ValueError as error:
+            assert str(error) == "injected terminal analysis failure"
+            break
+    else:  # pragma: no cover - protects the terminal fixture contract
+        pytest.fail("terminal GREEN frame did not reach injected analyzer")
+
+    assert live.environment.session.result().terminal is True
+    assert live.environment.last_bundle.green["time"]["stage"] == 3
+    committed_steps = live.environment.session.step.call_count  # type: ignore[attr-defined]
+    assert len(live._frame_analyses) == committed_steps
+    _assert_current_analysis_desynchronized(live)
+    with pytest.raises(LiveAnalysisDesynchronizedError):
+        live.step([])
+    assert live.environment.session.step.call_count == committed_steps  # type: ignore[attr-defined]
+
+    analyzer.enabled = False
+    recovered = live.setup(44)
+    assert recovered.frame_index == 0
+    assert live.current_timeline.frame_indices == (0,)
+
+
+def test_canonical_payload_failure_after_step_marks_desynchronized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    live, _ = _new_live()
+    live.setup(42)
+    original_payload = live_module.canonical_green_frame_payload
+    original_step = live.environment.session.step
+    live.environment.session.step = Mock(  # type: ignore[method-assign]
+        wraps=original_step
+    )
+
+    def fail_payload(_frame):
+        raise TypeError("injected canonical payload failure")
+
+    monkeypatch.setattr(live_module, "canonical_green_frame_payload", fail_payload)
+    with pytest.raises(TypeError, match="injected canonical payload failure"):
+        live.step([], delta_time_seconds=20)
+
+    assert live.environment.session.step.call_count == 1  # type: ignore[attr-defined]
+    assert live.environment.last_bundle.green["time"]["cur_step"] == 20
+    assert len(live._frame_analyses) == 1
+    _assert_current_analysis_desynchronized(live)
+
+    monkeypatch.setattr(
+        live_module,
+        "canonical_green_frame_payload",
+        original_payload,
+    )
+    recovered = live.reset(43)
+    assert recovered.frame_index == 0
+
+
+def test_timeline_build_failure_after_step_marks_desynchronized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    live, _ = _new_live()
+    live.setup(42)
+    original_builder = live_module.build_analysis_timeline
+
+    def fail_timeline(_frames):
+        raise ValueError("injected timeline failure")
+
+    monkeypatch.setattr(live_module, "build_analysis_timeline", fail_timeline)
+    with pytest.raises(ValueError, match="injected timeline failure"):
+        live.step([], delta_time_seconds=20)
+
+    assert len(live._frame_analyses) == 1
+    _assert_current_analysis_desynchronized(live)
+    monkeypatch.setattr(live_module, "build_analysis_timeline", original_builder)
+    assert live.reset(43).frame_index == 0
+
+
+def test_update_copy_failure_after_analysis_commit_does_not_desynchronize(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    live, _ = _new_live()
+    live.setup(42)
+    original_clone = live_module.json_clone
+    clone_calls = 0
+
+    def fail_first_result_copy(value):
+        nonlocal clone_calls
+        clone_calls += 1
+        if clone_calls == 2:
+            raise TypeError("injected update copy failure")
+        return original_clone(value)
+
+    monkeypatch.setattr(live_module, "json_clone", fail_first_result_copy)
+    with pytest.raises(TypeError, match="injected update copy failure"):
+        live.step([], delta_time_seconds=20)
+
+    assert live.current_timeline.frame_indices == (0, 1)
+    assert tuple(
+        frame.provenance.frame_index for frame in live.frame_analyses
+    ) == (0, 1)
+
+    monkeypatch.setattr(live_module, "json_clone", original_clone)
+    assert live.step([], delta_time_seconds=20).frame_index == 2
+
+
+def test_before_setup_current_analysis_accessors_remain_empty() -> None:
+    live, _ = _new_live()
+    assert live.latest_analysis is None
+    assert live.current_timeline == build_analysis_timeline(())
+    assert live.frame_analyses == ()
+    assert live.analysis_jsonl() == ""
 
 
 def test_repeated_setup_and_reset_clear_previous_episode() -> None:
@@ -286,6 +483,19 @@ def _new_live(*, analyzer: EightFactorAnalyzer | None = None):
         template=_template(scenario),
     )
     return LiveAnalyzedSession(environment, analyzer=analyzer), scenario
+
+
+def _assert_current_analysis_desynchronized(live: LiveAnalyzedSession) -> None:
+    readers = (
+        lambda: live.latest_analysis,
+        lambda: live.current_timeline,
+        lambda: live.frame_analyses,
+        live.analysis_jsonl,
+    )
+    for read in readers:
+        with pytest.raises(LiveAnalysisDesynchronizedError) as error:
+            read()
+        assert str(error.value) == "live_analysis_desynchronized_reset_required"
 
 
 def _run_episode(root: Path, *, live_enabled: bool) -> dict[str, Any]:

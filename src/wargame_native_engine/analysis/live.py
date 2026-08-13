@@ -25,6 +25,13 @@ from wargame_native_engine.session.source_environment import (
 )
 
 
+class LiveAnalysisDesynchronizedError(RuntimeError):
+    """The environment has a GREEN frame missing from live analysis."""
+
+    def __init__(self) -> None:
+        super().__init__("live_analysis_desynchronized_reset_required")
+
+
 @dataclass(frozen=True, slots=True)
 class LiveAnalysisUpdate:
     """One completed Source environment operation and its current analysis.
@@ -66,14 +73,15 @@ class LiveAnalyzedSession:
 
         bundle = self.environment.setup_views(seed)
         self._frame_analyses.clear()
-        self._timeline = build_analysis_timeline(())
         self._setup = True
         self._desynchronized = False
         try:
-            return self._append(bundle, done=None)
+            self._timeline = build_analysis_timeline(())
+            committed = self._analyze_and_commit(bundle)
         except BaseException:
             self._desynchronized = True
             raise
+        return self._build_update(bundle, done=None, committed=committed)
 
     def reset(self, seed: int = 42) -> LiveAnalysisUpdate:
         """Start a new analyzed episode; no prior analysis is retained."""
@@ -95,43 +103,49 @@ class LiveAnalyzedSession:
 
         if not self._setup:
             raise RuntimeError("live_analysis_not_setup")
-        if self._desynchronized:
-            raise RuntimeError("live_analysis_desynchronized_reset_required")
+        self._require_synchronized()
         bundle, done = self.environment.step_views(
             actions,
             delta_time_seconds=delta_time_seconds,
         )
         try:
-            return self._append(bundle, done=done)
+            committed = self._analyze_and_commit(bundle)
         except BaseException:
             self._desynchronized = True
             raise
+        return self._build_update(bundle, done=done, committed=committed)
 
     @property
     def latest_analysis(self) -> FrameAnalysis | None:
+        self._require_synchronized()
         if not self._frame_analyses:
             return None
         return deepcopy(self._frame_analyses[-1])
 
     @property
     def current_timeline(self) -> AnalysisTimeline:
+        self._require_synchronized()
         return deepcopy(self._timeline)
 
     @property
     def frame_analyses(self) -> tuple[FrameAnalysis, ...]:
+        self._require_synchronized()
         return deepcopy(tuple(self._frame_analyses))
 
     def analysis_jsonl(self) -> str:
         """Return the current episode's canonical analysis JSONL snapshot."""
 
+        self._require_synchronized()
         return analysis_frames_to_jsonl(tuple(self._frame_analyses))
 
-    def _append(
+    def _require_synchronized(self) -> None:
+        if self._desynchronized:
+            raise LiveAnalysisDesynchronizedError()
+
+    def _analyze_and_commit(
         self,
         bundle: ObservationBundle,
-        *,
-        done: bool | None,
-    ) -> LiveAnalysisUpdate:
+    ) -> tuple[int, Mapping[str, Any], FrameAnalysis, AnalysisTimeline]:
         green = json_clone(bundle.green)
         perspective = green.get("extra", {}).get("native", {}).get("perspective")
         if perspective != "GREEN":
@@ -151,6 +165,21 @@ class LiveAnalyzedSession:
         )
         self._frame_analyses.append(frame_analysis)
         self._timeline = timeline
+        return frame_index, green, frame_analysis, timeline
+
+    def _build_update(
+        self,
+        bundle: ObservationBundle,
+        *,
+        done: bool | None,
+        committed: tuple[
+            int,
+            Mapping[str, Any],
+            FrameAnalysis,
+            AnalysisTimeline,
+        ],
+    ) -> LiveAnalysisUpdate:
+        frame_index, green, frame_analysis, timeline = committed
 
         detached_bundle = ObservationBundle(
             red=json_clone(bundle.red),

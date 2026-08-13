@@ -10,6 +10,7 @@ from wargame_native_engine.analysis.jsonl import (
     analysis_sidecar_from_jsonl,
 )
 from wargame_native_engine.analysis.live import (
+    LiveAnalysisDesynchronizedError,
     LiveAnalyzedSession,
     LiveAnalysisUpdate,
 )
@@ -40,6 +41,7 @@ __all__ = [
     "EightFactorAnalyzer",
     "FRAME_ANALYSIS_JSONL_NAME",
     "GreenFrameAnalysisInput",
+    "LiveAnalysisDesynchronizedError",
     "LiveAnalyzedSession",
     "LiveAnalysisUpdate",
     "ReplayAnalysisResult",
