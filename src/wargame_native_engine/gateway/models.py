@@ -83,4 +83,3 @@ class SessionPublication:
     step_count: int
     terminal: bool
     truncated: bool
-
