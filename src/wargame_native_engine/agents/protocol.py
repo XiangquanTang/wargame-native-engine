@@ -15,6 +15,15 @@ class AgentResetContext:
     side: str
     seed: int
     ruleset_version: str
+    agent_id: str = ""
+
+    @property
+    def perspective(self) -> str:
+        return self.side.upper()
+
+    @property
+    def episode_seed(self) -> int:
+        return self.seed
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,6 +33,15 @@ class AgentStepContext:
     tick: int
     stage: Stage
     seed: int
+    agent_id: str = ""
+
+    @property
+    def perspective(self) -> str:
+        return self.side.upper()
+
+    @property
+    def episode_seed(self) -> int:
+        return self.seed
 
 
 @dataclass(frozen=True, slots=True)
