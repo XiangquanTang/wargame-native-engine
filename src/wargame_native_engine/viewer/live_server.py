@@ -99,7 +99,7 @@ class LiveControlRequestHandler(BaseHTTPRequestHandler):
                 if exc.code in {
                     "stale_expected_step", "request_id_conflict",
                     "side_already_submitted", "session_terminal",
-                    "pending_joint_action",
+                    "session_finalized", "pending_joint_action",
                 }
                 else HTTPStatus.BAD_REQUEST
             )

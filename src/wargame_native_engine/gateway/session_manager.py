@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass, field
 import os
 from pathlib import Path
@@ -16,7 +17,12 @@ from wargame_native_engine.analysis import (
     LiveAnalysisDesynchronizedError,
     LiveAnalyzedSession,
 )
+from wargame_native_engine.agents.protocol import (
+    AgentResetContext,
+    AgentStepContext,
+)
 from wargame_native_engine.core.action import EngineAction, ValidAction
+from wargame_native_engine.core.observation import SideObservation
 from wargame_native_engine.gateway.models import (
     CommandGatewayError,
     ControllerView,
@@ -120,6 +126,7 @@ class SessionManager:
             session_id=external_id,
             step_index=0,
             terminal=environment.session.is_terminal(),
+            finalized=False,
         )
 
     def descriptor(self, session_id: str) -> SessionDescriptor:
@@ -130,6 +137,7 @@ class SessionManager:
                 session_id=managed.external_id,
                 step_index=managed.step_index,
                 terminal=managed.environment.session.is_terminal(),
+                finalized=managed.finalized,
             )
 
     def controller_view(self, session_id: str, side: str) -> ControllerView:
@@ -149,6 +157,53 @@ class SessionManager:
             _require_side(managed, side)
             return tuple(managed.environment.session.valid_actions(side))
 
+    def agent_reset_context(
+        self,
+        session_id: str,
+        side: str,
+        agent_id: str,
+    ) -> AgentResetContext:
+        """Build one detached side-only reset context for a trusted Agent host."""
+
+        managed = self._managed(session_id)
+        with managed.lock:
+            self._require_usable(managed)
+            _require_side(managed, side)
+            session = managed.environment.session
+            return AgentResetContext(
+                session.session_id,
+                session.scenario.scenario_id,
+                side,
+                managed.seed,
+                session.backend.ruleset.ruleset_version,
+                str(agent_id),
+            )
+
+    def agent_step_input(
+        self,
+        session_id: str,
+        side: str,
+        agent_id: str,
+    ) -> tuple[SideObservation, tuple[ValidAction, ...], AgentStepContext]:
+        """Return detached side observation/actions without GREEN state."""
+
+        managed = self._managed(session_id)
+        with managed.lock:
+            self._require_usable(managed)
+            _require_side(managed, side)
+            session = managed.environment.session
+            observation = deepcopy(session.observe(side))
+            valid_actions = deepcopy(tuple(session.valid_actions(side)))
+            context = AgentStepContext(
+                session.session_id,
+                side,
+                observation.tick,
+                observation.stage,
+                managed.seed,
+                str(agent_id),
+            )
+            return observation, valid_actions, context
+
     def advance(
         self,
         session_id: str,
@@ -159,6 +214,11 @@ class SessionManager:
         managed = self._managed(session_id)
         with managed.lock:
             self._require_usable(managed)
+            if managed.finalized:
+                raise CommandGatewayError(
+                    "session_finalized",
+                    f"session {session_id} facts were already published",
+                )
             if managed.environment.session.is_terminal():
                 raise CommandGatewayError(
                     "session_terminal",
@@ -193,6 +253,7 @@ class SessionManager:
                 session_id=managed.external_id,
                 step_index=managed.step_index,
                 terminal=bool(update.done),
+                finalized=False,
             )
 
     def publish_session(

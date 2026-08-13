@@ -23,12 +23,14 @@ class SessionDescriptor:
     session_id: str
     step_index: int
     terminal: bool
+    finalized: bool = False
 
     def to_record(self) -> dict[str, object]:
         return {
             "session_id": self.session_id,
             "step_index": self.step_index,
             "terminal": self.terminal,
+            "finalized": self.finalized,
         }
 
 

@@ -128,6 +128,10 @@ class CommandGateway:
                 raise CommandGatewayError(
                     "session_terminal", "terminal session cannot advance"
                 )
+            if descriptor.finalized:
+                raise CommandGatewayError(
+                    "session_finalized", "published session cannot advance"
+                )
             if side in gateway_session.pending:
                 raise CommandGatewayError(
                     "side_already_submitted",

@@ -8,6 +8,7 @@ let selectedUnitId = null;
 let requestSequence = 0;
 let mapRenderer = null;
 let commandPending = false;
+let publicationComplete = false;
 
 const $ = (id) => document.getElementById(id);
 
@@ -67,7 +68,7 @@ function renderCurrent() {
   $("observation").textContent = JSON.stringify(currentView.observation, null, 2);
   renderActions();
   mapRenderer.render(currentView.frame, selectedUnitId);
-  $("submit-action").disabled = currentView.terminal || commandPending;
+  $("submit-action").disabled = currentView.terminal || commandPending || publicationComplete;
   $("publish-match").textContent = currentView.terminal
     ? "发布终局 replay 与 analysis"
     : "发布截断 replay 与 analysis";
@@ -99,7 +100,7 @@ async function submitAction() {
     showError(error.message);
   } finally {
     commandPending = false;
-    if (currentView) $("submit-action").disabled = currentView.terminal;
+    if (currentView) $("submit-action").disabled = currentView.terminal || publicationComplete;
   }
 }
 
@@ -110,6 +111,9 @@ async function publishMatch() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ truncated: !currentView.terminal }),
     });
+    publicationComplete = true;
+    $("submit-action").disabled = true;
+    $("publish-match").disabled = true;
     $("command-status").textContent = JSON.stringify(response, null, 2);
   } catch (error) {
     showError(error.message);

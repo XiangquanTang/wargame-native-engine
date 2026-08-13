@@ -270,3 +270,10 @@ def test_truncated_publication_uses_recorder_and_live_analysis(gateway, tmp_path
     assert len(publication.analysis_path.read_text(encoding="utf-8").splitlines()) == 2
     assert archive.manifest["truncated"] is True
     assert "GREEN" not in value.view(session_id, "red-controller").to_record()
+    assert value.manager.descriptor(session_id).finalized is True
+    with pytest.raises(CommandGatewayError, match="session_finalized"):
+        value.submit(
+            session_id, "red-controller",
+            request_id="after-publication", expected_step=1,
+            valid_action_id=None,
+        )
