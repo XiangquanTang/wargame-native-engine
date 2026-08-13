@@ -455,12 +455,60 @@ def test_explicit_map_config_is_loaded_and_must_match_replay(
         load_replay_view(native_bundle, map_config=path)
 
 
+def test_explicit_scenario_overlay_is_bound_to_replay_identity(
+    native_bundle: Path,
+    tmp_path: Path,
+) -> None:
+    map_path = tmp_path / "map.json"
+    map_path.write_text(json.dumps({
+        "map_id": "7",
+        "coordinate_system": "odd-r",
+        "max_row": 2,
+        "max_column": 4,
+        "map_data": [[
+            {"r": row, "c": column, "pos": row * 100 + column,
+             "elev": row + column, "cond": 0,
+             "roads": [0] * 6, "rivers": [0] * 6}
+            for column in range(4)
+        ] for row in range(2)],
+    }), encoding="utf-8")
+    scenario_path = tmp_path / "scenario.json"
+    scenario_path.write_text(json.dumps({
+        "scenario_id": "viewer-fixture",
+        "operators": [],
+        "cities": [{"coord": 103, "name": "objective"}],
+        "landmarks": {"roadblocks": [102]},
+    }), encoding="utf-8")
+
+    view = load_replay_view(
+        native_bundle,
+        map_config=map_path,
+        scenario_config=scenario_path,
+    )
+
+    scenario = view.map_record()["scenario"]
+    assert scenario["scenario_id"] == "viewer-fixture"
+    assert scenario["dynamic_units_source"] == "replay_frames"
+    assert len(scenario["features"]) == 2
+    scenario_path.write_text(json.dumps({
+        "scenario_id": "wrong", "operators": [], "cities": [],
+    }), encoding="utf-8")
+    with pytest.raises(ReplayViewerLoadError, match="scenario_id does not match"):
+        load_replay_view(
+            native_bundle,
+            map_config=map_path,
+            scenario_config=scenario_path,
+        )
+
+
 def test_viewer_cli_defaults_to_loopback_only() -> None:
     arguments = viewer_argument_parser().parse_args(["--replay-dir", "/tmp/replay"])
 
     assert arguments.host == "127.0.0.1"
     assert arguments.port == 8000
     assert arguments.map_config is None
+    assert arguments.map_coordinate_system is None
+    assert arguments.scenario_config is None
 
 
 def test_analysis_model_provenance_must_be_consistent(native_bundle: Path) -> None:

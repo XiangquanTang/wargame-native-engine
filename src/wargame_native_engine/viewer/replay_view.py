@@ -31,6 +31,10 @@ from wargame_native_engine.viewer.map_config import (
     coordinate_fallback_record,
     load_viewer_map_config,
 )
+from wargame_native_engine.viewer.scenario_config import (
+    ViewerScenarioConfig,
+    load_viewer_scenario_config,
+)
 
 
 REPLAY_ARCHIVE_NAME = "replay.zip"
@@ -152,6 +156,8 @@ def load_replay_view(
     replay_dir: str | Path,
     *,
     map_config: str | Path | None = None,
+    map_coordinate_system: str | None = None,
+    scenario_config: str | Path | None = None,
 ) -> ReplayView:
     """Load and strictly align a replay ZIP with its external analysis JSONL."""
 
@@ -231,27 +237,82 @@ def load_replay_view(
     strict_replay_evidence_status = _strict_replay_evidence_status(archive)
     try:
         loaded_map: ViewerMapConfig | None = (
-            None if map_config is None else load_viewer_map_config(map_config)
+            None
+            if map_config is None
+            else load_viewer_map_config(
+                map_config,
+                coordinate_system_override=map_coordinate_system,
+            )
         )
     except (OSError, ValueError) as exc:
         raise ReplayViewerLoadError(f"failed to load map config: {exc}") from exc
-    map_data = (
+    map_data: dict[str, object] = (
         coordinate_fallback_record(archive.frames)
         if loaded_map is None
         else loaded_map.to_record()
     )
+    replay_scenario_ids = {
+        str(frame.scenario_id)
+        for frame in archive.frames
+        if frame.scenario_id is not None
+    }
+    if len(replay_scenario_ids) > 1:
+        raise ReplayViewerLoadError(
+            "replay frames contain multiple scenario identities: "
+            f"{sorted(replay_scenario_ids)!r}"
+        )
+    replay_scenario_id = next(iter(replay_scenario_ids), None)
+    replay_map_ids = {
+        str(frame.terrain_id)
+        for frame in archive.frames
+        if frame.terrain_id is not None
+    }
+    replay_map_id = (
+        next(iter(replay_map_ids)) if len(replay_map_ids) == 1 else None
+    )
+    if scenario_config is not None:
+        if replay_scenario_id is None:
+            raise ReplayViewerLoadError(
+                "scenario config requires replay scenario_id evidence"
+            )
+        try:
+            loaded_scenario: ViewerScenarioConfig = load_viewer_scenario_config(
+                scenario_config,
+                expected_scenario_id=replay_scenario_id,
+                expected_map_id=replay_map_id,
+            )
+        except (OSError, ValueError) as exc:
+            raise ReplayViewerLoadError(
+                f"failed to load scenario config: {exc}"
+            ) from exc
+        map_data["scenario"] = loaded_scenario.to_record()
+    else:
+        map_data["scenario"] = None
     if loaded_map is not None and loaded_map.map_id is not None:
-        replay_map_ids = {
-            str(frame.terrain_id)
-            for frame in archive.frames
-            if frame.terrain_id is not None
-        }
         if replay_map_ids and replay_map_ids != {loaded_map.map_id}:
             raise ReplayViewerLoadError(
                 "map config map_id does not match replay terrain_id: "
                 f"config={loaded_map.map_id!r}, replay={sorted(replay_map_ids)!r}"
             )
     if loaded_map is not None:
+        scenario_record = map_data.get("scenario")
+        if isinstance(scenario_record, Mapping):
+            for feature in scenario_record.get("features", []):
+                if not isinstance(feature, Mapping):
+                    continue
+                row = feature.get("row")
+                column = feature.get("column")
+                if not (
+                    type(row) is int
+                    and type(column) is int
+                    and 0 <= row < loaded_map.rows
+                    and 0 <= column < loaded_map.columns
+                ):
+                    raise ReplayViewerLoadError(
+                        "scenario feature is outside map config bounds: "
+                        f"feature={feature.get('feature_id')!r}, "
+                        f"row={row}, column={column}"
+                    )
         for frame_index, frame in enumerate(archive.frames):
             for unit in (*frame.operators, *frame.passengers):
                 row, column = unit.row_col

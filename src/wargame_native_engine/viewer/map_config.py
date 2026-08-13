@@ -38,7 +38,9 @@ class ViewerMapConfigError(ValueError):
 class ViewerMapCell:
     row: int
     column: int
+    position_id: str
     elevation: float | None
+    terrain_level: int | None
     terrain_code: int | None
     terrain_semantic: str
     roads: tuple[int, int, int, int, int, int]
@@ -48,7 +50,9 @@ class ViewerMapCell:
         return {
             "row": self.row,
             "column": self.column,
+            "position_id": self.position_id,
             "elevation": self.elevation,
+            "terrain_level": self.terrain_level,
             "terrain_code": self.terrain_code,
             "terrain_semantic": self.terrain_semantic,
             "roads": list(self.roads),
@@ -65,6 +69,7 @@ class ViewerMapConfig:
     cells: tuple[ViewerMapCell, ...]
     source_name: str
     source_sha256: str
+    coordinate_system_source: str
 
     def to_record(self) -> dict[str, object]:
         return {
@@ -82,15 +87,21 @@ class ViewerMapConfig:
                 "max_column": self.columns - 1,
             },
             "hex_size": self.hex_size,
+            "elevation": _elevation_record(self.cells),
             "cells": [cell.to_record() for cell in self.cells],
             "source": {
                 "name": self.source_name,
                 "sha256": self.source_sha256,
+                "coordinate_system": self.coordinate_system_source,
             },
         }
 
 
-def load_viewer_map_config(path: str | Path) -> ViewerMapConfig:
+def load_viewer_map_config(
+    path: str | Path,
+    *,
+    coordinate_system_override: str | None = None,
+) -> ViewerMapConfig:
     """Load one explicit odd-r basic-map JSON without SDK imports."""
 
     source = Path(path)
@@ -105,6 +116,19 @@ def load_viewer_map_config(path: str | Path) -> ViewerMapConfig:
         raise ViewerMapConfigError("map config root must be an object")
 
     coordinate_system = str(value.get("coordinate_system") or "").lower()
+    override = (
+        None
+        if coordinate_system_override is None
+        else str(coordinate_system_override).lower()
+    )
+    if override not in {None, "odd-r", "oddr"}:
+        raise ViewerMapConfigError(
+            "map coordinate-system override must be odd-r"
+        )
+    coordinate_system_source = "map_config"
+    if not coordinate_system and override is not None:
+        coordinate_system = override
+        coordinate_system_source = "explicit_override"
     if coordinate_system not in {"odd-r", "oddr"}:
         raise ViewerMapConfigError(
             "map config coordinate_system must be odd-r"
@@ -152,10 +176,20 @@ def load_viewer_map_config(path: str | Path) -> ViewerMapConfig:
                 )
             seen.add(coordinate)
             terrain_code = _optional_exact_int(raw_cell.get("cond"), "cond")
+            position_id = _position_id(
+                raw_cell.get("pos"),
+                row=cell_row,
+                column=cell_column,
+            )
             cells.append(ViewerMapCell(
                 row=cell_row,
                 column=cell_column,
+                position_id=position_id,
                 elevation=_optional_finite_number(raw_cell.get("elev"), "elev"),
+                terrain_level=_optional_exact_int(
+                    raw_cell.get("terrain_level"),
+                    "terrain_level",
+                ),
                 terrain_code=terrain_code,
                 terrain_semantic=_TERRAIN_NAMES.get(terrain_code, "unknown"),
                 roads=_edge_values(raw_cell.get("roads")),
@@ -175,6 +209,7 @@ def load_viewer_map_config(path: str | Path) -> ViewerMapConfig:
         cells=tuple(cells),
         source_name=source.name,
         source_sha256=hashlib.sha256(payload).hexdigest(),
+        coordinate_system_source=coordinate_system_source,
     )
 
 
@@ -210,6 +245,12 @@ def coordinate_fallback_record(
             "max_column": max_column,
         },
         "hex_size": DEFAULT_HEX_SIZE,
+        "elevation": {
+            "mode": "unavailable",
+            "minimum": None,
+            "maximum": None,
+            "levels": 7,
+        },
         "cells": [],
         "source": None,
     }
@@ -267,3 +308,44 @@ def _edge_values(value: object) -> tuple[int, int, int, int, int, int]:
             )
         result.append(item)
     return tuple(result)  # type: ignore[return-value]
+
+
+def _position_id(
+    value: object,
+    *,
+    row: int,
+    column: int,
+) -> str:
+    expected = row * 100 + column
+    if value is None:
+        return str(expected)
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        raise ViewerMapConfigError("map cell pos must be an int or digit string")
+    text = str(value)
+    if not text.isdigit() or int(text) != expected:
+        raise ViewerMapConfigError(
+            f"map cell pos {text!r} does not match row/column {expected}"
+        )
+    return text
+
+
+def _elevation_record(
+    cells: Sequence[ViewerMapCell],
+) -> dict[str, object]:
+    values = [
+        cell.elevation for cell in cells
+        if cell.elevation is not None
+    ]
+    if not values:
+        return {
+            "mode": "unavailable",
+            "minimum": None,
+            "maximum": None,
+            "levels": 7,
+        }
+    return {
+        "mode": "episode",
+        "minimum": min(values),
+        "maximum": max(values),
+        "levels": 7,
+    }

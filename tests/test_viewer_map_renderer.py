@@ -15,12 +15,20 @@ from wargame_native_engine.viewer.map_config import (
     coordinate_fallback_record,
     load_viewer_map_config,
 )
+from wargame_native_engine.viewer.scenario_config import (
+    ViewerScenarioConfigError,
+    load_viewer_scenario_config,
+)
 from wargame_native_engine.viewer.replay_view import _frame_record
 
 
 ROOT = Path(__file__).resolve().parents[1]
 MAP_RENDERER = (
     ROOT / "src/wargame_native_engine/viewer/static/map_renderer.js"
+)
+EXTERNAL_SNAPSHOT = Path(
+    "/home/txq/wargame/wargame_benchmark_lab/local_data/"
+    "sdk_data_snapshot/phase9a_multireplay_pilot"
 )
 
 
@@ -50,6 +58,101 @@ def test_explicit_map_config_loads_old_renderer_odd_r_subset(
     assert record["cells"][0]["roads"] == [1, 0, 0, 0, 0, 0]
     assert record["cells"][1]["rivers"] == [0, 1, 0, 0, 0, 0]
     assert record["source"]["sha256"] == hashlib.sha256(payload).hexdigest()
+    assert record["elevation"] == {
+        "mode": "episode", "minimum": 0.0, "maximum": 30.0, "levels": 7,
+    }
+    assert record["cells"][0]["position_id"] == "0"
+
+
+def test_missing_coordinate_system_requires_explicit_odd_r_override(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "old-basic.json"
+    value = _map_config()
+    del value["coordinate_system"]
+    for row in value["map_data"]:
+        for cell in row:
+            cell.pop("r")
+            cell.pop("c")
+            cell["pos"] = cell.get("pos", 0)
+    for row_index, row in enumerate(value["map_data"]):
+        for column_index, cell in enumerate(row):
+            cell["pos"] = row_index * 100 + column_index
+    path.write_text(json.dumps(value), encoding="utf-8")
+
+    with pytest.raises(ViewerMapConfigError, match="coordinate_system"):
+        load_viewer_map_config(path)
+    loaded = load_viewer_map_config(
+        path,
+        coordinate_system_override="odd-r",
+    )
+    assert loaded.to_record()["source"]["coordinate_system"] == (
+        "explicit_override"
+    )
+
+
+def test_explicit_scenario_overlay_keeps_only_static_display_facts(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "scenario.json"
+    payload = {
+        "scenario_id": "s1",
+        "operators": [{"obj_id": 7, "cur_hex": 101}],
+        "cities": [{"coord": 102, "name": "objective", "flag": 0, "value": 80}],
+        "landmarks": {"roadblocks": [103], "minefields": [{"pos": 104}]},
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    loaded = load_viewer_scenario_config(
+        path,
+        expected_scenario_id="s1",
+        expected_map_id="7",
+    ).to_record()
+
+    assert loaded["bound_map_id"] == "7"
+    assert loaded["dynamic_units_source"] == "replay_frames"
+    assert loaded["initial_unit_count"] == 1
+    assert [item["kind"] for item in loaded["features"]] == [
+        "city", "roadblocks", "minefields",
+    ]
+    assert {item["position_id"] for item in loaded["features"]} == {
+        "102", "103", "104",
+    }
+    with pytest.raises(ViewerScenarioConfigError, match="does not match"):
+        load_viewer_scenario_config(
+            path,
+            expected_scenario_id="different",
+            expected_map_id="7",
+        )
+
+
+@pytest.mark.skipif(
+    not EXTERNAL_SNAPSHOT.is_dir(),
+    reason="five-sample read-only snapshot is unavailable",
+)
+def test_all_five_sample_map_scenario_bindings_are_display_compatible() -> None:
+    bindings = (
+        ("123", "2201010105", False),
+        ("221", "2201010101", False),
+        ("96", "2020331196", True),
+        ("9601", "201033029601", True),
+    )
+    for map_id, scenario_id, needs_override in bindings:
+        map_path = EXTERNAL_SNAPSHOT / "maps" / map_id / "basic.json"
+        scenario_path = EXTERNAL_SNAPSHOT / "scenarios" / f"{scenario_id}.json"
+        loaded_map = load_viewer_map_config(
+            map_path,
+            coordinate_system_override="odd-r" if needs_override else None,
+        )
+        loaded_scenario = load_viewer_scenario_config(
+            scenario_path,
+            expected_scenario_id=scenario_id,
+            expected_map_id=map_id,
+        )
+        assert loaded_map.map_id == map_id
+        assert loaded_map.cells
+        assert loaded_scenario.features
+        assert loaded_scenario.source_sha256
 
 
 def test_map_config_rejects_wrong_geometry_and_bad_edges(tmp_path: Path) -> None:
@@ -150,6 +253,9 @@ def test_map_renderer_has_stack_selection_zoom_and_pan_contracts() -> None:
     assert "function computeWorldBounds(mapData, units = [])" in source
     assert "const representativeRows = new Set([minRow, maxRow])" in source
     assert "return computeWorldBounds(this.map, this.frame?.viewer_units || [])" in source
+    assert "function pixelToHex(x, y, hexSize, bounds = null)" in source
+    assert "this.onHexSelected" in source
+    assert "this._drawScenarioFeatures" in source
 
 
 @pytest.mark.parametrize(("min_row", "max_row"), [
@@ -214,6 +320,8 @@ def test_map_renderer_executes_in_node_when_available() -> None:
         "const b=r.computeWorldBounds(m,u);"
         "const expected=r.hexToPixel(1,5,18).x+Math.sqrt(3)*18/2;"
         "if(Math.abs(b.maxX-expected)>1e-9||b.screenPadding!==49)process.exit(4);"
+        "const h=r.pixelToHex(p.x,p.y,36,{min_row:0,max_row:2,min_column:0,max_column:2});"
+        "if(!h||h.row!==1||h.column!==0)process.exit(5);"
     )
     subprocess.run(
         ["node", "-e", script, str(MAP_RENDERER)],

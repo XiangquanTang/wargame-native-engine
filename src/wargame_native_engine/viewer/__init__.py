@@ -11,13 +11,21 @@ from wargame_native_engine.viewer.map_config import (
     load_viewer_map_config,
 )
 from wargame_native_engine.viewer.server import create_replay_viewer_server
+from wargame_native_engine.viewer.scenario_config import (
+    ViewerScenarioConfig,
+    ViewerScenarioConfigError,
+    load_viewer_scenario_config,
+)
 
 __all__ = [
     "ReplayView",
     "ReplayViewerLoadError",
     "ViewerMapConfig",
     "ViewerMapConfigError",
+    "ViewerScenarioConfig",
+    "ViewerScenarioConfigError",
     "create_replay_viewer_server",
     "load_replay_view",
     "load_viewer_map_config",
+    "load_viewer_scenario_config",
 ]

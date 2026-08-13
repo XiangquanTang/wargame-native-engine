@@ -22,6 +22,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--map-config",
         help="optional explicit odd-r basic-map JSON; no filename inference",
     )
+    parser.add_argument(
+        "--map-coordinate-system",
+        choices=("odd-r",),
+        help=(
+            "explicit presentation-only geometry for a map file that omits "
+            "coordinate_system"
+        ),
+    )
+    parser.add_argument(
+        "--scenario-config",
+        help="optional explicit Source scenario JSON for static display facts",
+    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     return parser
@@ -30,7 +42,12 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        view = load_replay_view(args.replay_dir, map_config=args.map_config)
+        view = load_replay_view(
+            args.replay_dir,
+            map_config=args.map_config,
+            map_coordinate_system=args.map_coordinate_system,
+            scenario_config=args.scenario_config,
+        )
         server = create_replay_viewer_server(
             view,
             host=args.host,

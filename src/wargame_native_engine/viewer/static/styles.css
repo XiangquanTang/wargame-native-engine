@@ -30,6 +30,7 @@ main { padding: 18px; display: grid; grid-template-columns: minmax(540px, 1.6fr)
 #battlefield { width: 100%; height: 410px; flex: 1; background: linear-gradient(#101b24cc, #101b24cc), repeating-linear-gradient(0deg, transparent 0 29px, #29405055 30px), repeating-linear-gradient(90deg, transparent 0 29px, #29405055 30px); border: 1px solid #223744; border-radius: 4px; cursor: crosshair; }
 .map-tools { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 11px; margin: -4px 0 10px; }
 .map-tools button { padding: 5px 8px; }
+.hex-info { min-height: 32px; margin-top: 8px; color: #bed0da; font-size: 11px; overflow-wrap: anywhere; }
 #battlefield { cursor: grab; }
 #battlefield:active { cursor: grabbing; }
 .legend { display: flex; gap: 14px; align-items: center; color: var(--muted); font-size: 11px; margin-top: 9px; flex-wrap: wrap; }

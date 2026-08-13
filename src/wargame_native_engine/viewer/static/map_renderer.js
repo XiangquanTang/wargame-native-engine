@@ -38,6 +38,37 @@
     });
   }
 
+  function pixelToHex(x, y, hexSize, bounds = null) {
+    if (![x, y, hexSize].every(Number.isFinite) || !(hexSize > 0)) {
+      throw new Error("pixel coordinates and hexSize must be finite");
+    }
+    const width = SQRT3 * hexSize;
+    const rowGuess = Math.round((y - hexSize) / (hexSize * 1.5));
+    const minRow = Number.isInteger(bounds?.min_row) ? bounds.min_row : 0;
+    const maxRow = Number.isInteger(bounds?.max_row)
+      ? bounds.max_row : rowGuess + 2;
+    const minColumn = Number.isInteger(bounds?.min_column) ? bounds.min_column : 0;
+    const maxColumn = Number.isInteger(bounds?.max_column)
+      ? bounds.max_column : Number.MAX_SAFE_INTEGER;
+    let best = null;
+    let bestDistance = Infinity;
+    for (let row = Math.max(minRow, rowGuess - 2); row <= Math.min(maxRow, rowGuess + 2); row += 1) {
+      const columnGuess = Math.round((
+        x - width / 2 - (row % 2 ? width / 2 : 0)
+      ) / width);
+      for (let column = Math.max(minColumn, columnGuess - 2);
+        column <= Math.min(maxColumn, columnGuess + 2); column += 1) {
+        const center = hexToPixel(row, column, hexSize);
+        const distance = Math.hypot(x - center.x, y - center.y);
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          best = { row, column };
+        }
+      }
+    }
+    return bestDistance <= hexSize * 1.05 ? best : null;
+  }
+
   function directionalSegment(row, column, direction, hexSize, edgeFraction = 0.92) {
     if (!Number.isInteger(direction) || direction < 0 || direction > 5) {
       throw new Error("hex direction must be within [0, 5]");
@@ -156,18 +187,32 @@
     return "#777777";
   }
 
-  function elevationColor(elevation) {
+  function elevationColor(elevation, mapData) {
     if (typeof elevation !== "number" || !Number.isFinite(elevation)) return "#4d555b";
-    const ratio = Math.max(0, Math.min(1, elevation / 70));
-    const index = Math.min(6, Math.floor(ratio * 7));
-    return TERRAIN_COLORS[Math.round(index * (TERRAIN_COLORS.length - 1) / 6)];
+    const minimum = mapData?.elevation?.minimum;
+    const maximum = mapData?.elevation?.maximum;
+    const levelCount = Number.isInteger(mapData?.elevation?.levels)
+      ? Math.max(2, Math.min(TERRAIN_COLORS.length, mapData.elevation.levels))
+      : 7;
+    if (!Number.isFinite(minimum) || !Number.isFinite(maximum)) return "#4d555b";
+    const ratio = maximum <= minimum
+      ? 0.5
+      : Math.max(0, Math.min(1, (elevation - minimum) / (maximum - minimum)));
+    const index = Math.min(levelCount - 1, Math.floor(ratio * levelCount));
+    return TERRAIN_COLORS[Math.round(index * (TERRAIN_COLORS.length - 1) / (levelCount - 1))];
   }
 
   class MapRenderer {
-    constructor(canvas, { onUnitSelected = null } = {}) {
+    constructor(canvas, {
+      onUnitSelected = null,
+      onHexHovered = null,
+      onHexSelected = null,
+    } = {}) {
       this.canvas = canvas;
       this.context = canvas.getContext("2d");
       this.onUnitSelected = onUnitSelected;
+      this.onHexHovered = onHexHovered;
+      this.onHexSelected = onHexSelected;
       this.map = null;
       this.frame = null;
       this.selectedUnitId = null;
@@ -177,11 +222,17 @@
       this.hitTargets = [];
       this.drag = null;
       this.hasFitted = false;
+      this.selectedHex = null;
+      this.hoveredHexKey = null;
+      this.cellByKey = new Map();
       this._bindEvents();
     }
 
     setMap(map) {
       this.map = map;
+      this.cellByKey = new Map(
+        (map?.cells || []).map((cell) => [`${cell.row}:${cell.column}`, cell]),
+      );
       this.hasFitted = false;
       this.scale = 1;
       this.offsetX = 0;
@@ -202,8 +253,10 @@
       this.hitTargets = [];
       if (!this.map) return;
       this._drawMap(context);
+      this._drawScenarioFeatures(context, this.map?.scenario?.features || []);
       this._drawObjectives(context, frame?.cities || []);
       this._drawUnits(context, frame?.viewer_units || []);
+      this._drawSelectedHex(context);
     }
 
     resetView() {
@@ -254,8 +307,11 @@
         };
       });
       this.canvas.addEventListener("pointermove", (event) => {
-        if (!this.drag || this.drag.pointerId !== event.pointerId) return;
         const point = this._eventPoint(event);
+        if (!this.drag || this.drag.pointerId !== event.pointerId) {
+          this._notifyHexHover(point);
+          return;
+        }
         const dx = point.x - this.drag.startX;
         const dy = point.y - this.drag.startY;
         if (Math.hypot(dx, dy) > 3) this.drag.moved = true;
@@ -274,10 +330,23 @@
           const hit = [...this.hitTargets].reverse().find((target) => (
             Math.hypot(target.x - point.x, target.y - point.y) <= target.radius
           ));
-          if (hit && this.onUnitSelected) this.onUnitSelected(hit.operatorId);
+          if (hit && this.onUnitSelected) {
+            this.onUnitSelected(hit.operatorId);
+          } else {
+            const value = this._hexAtScreenPoint(point);
+            if (value) {
+              this.selectedHex = { row: value.row, column: value.column };
+              if (this.onHexSelected) this.onHexSelected(value);
+              this.render(this.frame, this.selectedUnitId);
+            }
+          }
         }
       });
       this.canvas.addEventListener("pointercancel", () => { this.drag = null; });
+      this.canvas.addEventListener("pointerleave", () => {
+        this.hoveredHexKey = null;
+        if (this.onHexHovered) this.onHexHovered(null);
+      });
     }
 
     _resizeCanvas() {
@@ -301,6 +370,44 @@
 
     _worldBounds() {
       return computeWorldBounds(this.map, this.frame?.viewer_units || []);
+    }
+
+    _hexAtScreenPoint(point) {
+      if (!this.map || !(this.scale > 0)) return null;
+      const worldX = (point.x - this.offsetX) / this.scale;
+      const worldY = (point.y - this.offsetY) / this.scale;
+      const coordinate = pixelToHex(
+        worldX,
+        worldY,
+        this.map.hex_size,
+        this.map.bounds,
+      );
+      if (!coordinate) return null;
+      const key = `${coordinate.row}:${coordinate.column}`;
+      const cell = this.cellByKey.get(key) || null;
+      if ((this.map.cells || []).length && !cell) return null;
+      const units = (this.frame?.viewer_units || []).filter((unit) => (
+        unit.row === coordinate.row && unit.column === coordinate.column
+      ));
+      return {
+        ...coordinate,
+        position_id: cell?.position_id ?? String(coordinate.row * 100 + coordinate.column),
+        terrain_semantic: cell?.terrain_semantic ?? "unknown",
+        terrain_code: cell?.terrain_code ?? null,
+        terrain_level: cell?.terrain_level ?? null,
+        elevation: cell?.elevation ?? null,
+        roads: cell?.roads ?? [0, 0, 0, 0, 0, 0],
+        rivers: cell?.rivers ?? [0, 0, 0, 0, 0, 0],
+        units,
+      };
+    }
+
+    _notifyHexHover(point) {
+      const value = this._hexAtScreenPoint(point);
+      const key = value ? `${value.row}:${value.column}` : null;
+      if (key === this.hoveredHexKey) return;
+      this.hoveredHexKey = key;
+      if (this.onHexHovered) this.onHexHovered(value);
     }
 
     _screen(point) {
@@ -337,7 +444,7 @@
         ? context.lineTo(point.x, point.y)
         : context.moveTo(point.x, point.y));
       context.closePath();
-      context.fillStyle = configured ? elevationColor(cell.elevation) : "#25313a";
+      context.fillStyle = configured ? elevationColor(cell.elevation, this.map) : "#25313a";
       context.fill();
       context.strokeStyle = configured ? "#493b18aa" : "#53616a88";
       context.lineWidth = Math.max(0.45, Math.min(1.2, this.scale * 0.6));
@@ -405,6 +512,55 @@
       }
     }
 
+    _drawScenarioFeatures(context, features) {
+      for (const feature of features) {
+        if (!Number.isInteger(feature.row) || !Number.isInteger(feature.column)) continue;
+        const center = this._screen(hexToPixel(
+          feature.row, feature.column, this.map.hex_size,
+        ));
+        context.save();
+        context.globalAlpha = 0.78;
+        context.strokeStyle = feature.side === "red" ? "#ff5b62"
+          : feature.side === "blue" ? "#45a8ff" : "#f1d271";
+        context.fillStyle = "#161616bb";
+        context.lineWidth = 1.5;
+        if (feature.kind === "city") {
+          context.beginPath(); context.arc(center.x, center.y, 8, 0, Math.PI * 2);
+          context.fill(); context.stroke();
+        } else if (feature.kind.toLowerCase().includes("mine")) {
+          context.beginPath(); context.moveTo(center.x, center.y - 7);
+          context.lineTo(center.x + 7, center.y + 6);
+          context.lineTo(center.x - 7, center.y + 6); context.closePath();
+          context.fill(); context.stroke();
+        } else {
+          context.fillRect(center.x - 6, center.y - 6, 12, 12);
+          context.strokeRect(center.x - 6, center.y - 6, 12, 12);
+          context.beginPath(); context.moveTo(center.x - 5, center.y - 5);
+          context.lineTo(center.x + 5, center.y + 5);
+          context.moveTo(center.x + 5, center.y - 5);
+          context.lineTo(center.x - 5, center.y + 5); context.stroke();
+        }
+        context.restore();
+      }
+    }
+
+    _drawSelectedHex(context) {
+      if (!this.selectedHex) return;
+      const vertices = hexVertices(
+        this.selectedHex.row,
+        this.selectedHex.column,
+        this.map.hex_size,
+      ).map((point) => this._screen(point));
+      context.beginPath();
+      vertices.forEach((point, index) => index
+        ? context.lineTo(point.x, point.y)
+        : context.moveTo(point.x, point.y));
+      context.closePath();
+      context.strokeStyle = "#ffe15a";
+      context.lineWidth = 2.5;
+      context.stroke();
+    }
+
     _drawUnits(context, units) {
       for (const stack of stackUnits(units)) {
         const center = this._screen(hexToPixel(stack[0].row, stack[0].column, this.map.hex_size));
@@ -465,6 +621,13 @@
       context.beginPath();
       if (kind === "tank") {
         context.rect(-radius, -radius * 0.58, radius * 2, radius * 1.16);
+      } else if (kind === "armored_vehicle") {
+        context.moveTo(-radius, -radius * 0.55);
+        context.lineTo(radius * 0.65, -radius * 0.55);
+        context.lineTo(radius, 0);
+        context.lineTo(radius * 0.65, radius * 0.55);
+        context.lineTo(-radius, radius * 0.55);
+        context.closePath();
       } else if (kind === "infantry") {
         context.moveTo(0, -radius); context.lineTo(radius, radius); context.lineTo(-radius, radius); context.closePath();
       } else if (kind === "drone" || kind === "helicopter") {
@@ -474,6 +637,13 @@
       } else if (kind === "artillery") {
         context.arc(0, 0, radius, 0, Math.PI * 2);
         context.moveTo(0, 0); context.lineTo(radius * 1.3, -radius * 0.5);
+      } else if (kind === "unmanned_ground_vehicle") {
+        context.moveTo(0, -radius); context.lineTo(radius, 0);
+        context.lineTo(0, radius); context.lineTo(-radius, 0); context.closePath();
+      } else if (kind === "loitering_munition") {
+        context.moveTo(radius, 0); context.lineTo(-radius, -radius * 0.55);
+        context.lineTo(-radius * 0.35, 0); context.lineTo(-radius, radius * 0.55);
+        context.closePath();
       } else if (kind === "facility") {
         context.rect(-radius, -radius, radius * 2, radius * 2);
       } else {
@@ -488,6 +658,7 @@
     directionalSegment,
     hexToPixel,
     hexVertices,
+    pixelToHex,
     riverEdgeSegment,
     stackSpread,
     stackUnits,

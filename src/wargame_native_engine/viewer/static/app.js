@@ -95,6 +95,22 @@ function renderBattlefield() {
   if (mapRenderer) mapRenderer.render(currentFrame, selectedUnitId);
 }
 
+function renderHexInfo(value, mode) {
+  const target = $("hex-info");
+  if (!value) {
+    target.textContent = "移动鼠标或点击六边形查看真实坐标与地形";
+    return;
+  }
+  const unitIds = (value.units || []).map((unit) => unit.operator_id);
+  target.textContent = [
+    `${mode} row=${value.row} column=${value.column} position=${value.position_id}`,
+    `terrain=${value.terrain_semantic} (${formatNumber(value.terrain_code)})`,
+    `elevation=${formatNumber(value.elevation)} level=${formatNumber(value.terrain_level)}`,
+    `roads=${JSON.stringify(value.roads)} rivers=${JSON.stringify(value.rivers)}`,
+    `units=${unitIds.length ? unitIds.join(", ") : "none"}`,
+  ].join(" · ");
+}
+
 function renderFactors() {
   const unit = currentAnalysis.unit_analyses.find((item) => item.operator_id === selectedUnitId);
   const body = $("factor-table"); body.replaceChildren();
@@ -199,12 +215,21 @@ async function initialize() {
     $("map-mode").textContent = mapData.mode === "configured-hex-map"
       ? `Odd-r hex map · ${mapData.map_id ?? "unnamed"} · ${mapData.rows}×${mapData.columns}`
       : "Coordinate fallback · no terrain configuration";
+    const elevation = mapData.elevation;
+    $("map-elevation").textContent = elevation?.mode === "episode"
+      ? `Elevation ${formatNumber(elevation.minimum)}..${formatNumber(elevation.maximum)} · ${elevation.levels} levels`
+      : "Elevation unavailable";
+    $("scenario-mode").textContent = mapData.scenario
+      ? `Scenario ${mapData.scenario.scenario_id} · ${mapData.scenario.features.length} static features · dynamic units from replay`
+      : "No explicit Scenario overlay";
     mapRenderer = new window.ReplayMapRenderer.MapRenderer($("battlefield"), {
       onUnitSelected: (operatorId) => {
         selectedUnitId = operatorId;
         renderBattlefield();
         renderFactors();
       },
+      onHexHovered: (value) => renderHexInfo(value, "hover"),
+      onHexSelected: (value) => renderHexInfo(value, "selected"),
     });
     mapRenderer.setMap(mapData);
     await setCurrentFrameIndex(0);
