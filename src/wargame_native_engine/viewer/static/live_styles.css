@@ -1,0 +1,13 @@
+.live-main { grid-template-columns: minmax(560px, 1.7fr) minmax(320px, .8fr); }
+.command-panel { padding: 15px; display: flex; flex-direction: column; gap: 10px; }
+.command-panel select { width: 100%; min-height: 42px; background: var(--panel-2); color: var(--text); border: 1px solid var(--line); }
+.command-panel button { width: 100%; }
+.boundary-note { color: var(--muted); font-size: 11px; }
+.status-title { margin-top: 12px; margin-bottom: 0; }
+.observation-panel { grid-column: 1 / -1; padding: 14px; }
+.observation-panel pre { max-height: 300px; }
+
+@media (max-width: 900px) {
+  .live-main { grid-template-columns: 1fr; }
+  .observation-panel { grid-column: 1; }
+}

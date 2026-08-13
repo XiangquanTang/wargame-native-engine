@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Native 本地人工控制</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/live_styles.css">
+</head>
+<body>
+  <header>
+    <div>
+      <p class="eyebrow">LOCAL · SIDE OBSERVATION · COMMAND GATEWAY</p>
+      <h1>Native 本地人工控制</h1>
+    </div>
+    <div class="badges">
+      <span id="perspective-badge" class="badge"></span>
+      <span class="badge warn">对手：NoOp</span>
+      <span class="badge no">GREEN / 八因子不暴露给控制端</span>
+    </div>
+  </header>
+
+  <main class="live-main">
+    <section class="battle-panel panel">
+      <div class="section-title">
+        <div><h2>当前方可见态势</h2><p id="map-mode">正在加载…</p></div>
+        <div class="frame-readout">Step <strong id="step-index">0</strong></div>
+      </div>
+      <div class="map-tools">
+        <button id="reset-map-view" type="button">适配地图</button>
+        <span>滚轮缩放 · 拖动平移 · 点击己方单位筛选动作</span>
+      </div>
+      <canvas id="battlefield" aria-label="当前方可见六角地图"></canvas>
+      <p id="hex-info" class="hex-info">移动鼠标查看六边形坐标</p>
+    </section>
+
+    <aside class="panel command-panel">
+      <div class="section-title"><h2>当前 Native valid_actions</h2></div>
+      <p id="selected-unit">未选择单位</p>
+      <label for="action-select">动作</label>
+      <select id="action-select"></select>
+      <button id="submit-action" type="button">提交一次联合推进</button>
+      <p class="boundary-note">动作由 CommandGateway 按当前 action_id 解析；不补路、不猜目标、不直接修改 WorldState。</p>
+      <div class="section-title status-title"><h2>状态</h2></div>
+      <pre id="command-status">等待操作</pre>
+      <button id="publish-match" type="button">发布 replay 与 analysis</button>
+    </aside>
+
+    <section class="panel observation-panel">
+      <div class="section-title"><h2>当前方 Observation</h2></div>
+      <pre id="observation">{}</pre>
+    </section>
+  </main>
+  <div id="error-banner" role="alert" hidden></div>
+  <script src="/static/map_renderer.js"></script>
+  <script src="/static/live_app.js"></script>
+</body>
+</html>

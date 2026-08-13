@@ -38,6 +38,7 @@ class ControllerView:
     perspective: str
     step_index: int
     observation: Mapping[str, Any]
+    source_frame: Mapping[str, Any]
     valid_actions: tuple[Mapping[str, Any], ...]
     terminal: bool
     winner: str | None
@@ -49,6 +50,7 @@ class ControllerView:
             "perspective": self.perspective,
             "step_index": self.step_index,
             "observation": json_clone(self.observation),
+            "source_frame": json_clone(self.source_frame),
             "valid_actions": json_clone(self.valid_actions),
             "terminal": self.terminal,
             "winner": self.winner,

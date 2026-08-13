@@ -86,11 +86,11 @@ class CommandGateway:
         expected_step: int,
         valid_action_id: str | None,
     ) -> CommandResult:
-        request = str(request_id)
-        if not request.strip():
+        if not isinstance(request_id, str) or not request_id.strip():
             raise CommandGatewayError(
                 "invalid_request_id", "request_id must be a non-empty string"
             )
+        request = request_id
         if type(expected_step) is not int or expected_step < 0:
             raise CommandGatewayError(
                 "invalid_expected_step",

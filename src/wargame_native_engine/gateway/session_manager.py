@@ -292,6 +292,11 @@ class SessionManager:
         _require_side(managed, side)
         session = managed.environment.session
         observation = session.observe(side).to_dict()
+        source_frame = (
+            managed.environment.last_bundle.red
+            if side == "red"
+            else managed.environment.last_bundle.blue
+        )
         valid_actions = tuple(
             json_clone(item.to_dict())
             for item in session.valid_actions(side)
@@ -303,6 +308,7 @@ class SessionManager:
             perspective=side.upper(),
             step_index=managed.step_index,
             observation=json_clone(observation),
+            source_frame=json_clone(source_frame),
             valid_actions=valid_actions,
             terminal=terminal,
             winner=None if result is None else result.winner,

@@ -75,6 +75,8 @@ def test_controller_views_are_identity_bound_detached_and_side_only(
     assert blue.observation["side"] == "blue"
     assert "green" not in red.to_record()
     assert "frame_analysis" not in red.to_record()
+    assert red.source_frame["extra"]["native"]["perspective"] == "RED"
+    assert blue.source_frame["extra"]["native"]["perspective"] == "BLUE"
     assert "judge_info" not in red.observation
     assert [item["operator_id"] for item in red.observation["friendly_operators"]] == [1]
     assert [item["operator_id"] for item in blue.observation["friendly_operators"]] == [2]
