@@ -16,6 +16,11 @@ from wargame_native_engine.gateway.models import (
     SessionPublication,
 )
 from wargame_native_engine.gateway.session_manager import SessionManager
+from wargame_native_engine.session.scheduler import (
+    SimulationAdvance,
+    SimulationSchedule,
+    SimulationScheduler,
+)
 
 __all__ = [
     "CommandGateway",
@@ -28,6 +33,9 @@ __all__ = [
     "SessionDescriptor",
     "SessionManager",
     "SessionPublication",
+    "SimulationAdvance",
+    "SimulationSchedule",
+    "SimulationScheduler",
     "SideActionSubmission",
     "canonical_action_order_key",
 ]

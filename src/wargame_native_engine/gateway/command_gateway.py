@@ -19,12 +19,18 @@ from wargame_native_engine.gateway.decision_window import (
     DecisionWindowState,
 )
 from wargame_native_engine.gateway.session_manager import SessionManager
+from wargame_native_engine.session.scheduler import (
+    SimulationAdvance,
+    SimulationSchedule,
+    SimulationScheduler,
+)
 
 
 @dataclass(slots=True)
 class _GatewaySession:
     bindings: dict[str, str]
     window: DecisionWindow
+    last_advance: SimulationAdvance | None = None
     requests: dict[str, tuple[tuple[object, ...], CommandResult]] = field(
         default_factory=dict
     )
@@ -39,6 +45,8 @@ class CommandGateway:
         manager: SessionManager,
         *,
         delta_time_seconds: int | float = 20,
+        decision_interval_ms: int | None = None,
+        frame_interval_ms: int | None = None,
     ) -> None:
         if not isinstance(manager, SessionManager):
             raise TypeError("manager must be a SessionManager")
@@ -46,7 +54,16 @@ class CommandGateway:
             delta_time_seconds, (int, float)
         ) or delta_time_seconds <= 0:
             raise ValueError("delta_time_seconds must be a positive number")
+        legacy_interval_ms = _seconds_to_milliseconds(delta_time_seconds)
+        decision_ms = (
+            legacy_interval_ms
+            if decision_interval_ms is None
+            else decision_interval_ms
+        )
+        frame_ms = decision_ms if frame_interval_ms is None else frame_interval_ms
         self.manager = manager
+        self.schedule = SimulationSchedule(decision_ms, frame_ms)
+        self.scheduler = SimulationScheduler(manager, self.schedule)
         self.delta_time_seconds = delta_time_seconds
         self._sessions: dict[str, _GatewaySession] = {}
         self._lock = RLock()
@@ -70,7 +87,7 @@ class CommandGateway:
         with self._lock:
             self._sessions[descriptor.session_id] = _GatewaySession(
                 {"red": red, "blue": blue},
-                self._open_window(descriptor.session_id, descriptor.step_index),
+                self._open_window(descriptor.session_id, 0),
             )
         return descriptor
 
@@ -163,10 +180,10 @@ class CommandGateway:
             if advanced:
                 window.close()
                 window.mark_advancing()
-                self.manager.advance(
+                gateway_session.last_advance = self.scheduler.advance_window(
                     session_id,
-                    window.merged_action_batch,
-                    delta_time_seconds=self.delta_time_seconds,
+                    decision_window_index=window.decision_window_index,
+                    ordered_actions=window.merged_action_batch,
                 )
                 window.mark_completed()
                 descriptor = self.manager.descriptor(session_id)
@@ -252,7 +269,11 @@ class CommandGateway:
         self, session_id: str, side: str, window: DecisionWindow,
     ) -> ControllerView:
         view = self.manager.controller_view(session_id, side)
-        return replace(view, valid_actions=window.action_records(side))
+        return replace(
+            view,
+            step_index=window.decision_window_index,
+            valid_actions=window.action_records(side),
+        )
 
     @staticmethod
     def _window_view(
@@ -296,3 +317,14 @@ def _bound_side(session: _GatewaySession, controller_id: str) -> str:
             f"controller {controller_id!r} is not bound to this session",
         )
     return matches[0]
+
+
+def _seconds_to_milliseconds(value: int | float) -> int:
+    milliseconds = value * 1000
+    if not isinstance(milliseconds, (int, float)) or not float(
+        milliseconds
+    ).is_integer():
+        raise ValueError(
+            "delta_time_seconds must resolve to positive integer milliseconds"
+        )
+    return int(milliseconds)

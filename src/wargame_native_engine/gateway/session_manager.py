@@ -127,6 +127,8 @@ class SessionManager:
             step_index=0,
             terminal=environment.session.is_terminal(),
             finalized=False,
+            frame_index=0,
+            sim_time_ms=self.sim_time_ms(external_id),
         )
 
     def descriptor(self, session_id: str) -> SessionDescriptor:
@@ -138,6 +140,8 @@ class SessionManager:
                 step_index=managed.step_index,
                 terminal=managed.environment.session.is_terminal(),
                 finalized=managed.finalized,
+                frame_index=managed.step_index,
+                sim_time_ms=_managed_sim_time_ms(managed),
             )
 
     def controller_view(self, session_id: str, side: str) -> ControllerView:
@@ -163,11 +167,7 @@ class SessionManager:
         managed = self._managed(session_id)
         with managed.lock:
             self._require_usable(managed)
-            world = managed.environment.session.snapshot()["world"]
-            value = world["elapsed_time_ms"]
-            if type(value) is not int or value < 0:
-                raise RuntimeError("invalid_authoritative_sim_time")
-            return value
+            return _managed_sim_time_ms(managed)
 
     def agent_reset_context(
         self,
@@ -266,6 +266,8 @@ class SessionManager:
                 step_index=managed.step_index,
                 terminal=bool(update.done),
                 finalized=False,
+                frame_index=managed.step_index,
+                sim_time_ms=_managed_sim_time_ms(managed),
             )
 
     def publish_session(
@@ -386,7 +388,17 @@ class SessionManager:
             terminal=terminal,
             winner=None if result is None else result.winner,
             outcome=None if result is None else result.outcome,
+            frame_index=managed.step_index,
+            sim_time_ms=_managed_sim_time_ms(managed),
         )
+
+
+def _managed_sim_time_ms(managed: _ManagedSession) -> int:
+    world = managed.environment.session.snapshot()["world"]
+    value = world["elapsed_time_ms"]
+    if type(value) is not int or value < 0:
+        raise RuntimeError("invalid_authoritative_sim_time")
+    return value
 
 
 def _require_side(managed: _ManagedSession, side: str) -> None:

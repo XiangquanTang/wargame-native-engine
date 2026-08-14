@@ -24,6 +24,8 @@ class SessionDescriptor:
     step_index: int
     terminal: bool
     finalized: bool = False
+    frame_index: int = 0
+    sim_time_ms: int = 0
 
     def to_record(self) -> dict[str, object]:
         return {
@@ -31,6 +33,8 @@ class SessionDescriptor:
             "step_index": self.step_index,
             "terminal": self.terminal,
             "finalized": self.finalized,
+            "frame_index": self.frame_index,
+            "sim_time_ms": self.sim_time_ms,
         }
 
 
@@ -73,6 +77,8 @@ class ControllerView:
     terminal: bool
     winner: str | None
     outcome: str | None
+    frame_index: int = 0
+    sim_time_ms: int = 0
 
     def to_record(self) -> dict[str, object]:
         return {
@@ -85,6 +91,8 @@ class ControllerView:
             "terminal": self.terminal,
             "winner": self.winner,
             "outcome": self.outcome,
+            "frame_index": self.frame_index,
+            "sim_time_ms": self.sim_time_ms,
         }
 
 
