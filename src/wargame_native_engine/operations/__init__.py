@@ -17,9 +17,13 @@ __all__ = [
     "ActionProposalRegistry",
     "MatchHandle",
     "OperationError",
+    "GroupOperationPreview",
+    "ProductExecutionResult",
+    "ProductOperationService",
     "SideController",
     "StagedAction",
     "UnitCommandMenu",
+    "UnitOperationPreview",
     "WargameFacade",
 ]
 
@@ -40,4 +44,21 @@ def __getattr__(name: str) -> Any:
         from wargame_native_engine.operations.facade import MatchHandle, WargameFacade
 
         return {"MatchHandle": MatchHandle, "WargameFacade": WargameFacade}[name]
+    if name in {
+        "GroupOperationPreview", "ProductExecutionResult",
+        "ProductOperationService", "UnitOperationPreview",
+    }:
+        from wargame_native_engine.operations.product import (
+            GroupOperationPreview,
+            ProductExecutionResult,
+            ProductOperationService,
+            UnitOperationPreview,
+        )
+
+        return {
+            "GroupOperationPreview": GroupOperationPreview,
+            "ProductExecutionResult": ProductExecutionResult,
+            "ProductOperationService": ProductOperationService,
+            "UnitOperationPreview": UnitOperationPreview,
+        }[name]
     raise AttributeError(name)

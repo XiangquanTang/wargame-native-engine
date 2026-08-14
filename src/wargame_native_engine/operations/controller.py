@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from threading import RLock
+from typing import Mapping
 
 from wargame_native_engine.gateway.command_gateway import CommandGateway
 from wargame_native_engine.gateway.models import (
@@ -53,12 +54,18 @@ class SideController:
         self._lock = RLock()
 
     def observe(self) -> ControllerView:
+        _, view = self.state()
+        return view
+
+    def state(self) -> tuple[DecisionWindowView, ControllerView]:
+        """Return one detached, mutually consistent service snapshot."""
+
         window, view = self._gateway.controller_state(
             self.session_id, self.controller_id
         )
         with self._lock:
             self._sync_window(window.decision_window_index)
-        return view
+        return window, view
 
     def window(self) -> DecisionWindowView:
         value = self._gateway.poll_window(self.session_id, self.controller_id)
@@ -107,6 +114,25 @@ class SideController:
     def proposal(self, proposal_id: str) -> ActionProposal:
         return self._gateway.proposal(
             self.session_id, self.controller_id, proposal_id
+        )
+
+    def record_operation_preview(
+        self,
+        *,
+        preview_token: str,
+        operation_type: str,
+        selected_unit_ids: tuple[int, ...],
+        executable_count: int,
+        rejected: tuple[Mapping[str, object], ...],
+    ) -> None:
+        self._gateway.record_product_preview(
+            self.session_id,
+            self.controller_id,
+            preview_token=preview_token,
+            operation_type=operation_type,
+            selected_unit_ids=selected_unit_ids,
+            executable_count=executable_count,
+            rejected=rejected,
         )
 
     def stage_action(

@@ -544,6 +544,36 @@ class CommandGateway:
             _bound_side(gateway_session, controller_id)
             return tuple(gateway_session.audit.records)
 
+    def record_product_preview(
+        self,
+        session_id: str,
+        controller_id: str,
+        *,
+        preview_token: str,
+        operation_type: str,
+        selected_unit_ids: tuple[int, ...],
+        executable_count: int,
+        rejected: tuple[Mapping[str, object], ...],
+    ) -> None:
+        """Record non-authoritative human intent without exposing facts."""
+
+        gateway_session = self._gateway_session(session_id)
+        with gateway_session.lock:
+            side = _bound_side(gateway_session, controller_id)
+            gateway_session.audit.append(
+                "product_operation_previewed",
+                decision_window_index=(
+                    gateway_session.window.decision_window_index
+                ),
+                controller_id=str(controller_id),
+                side=side,
+                preview_token=str(preview_token),
+                operation_type=str(operation_type),
+                selected_unit_ids=selected_unit_ids,
+                executable_count=executable_count,
+                rejected=rejected,
+            )
+
     def last_advance(
         self, session_id: str, controller_id: str,
     ) -> SimulationAdvance | None:
