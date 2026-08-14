@@ -392,7 +392,12 @@ def replay_source_archive(scenario: NativeScenario, source: str | Path, *,
         if actual.terminal != expected_terminal:
             environment.session.close()
             raise ValueError("source replay terminal status mismatch")
-        if actual.truncated != expected_truncated:
+        # A non-terminal truncated archive is an explicitly published fact
+        # prefix. Truncation is a publication property, not a WorldState rule
+        # outcome, so the replayed engine correctly remains non-truncated.
+        # Terminal truncation (for example Native max_ticks) is still bound to
+        # the engine result below.
+        if expected_terminal and actual.truncated != expected_truncated:
             environment.session.close()
             raise ValueError("source replay truncated status mismatch")
         if actual.winner != manifest.get("winner"):
