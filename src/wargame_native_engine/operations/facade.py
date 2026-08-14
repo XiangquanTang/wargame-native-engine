@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from wargame_native_engine.backends.native import NativeEngineBackend
 from wargame_native_engine.compat.source_frame.template import (
@@ -46,6 +47,32 @@ class MatchHandle:
     def map_record(self) -> dict[str, object]:
         return dict(self.bundle.render_map_record())
 
+    @property
+    def status(self):
+        """Return the detached public descriptor for this match."""
+
+        return self.gateway.manager.descriptor(self.session_id)
+
+    def publish(
+        self,
+        output_dir: str | Path,
+        *,
+        truncated: bool = False,
+        overwrite: bool = False,
+    ):
+        """Publish facts and derived evidence through the managed service."""
+
+        return self.gateway.publish_session(
+            self.session_id,
+            self.red_controller_id,
+            str(output_dir),
+            truncated=truncated,
+            overwrite=overwrite,
+        )
+
+    def close(self) -> None:
+        self.gateway.close_session(self.session_id)
+
 
 class WargameFacade:
     """Application root; never a second engine or advancement path."""
@@ -83,6 +110,9 @@ class WargameFacade:
         decision_interval_ms: int = 20_000,
         frame_interval_ms: int = 20_000,
         record: bool = True,
+        deadline_mode: str = "synchronous",
+        deadline_seconds: float | None = None,
+        clock: Any | None = None,
     ) -> MatchHandle:
         bundle = self.catalog.load_scenario(scenario_id)
 
@@ -101,6 +131,9 @@ class WargameFacade:
             manager,
             decision_interval_ms=decision_interval_ms,
             frame_interval_ms=frame_interval_ms,
+            deadline_mode=deadline_mode,
+            deadline_seconds=deadline_seconds,
+            clock=clock,
         )
         descriptor = gateway.create_session(
             red_controller_id=red_controller_id,

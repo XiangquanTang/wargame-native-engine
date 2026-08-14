@@ -112,6 +112,16 @@ def test_facade_destination_proposal_is_staged_by_action_id_only(match) -> None:
     assert closed["merged_action_ids"] == [proposal.action_id]
 
 
+def test_match_handle_exposes_product_status_publish_and_close(
+    match, tmp_path: Path
+) -> None:
+    assert match.status.session_id == match.session_id
+    publication = match.publish(tmp_path / "published", truncated=True)
+    assert publication.replay_path.is_file()
+    assert publication.analysis_path.is_file()
+    match.close()
+
+
 def test_staging_external_records_does_not_change_authorized_action(match) -> None:
     red = match.bind_controller("RED", controller_id="red-human")
     proposal = red.plan_move(1, 105, request_id="immutable")

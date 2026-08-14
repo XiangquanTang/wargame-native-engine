@@ -8,16 +8,12 @@ from collections.abc import Sequence
 from pathlib import Path
 import tempfile
 
-from scripts.run_minimal_source_replay import DEFAULT_SCENARIO, _template
-from wargame_native_engine.backends.native import NativeEngineBackend
-from wargame_native_engine.gateway import CommandGateway, SessionManager
-from wargame_native_engine.io.scenario import load_scenario
-from wargame_native_engine.session.game_session import GameSession
-from wargame_native_engine.session.source_environment import SourceCompatibleEnvironment
+from scripts.run_minimal_source_replay import DEFAULT_SCENARIO
+from wargame_native_engine.data import ScenarioBundle, ScenarioCatalog
+from wargame_native_engine.operations import WargameFacade
 from wargame_native_engine.viewer.dual_control_server import (
     create_dual_side_control_server,
 )
-from wargame_native_engine.viewer.live_control import native_scenario_map_record
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -39,37 +35,32 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    scenario = load_scenario(args.scenario)
-
-    def factory() -> SourceCompatibleEnvironment:
-        return SourceCompatibleEnvironment(
-            GameSession(NativeEngineBackend(scenario)),
-            template=_template(scenario),
-        )
+    bundle = ScenarioBundle.from_path(args.scenario)
+    catalog = ScenarioCatalog.from_bundles({
+        bundle.scenario_identity.scenario_id: bundle,
+    })
 
     with tempfile.TemporaryDirectory(prefix="wargame-dual-control.") as storage:
-        manager = SessionManager(factory, storage_root=storage)
-        gateway = CommandGateway(
-            manager,
+        app = WargameFacade(catalog, storage_root=storage)
+        red_id, blue_id = "local-red-controller", "local-blue-controller"
+        match = app.create_match(
+            scenario_id=bundle.scenario_identity.scenario_id,
+            red_controller_id=red_id,
+            blue_controller_id=blue_id,
+            seed=args.seed,
             decision_interval_ms=args.decision_interval_ms,
             frame_interval_ms=args.frame_interval_ms,
             deadline_mode="server_monotonic",
             deadline_seconds=args.deadline_seconds,
         )
-        red_id, blue_id = "local-red-controller", "local-blue-controller"
-        descriptor = gateway.create_session(
-            red_controller_id=red_id,
-            blue_controller_id=blue_id,
-            seed=args.seed,
-        )
         server = create_dual_side_control_server(
-            gateway,
-            session_id=descriptor.session_id,
+            match.gateway,
+            session_id=match.session_id,
             red_controller_id=red_id,
             blue_controller_id=blue_id,
             red_token=args.red_token,
             blue_token=args.blue_token,
-            map_data=native_scenario_map_record(scenario),
+            map_data=match.map_record,
             output_dir=args.output_dir,
             host=args.host,
             port=args.port,
@@ -83,7 +74,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             pass
         finally:
             server.server_close()
-            gateway.close_session(descriptor.session_id)
+            match.close()
     return 0
 
 
