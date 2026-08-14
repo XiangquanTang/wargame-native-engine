@@ -8,6 +8,16 @@ from wargame_native_engine.data.models import (
     ScenarioBundle,
     ScenarioIdentity,
 )
+from wargame_native_engine.data.source_scenario import (
+    EXPLICIT_NATIVE_SUPPLEMENT,
+    STRICT_SOURCE,
+    PublishedSourceScenarioConversion,
+    SourceScenarioConversion,
+    SourceScenarioConversionError,
+    convert_source_scenario,
+    inspect_source_scenario,
+    publish_source_scenario_conversion,
+)
 
 __all__ = [
     "DataLoadError",
@@ -16,4 +26,12 @@ __all__ = [
     "ScenarioBundle",
     "ScenarioCatalog",
     "ScenarioIdentity",
+    "EXPLICIT_NATIVE_SUPPLEMENT",
+    "STRICT_SOURCE",
+    "PublishedSourceScenarioConversion",
+    "SourceScenarioConversion",
+    "SourceScenarioConversionError",
+    "convert_source_scenario",
+    "inspect_source_scenario",
+    "publish_source_scenario_conversion",
 ]

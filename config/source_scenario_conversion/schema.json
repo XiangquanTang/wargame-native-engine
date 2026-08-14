@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "wargame-native://source-scenario-native-supplement/1.0",
+  "title": "Explicit Native supplement for one Source Scenario",
+  "type": "object",
+  "required": [
+    "schema", "supplement_id", "supplement_version", "scenario_id", "map_id",
+    "native_rules_equivalence", "map_profile", "platform_profiles",
+    "armor_profiles", "weapon_profiles", "initial_state_defaults",
+    "objective_policy", "termination", "seed_policy"
+  ],
+  "properties": {
+    "schema": {"const": "source-scenario-native-supplement/1.0"},
+    "supplement_id": {"type": "string", "minLength": 1},
+    "supplement_version": {"type": "string", "minLength": 1},
+    "scenario_id": {"type": ["string", "integer"]},
+    "map_id": {"type": ["string", "integer"]},
+    "native_rules_equivalence": {"const": false},
+    "map_profile": {"type": "object"},
+    "platform_profiles": {"type": "object"},
+    "armor_profiles": {"type": "object"},
+    "weapon_profiles": {"type": "object"},
+    "initial_state_defaults": {"type": "object"},
+    "objective_policy": {"type": "object"},
+    "termination": {"type": "object"},
+    "seed_policy": {"type": "object"}
+  },
+  "additionalProperties": false
+}
