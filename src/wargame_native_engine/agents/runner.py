@@ -16,6 +16,10 @@ from wargame_native_engine.agents.protocol import (
     AgentResetContext,
     AgentStepContext,
 )
+from wargame_native_engine.agents.authorization import (
+    freeze_valid_actions,
+    resolve_agent_selection,
+)
 from wargame_native_engine.analysis import (
     EightFactorAnalyzer,
     LiveAnalysisDesynchronizedError,
@@ -333,7 +337,9 @@ class LocalAgentMatchRunner:
         for side in session.scenario.side_order:
             agent = self.agents[side]
             observation = deepcopy(session.observe(side))
-            valid_actions = deepcopy(session.valid_actions(side))
+            current_valid_actions = tuple(session.valid_actions(side))
+            frozen_actions = freeze_valid_actions(side, current_valid_actions)
+            valid_actions = deepcopy(current_valid_actions)
             context = AgentStepContext(
                 session.session_id,
                 side,
@@ -349,7 +355,7 @@ class LocalAgentMatchRunner:
                     valid_actions=valid_actions,
                     context=deepcopy(context),
                 )
-                action = self._validate_agent_action(side, value, valid_actions)
+                action = resolve_agent_selection(side, value, frozen_actions)
             except BaseException as exc:
                 if isinstance(exc, AgentExecutionError):
                     raise
@@ -364,26 +370,6 @@ class LocalAgentMatchRunner:
             if action is not None:
                 selected.append(action)
         return tuple(selected)
-
-    @staticmethod
-    def _validate_agent_action(
-        side: str,
-        selected: AgentAction | None,
-        valid_actions: Sequence[ValidAction],
-    ) -> EngineAction | None:
-        if selected is None:
-            return None
-        if not isinstance(selected, AgentAction):
-            raise TypeError("Agent.act must return AgentAction or None")
-        action = deepcopy(selected.action)
-        if action.side != side:
-            raise ValueError(f"agent_action_side_mismatch:{side}")
-        if selected.valid_action_id != action.action_id:
-            raise ValueError("agent valid-action identity mismatch")
-        legal = {item.action_id for item in valid_actions}
-        if selected.valid_action_id not in legal:
-            raise ValueError(f"agent_action_not_valid:{side}")
-        return action
 
     def _recorder_metadata(
         self,

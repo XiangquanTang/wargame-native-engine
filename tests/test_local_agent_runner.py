@@ -206,6 +206,37 @@ def test_hidden_information_and_mutable_agent_inputs_are_isolated(
     assert environment.session.observe("blue").friendly_operators[0].raw_attributes
 
 
+def test_agent_cannot_authorize_mutated_nested_action_parameters(
+    tmp_path: Path,
+) -> None:
+    class MutatingActionAgent(NoOpAgent):
+        def act(self, *, observation, valid_actions, context):
+            del observation, context
+            move = next(
+                item for item in valid_actions
+                if item.action.action_type is ActionType.MOVE
+            )
+            authorized_id = move.action_id
+            original_target = int(move.action.parameters["path"][0])
+            move.action.parameters["path"][0] = 999999
+            self.original_target = original_target
+            return AgentAction(move.action, authorized_id)
+
+    red = MutatingActionAgent("mutating-action-red")
+    environment = _new_environment()
+    result = LocalAgentMatchRunner(
+        environment=environment,
+        red_agent=red,
+        blue_agent=NoOpAgent("noop-blue"),
+    ).run(tmp_path / "immutable-authorization", max_steps=1)
+    archive = SourceReplayArchiveImporter().import_path(result.replay_path)
+    submitted = archive.steps[0]["ordered_actions"]
+    red_action = next(item for item in submitted if item["side"] == "red")
+
+    assert red_action["parameters"]["path"] == [red.original_target]
+    assert 999999 not in red_action["parameters"]["path"]
+
+
 def test_each_agent_and_underlying_step_called_once_with_deterministic_merge(
     tmp_path: Path,
 ) -> None:

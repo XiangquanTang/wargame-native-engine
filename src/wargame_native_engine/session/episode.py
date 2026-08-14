@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 import time
 from pathlib import Path
@@ -7,6 +8,10 @@ from typing import Any, Mapping
 
 from wargame_native_engine.agents.protocol import (
     Agent, AgentAction, AgentResetContext,
+)
+from wargame_native_engine.agents.authorization import (
+    freeze_valid_actions,
+    resolve_agent_selection,
 )
 from wargame_native_engine.io.replay import ReplayWriter
 from wargame_native_engine.io.serialization import canonical_hash
@@ -84,16 +89,16 @@ class EpisodeRunner:
                 batch: dict[str, AgentAction | None] = {}
                 for side in self.session.current_seats():
                     observation = self.session.observe(side)
-                    valid = self.session.valid_actions(side)
+                    current_valid = tuple(self.session.valid_actions(side))
+                    frozen = freeze_valid_actions(side, current_valid)
+                    valid = deepcopy(current_valid)
                     selected = self.agents[side].act(
                         observation=observation, valid_actions=valid,
                         context=self.session.agent_context(side),
                     )
-                    if selected is not None:
-                        legal = {item.action_id for item in valid}
-                        if selected.valid_action_id not in legal:
-                            raise ValueError(f"agent_action_not_valid:{side}")
-                    batch[side] = selected
+                    resolved = resolve_agent_selection(side, selected, frozen)
+                    batch[side] = (None if resolved is None else AgentAction(
+                        resolved, resolved.action_id))
                 step = self.session.step(batch)
                 writer.record_step(step, self.session.snapshot())
             result_value = self.session.result().to_dict()
