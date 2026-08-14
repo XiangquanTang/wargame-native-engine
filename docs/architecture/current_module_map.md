@@ -49,24 +49,25 @@ facades may compose this chain but may not receive or mutate `WorldState`.
 | `replay/*`, `io/replay.py` | facts, steps and strict replay | Evidence | Retain independent from control audit and analysis. |
 | `analysis/*` | deterministic derived FrameAnalysis | Evidence | Retain observer-only, outside adjudication. |
 
-## Confirmed capability gaps
+## Baseline gaps and current disposition
 
-1. `MovementPlanner.validate_path` accepts a multi-segment adjacent path and
-   computes authoritative per-segment `traversal_ms`; the Source valid-action
-   generator currently emits only one-neighbour paths.
-2. There is no deterministic destination-to-path query API or proposal
-   registry bound to a DecisionWindow.
-3. There is no immutable bundle proving that Engine and Renderer use the same
-   NativeMap identity.
-4. Replay and single-side Live pages use `map_renderer.js`; the dual-side page
-   currently renders observation JSON and an action list only.
-5. Historical Source scenarios are safe presentation inputs, while NativeMap
-   conversion is adjudication-capable.  A historical scenario must not become
-   executable unless all Native-required unit, deployment and terminal facts
-   are explicit.
-6. The measured 100-operator cost is dominated by visibility/projection and a
-   fully managed frame; this task will close product interfaces before adding
-   any cache.
+1. Resolved: `DeterministicRoutePlanner` now searches destinations while every
+   edge delegates to the existing `MovementPlanner.plan_segment`; execution
+   still validates the complete adjacent path.
+2. Resolved: `ActionProposalRegistry` binds detached proposed actions to one
+   Session, side and DecisionWindow.  Only its server action ID is submitted.
+3. Resolved for canonical Native scenarios: `ScenarioBundle` derives both the
+   Engine scenario and Renderer map from one canonical payload and records both
+   identities.
+4. Resolved: Replay and dual-side Live modes use `map_renderer.js` and the same
+   `RenderScene` shape.  Mode controls interaction, not map geometry.
+5. Deliberately unresolved for the four old Source Scenario documents: they
+   remain presentation/replay evidence because they do not contain a complete
+   Native weapon-profile, deployment-policy and terminal-rules contract.  The
+   four associated `basic.json` maps are separately convertible to NativeMap.
+6. Measured, not optimized: a 100-operator fully managed frame remains about
+   two seconds on the acceptance host.  No 1Hz claim or speculative cache was
+   added.
 
 ## Target public boundary
 
