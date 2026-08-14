@@ -3,6 +3,8 @@ from __future__ import annotations
 import pytest
 
 from wargame_native_engine.compat.source_frame.models import UnitDomain
+from wargame_native_engine.core.engine import NativeEngine
+from wargame_native_engine.io.scenario import load_scenario, scenario_from_dict
 from wargame_native_engine.visibility import (
     HexCell, HexMapProfile, ObservationProfiles, evaluate_line_of_sight,
     evaluate_visibility, within_maximum_observation_distance,
@@ -39,6 +41,20 @@ def test_high_observer_bonus() -> None:
     assert evaluate_line_of_sight(profile, 101, 104).visible
 
 
+def test_high_endpoint_bonus_is_direction_independent() -> None:
+    profile = line_profile(4, elevations={1: 0, 2: 0, 3: 1, 4: 1})
+
+    forward = evaluate_line_of_sight(profile, 101, 104)
+    reverse = evaluate_line_of_sight(profile, 104, 101)
+
+    assert forward.visible is True
+    assert reverse.visible is True
+    assert forward.blocking_hexes == reverse.blocking_hexes == ()
+    assert forward.modifiers == reverse.modifiers == (
+        {"rule": "high_endpoint_bonus", "hex_id": 104, "value": 1.0},
+    )
+
+
 def test_forest_intermediate_height_bonus() -> None:
     profile = line_profile(3, terrains={2: "FOREST"})
     result = evaluate_line_of_sight(profile, 101, 103)
@@ -68,6 +84,58 @@ def test_observation_profile_by_target_type() -> None:
     assert values.limit(UnitDomain.VEHICLE, UnitDomain.PERSONNEL) == 10
     assert values.limit(UnitDomain.PERSONNEL, UnitDomain.VEHICLE) == 25
     assert values.limit(UnitDomain.AIR, UnitDomain.AIR) == 25
+
+
+def test_drone_observation_limits_are_used_by_gate_and_full_evaluation() -> None:
+    profile = line_profile(4)
+
+    assert within_maximum_observation_distance(
+        observer_hex=101,
+        target_hex=103,
+        observer_domain=UnitDomain.AIR,
+        target_domain=UnitDomain.VEHICLE,
+        observer_is_drone=True,
+    )
+    assert not within_maximum_observation_distance(
+        observer_hex=101,
+        target_hex=104,
+        observer_domain=UnitDomain.AIR,
+        target_domain=UnitDomain.VEHICLE,
+        observer_is_drone=True,
+    )
+    assert evaluate_visibility(
+        profile,
+        observer_hex=101,
+        target_hex=103,
+        observer_domain=UnitDomain.AIR,
+        target_domain=UnitDomain.VEHICLE,
+        observer_is_drone=True,
+    ).observable
+    assert not evaluate_visibility(
+        profile,
+        observer_hex=101,
+        target_hex=104,
+        observer_domain=UnitDomain.AIR,
+        target_domain=UnitDomain.VEHICLE,
+        observer_is_drone=True,
+    ).observable
+
+
+@pytest.mark.parametrize("canonical_type", ["DRONE", "LOITERING_MUNITION"])
+def test_source_engine_uses_explicit_drone_platform_identity(
+    canonical_type: str,
+) -> None:
+    record = load_scenario("examples/source_movement_scenario.json").to_dict()
+    blue = next(item for item in record["operators"] if item["side"] == "blue")
+    blue["operator_type"] = UnitDomain.AIR.value
+    blue["raw_attributes"]["canonical_type"] = canonical_type
+    scenario = scenario_from_dict(record)
+    engine = NativeEngine(scenario)
+
+    engine.reset(seed=42)
+
+    assert engine.observe("red").visible_enemies == ()
+    assert engine.observe("blue").visible_enemies == ()
 
 
 @pytest.mark.parametrize(

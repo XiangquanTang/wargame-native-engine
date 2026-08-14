@@ -729,6 +729,8 @@ class NativeEngine:
             observer_hex=attacker.current_hex, target_hex=target.current_hex,
             observer_domain=_unit_domain(attacker.operator_type),
             target_domain=target_domain,
+            observer_is_drone=_uses_drone_observation_profile(attacker),
+            target_is_drone=_uses_drone_observation_profile(target),
             target_concealed=bool(target.raw_attributes.get("concealed", False)),
             target_terrain=self._source_map.terrain(target.current_hex).value)
         left = self._source_map.cell(attacker.current_hex)
@@ -1118,11 +1120,15 @@ class NativeEngine:
                             or not target.deployed or target.current_hex is None):
                         continue
                     target_domain = _unit_domain(target.operator_type)
+                    observer_is_drone = _uses_drone_observation_profile(observer)
+                    target_is_drone = _uses_drone_observation_profile(target)
                     if not within_maximum_observation_distance(
                         observer_hex=observer.current_hex,
                         target_hex=target.current_hex,
                         observer_domain=observer_domain,
                         target_domain=target_domain,
+                        observer_is_drone=observer_is_drone,
+                        target_is_drone=target_is_drone,
                         observation_profiles=self._source_observation_profiles,
                     ):
                         continue
@@ -1132,6 +1138,8 @@ class NativeEngine:
                         target_hex=target.current_hex,
                         observer_domain=observer_domain,
                         target_domain=target_domain,
+                        observer_is_drone=observer_is_drone,
+                        target_is_drone=target_is_drone,
                         target_concealed=bool(
                             target.raw_attributes.get("concealed", False)),
                         target_terrain=self._source_map.terrain(
@@ -1178,3 +1186,12 @@ def _unit_domain(value: str) -> UnitDomain:
         return UnitDomain(str(value).upper())
     except ValueError:
         return UnitDomain.UNKNOWN
+
+
+def _uses_drone_observation_profile(operator: Any) -> bool:
+    """Use only explicit canonical platform mappings as rule authority."""
+
+    return str(operator.raw_attributes.get("canonical_type", "")).upper() in {
+        "DRONE",
+        "LOITERING_MUNITION",
+    }

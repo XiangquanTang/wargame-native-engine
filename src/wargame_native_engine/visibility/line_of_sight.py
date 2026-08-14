@@ -56,6 +56,10 @@ def evaluate_line_of_sight(profile: HexMapProfile, observer_hex: int,
         start_height += 1.0
         modifiers.append({"rule": "high_endpoint_bonus", "hex_id": start.hex_id,
                           "value": 1.0})
+    elif end.elevation > start.elevation:
+        end_height += 1.0
+        modifiers.append({"rule": "high_endpoint_bonus", "hex_id": end.hex_id,
+                          "value": 1.0})
     blocking: list[int] = []
     samples: list[dict[str, float | int | str]] = []
     for index, (row, col) in enumerate(line[1:-1], 1):

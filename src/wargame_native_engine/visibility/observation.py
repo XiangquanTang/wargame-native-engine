@@ -13,6 +13,8 @@ def within_maximum_observation_distance(
     target_hex: int,
     observer_domain: UnitDomain,
     target_domain: UnitDomain,
+    observer_is_drone: bool = False,
+    target_is_drone: bool = False,
     observation_profiles: ObservationProfiles | None = None,
 ) -> bool:
     """Cheap conservative gate before LOS evaluation.
@@ -23,7 +25,12 @@ def within_maximum_observation_distance(
     """
 
     profiles = observation_profiles or ObservationProfiles()
-    limit = profiles.limit(observer_domain, target_domain)
+    limit = profiles.limit(
+        observer_domain,
+        target_domain,
+        observer_is_drone=observer_is_drone,
+        target_is_drone=target_is_drone,
+    )
     return limit > 0 and hex_distance(observer_hex, target_hex) <= limit
 
 
