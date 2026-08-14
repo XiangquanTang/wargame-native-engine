@@ -403,6 +403,16 @@ class CommandGateway:
             _bound_side(gateway_session, controller_id)
             return tuple(gateway_session.audit.records)
 
+    def last_advance(
+        self, session_id: str, controller_id: str,
+    ) -> SimulationAdvance | None:
+        """Return detached timing evidence for the last completed window."""
+
+        gateway_session = self._gateway_session(session_id)
+        with gateway_session.lock:
+            _bound_side(gateway_session, controller_id)
+            return deepcopy(gateway_session.last_advance)
+
     def expire_window(self, session_id: str) -> SimulationAdvance:
         """Close a wall-deadline window and substitute empty missing batches."""
 

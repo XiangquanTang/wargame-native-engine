@@ -46,6 +46,34 @@ class NativeActionEncoder:
             raise ValueError(f"action_id {action_id!r} is not currently valid")
         return space.action_ids[action_id]
 
+    @classmethod
+    def resolve_batch(
+        cls,
+        space: EncodedActionSpace,
+        action_ids: Sequence[int],
+    ) -> tuple[str, ...]:
+        """Resolve one ordered decision-window batch from the current mask."""
+
+        if isinstance(action_ids, (str, bytes)) or not isinstance(
+            action_ids, Sequence
+        ):
+            raise TypeError("action_ids must be a sequence of exact ints")
+        resolved: list[str] = []
+        seen: set[int] = set()
+        for action_id in action_ids:
+            if type(action_id) is not int:
+                raise TypeError("action_ids must contain exact ints")
+            if action_id in seen:
+                raise ValueError(
+                    f"action_id {action_id!r} occurs more than once"
+                )
+            seen.add(action_id)
+            value = cls.resolve(space, action_id)
+            if value is None:  # pragma: no cover - exact ints cannot resolve None
+                raise RuntimeError("encoded action unexpectedly resolved to NoOp")
+            resolved.append(value)
+        return tuple(resolved)
+
 
 def _action_id(value: Mapping[str, Any]) -> str:
     action_id = value.get("action_id")

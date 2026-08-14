@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from copy import deepcopy
 from pathlib import Path
 import tempfile
@@ -13,6 +14,7 @@ from wargame_native_engine.gateway import (
     ControllerView,
     SessionManager,
     SessionPublication,
+    SimulationAdvance,
 )
 from wargame_native_engine.training.action_encoder import NativeActionEncoder
 from wargame_native_engine.training.models import (
@@ -30,7 +32,7 @@ class NativeTrainingError(RuntimeError):
 
 
 class NativeTrainingEnv:
-    """One controlled side, one injected local opponent, one Gateway step."""
+    """One controlled side, one opponent and one Gateway decision window."""
 
     def __init__(
         self,
@@ -42,6 +44,8 @@ class NativeTrainingEnv:
         max_actions: int = 256,
         max_steps: int | None = None,
         delta_time_seconds: int | float = 20,
+        decision_interval_ms: int | None = None,
+        frame_interval_ms: int | None = None,
     ) -> None:
         side = str(controlled_side).lower()
         if side not in {"red", "blue"}:
@@ -74,6 +78,8 @@ class NativeTrainingEnv:
         self._gateway = CommandGateway(
             self._manager,
             delta_time_seconds=delta_time_seconds,
+            decision_interval_ms=decision_interval_ms,
+            frame_interval_ms=frame_interval_ms,
         )
         self._session_id: str | None = None
         self._controller_ids = {
@@ -125,32 +131,49 @@ class NativeTrainingEnv:
         )
 
     def step(self, action_id: int | None) -> TrainingStep:
+        """Compatibility adapter selecting zero or one action this window."""
+
+        return self.step_batch(() if action_id is None else (action_id,))
+
+    def step_batch(self, action_ids: Sequence[int]) -> TrainingStep:
+        """Advance one decision window using an ordered controlled-side batch."""
+
         self._require_active()
         before = self._controlled_view()
         space = self._action_space(before)
-        controlled_action_id = self.action_encoder.resolve(space, action_id)
-        opponent_action_id = self._opponent_action_id()
+        controlled_action_ids = self.action_encoder.resolve_batch(
+            space, action_ids
+        )
+        opponent_action_ids = self._opponent_action_ids()
         by_side = {
-            self.controlled_side: controlled_action_id,
-            self.opponent_side: opponent_action_id,
+            self.controlled_side: controlled_action_ids,
+            self.opponent_side: opponent_action_ids,
         }
+        window_index = before.step_index
         try:
             for side in ("red", "blue"):
-                self._gateway.submit(
+                self._gateway.submit_batch(
                     self._require_session_id(),
                     self._controller_ids[side],
                     request_id=(
                         f"training:{self._episode_sequence}:"
-                        f"{self._step_count}:{side}"
+                        f"{window_index}:{side}"
                     ),
-                    expected_step=self._step_count,
-                    valid_action_id=by_side[side],
+                    expected_window=window_index,
+                    ordered_action_ids=by_side[side],
                 )
         except BaseException:
             self._failed = True
             raise
         self._step_count += 1
         view = self._controlled_view()
+        advance = self._gateway.last_advance(
+            self._require_session_id(),
+            self._controller_ids[self.controlled_side],
+        )
+        if advance is None or advance.decision_window_index != window_index:
+            self._failed = True
+            raise NativeTrainingError("training_window_advance_evidence_missing")
         terminated = view.terminal
         truncated = bool(
             not terminated
@@ -163,7 +186,7 @@ class NativeTrainingEnv:
             self._reward(view),
             terminated,
             truncated,
-            self._info(view, truncated=truncated),
+            self._info(view, truncated=truncated, advance=advance),
             self._action_space(view),
         )
 
@@ -207,7 +230,7 @@ class NativeTrainingEnv:
                     self._temporary_storage.cleanup()
                 self._closed = True
 
-    def _opponent_action_id(self) -> str | None:
+    def _opponent_action_ids(self) -> tuple[str, ...]:
         session_id = self._require_session_id()
         try:
             observation, valid_actions, context = self._manager.agent_step_input(
@@ -215,14 +238,24 @@ class NativeTrainingEnv:
                 self.opponent_side,
                 self.opponent.agent_id,
             )
-            selected = self.opponent.act(
-                observation=deepcopy(observation),
-                valid_actions=deepcopy(valid_actions),
-                context=deepcopy(context),
-            )
-            return _validate_opponent_action(
+            act_batch = getattr(self.opponent, "act_batch", None)
+            if callable(act_batch):
+                selected = act_batch(
+                    observation=deepcopy(observation),
+                    valid_actions=deepcopy(valid_actions),
+                    context=deepcopy(context),
+                )
+                selections = _require_agent_action_sequence(selected)
+            else:
+                selection = self.opponent.act(
+                    observation=deepcopy(observation),
+                    valid_actions=deepcopy(valid_actions),
+                    context=deepcopy(context),
+                )
+                selections = () if selection is None else (selection,)
+            return _validate_opponent_actions(
                 self.opponent_side,
-                selected,
+                selections,
                 valid_actions,
             )
         except BaseException as exc:
@@ -252,11 +285,31 @@ class NativeTrainingEnv:
         view: ControllerView,
         *,
         truncated: bool = False,
+        advance: SimulationAdvance | None = None,
     ) -> Mapping[str, Any]:
         return {
             "session_id": view.session_id,
             "perspective": view.perspective,
             "step_index": view.step_index,
+            "decision_window_index": view.step_index,
+            "processed_decision_window_index": (
+                None if advance is None else advance.decision_window_index
+            ),
+            "frame_range": (
+                None
+                if advance is None
+                else [advance.first_frame_index, advance.last_frame_index]
+            ),
+            "generated_frame_count": (
+                0 if advance is None else advance.generated_frame_count
+            ),
+            "sim_time_range_ms": (
+                None
+                if advance is None
+                else [advance.sim_time_before_ms, advance.sim_time_after_ms]
+            ),
+            "frame_index": view.frame_index,
+            "sim_time_ms": view.sim_time_ms,
             "winner": view.winner,
             "outcome": view.outcome,
             "truncation_source": "training_max_steps" if truncated else None,
@@ -284,20 +337,32 @@ class NativeTrainingEnv:
             raise NativeTrainingError("training_env_closed")
 
 
-def _validate_opponent_action(
+def _require_agent_action_sequence(value) -> tuple[AgentAction, ...]:
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+        raise TypeError("opponent act_batch must return a sequence")
+    return tuple(value)
+
+
+def _validate_opponent_actions(
     side: str,
-    selected: AgentAction | None,
+    selected: Sequence[AgentAction],
     valid_actions,
-) -> str | None:
-    if selected is None:
-        return None
-    if not isinstance(selected, AgentAction):
-        raise TypeError("opponent Agent.act must return AgentAction or None")
-    if selected.action.side != side:
-        raise ValueError(f"opponent_action_side_mismatch:{side}")
-    if selected.valid_action_id != selected.action.action_id:
-        raise ValueError("opponent valid-action identity mismatch")
-    legal = {item.action_id for item in valid_actions}
-    if selected.valid_action_id not in legal:
-        raise ValueError(f"opponent_action_not_valid:{side}")
-    return selected.valid_action_id
+) -> tuple[str, ...]:
+    legal = {item.action_id: item for item in valid_actions}
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in selected:
+        if not isinstance(value, AgentAction):
+            raise TypeError(
+                "opponent Agent selections must contain AgentAction values"
+            )
+        if value.action.side != side:
+            raise ValueError(f"opponent_action_side_mismatch:{side}")
+        action_id = value.valid_action_id
+        if action_id not in legal:
+            raise ValueError(f"opponent_action_not_valid:{side}")
+        if action_id in seen:
+            raise ValueError(f"opponent_action_duplicate:{side}:{action_id}")
+        seen.add(action_id)
+        result.append(action_id)
+    return tuple(result)

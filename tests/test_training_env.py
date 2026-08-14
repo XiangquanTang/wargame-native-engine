@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import json
 from pathlib import Path
 from unittest.mock import Mock
 from zipfile import ZipFile
@@ -23,7 +24,7 @@ from wargame_native_engine.io.importers.source_replay_archive import (
     SourceReplayArchiveImporter,
 )
 from wargame_native_engine.io.replay import replay_source_archive
-from wargame_native_engine.io.scenario import load_scenario
+from wargame_native_engine.io.scenario import load_scenario, scenario_from_dict
 from wargame_native_engine.session.game_session import GameSession
 from wargame_native_engine.session.source_environment import (
     SourceCompatibleEnvironment,
@@ -39,8 +40,8 @@ SCENARIO_PATH = Path("examples/source_movement_scenario.json")
 
 
 class EnvironmentFactory:
-    def __init__(self) -> None:
-        self.scenario = load_scenario(SCENARIO_PATH)
+    def __init__(self, scenario=None) -> None:
+        self.scenario = scenario or load_scenario(SCENARIO_PATH)
         self.environments: list[SourceCompatibleEnvironment] = []
 
     def __call__(self) -> SourceCompatibleEnvironment:
@@ -127,8 +128,11 @@ def _training_env(
     side: str = "red",
     opponent=None,
     max_steps: int | None = None,
+    factory: EnvironmentFactory | None = None,
+    decision_interval_ms: int | None = None,
+    frame_interval_ms: int | None = None,
 ):
-    factory = EnvironmentFactory()
+    factory = factory or EnvironmentFactory()
     agent = opponent or RecordingNoOpAgent()
     environment = NativeTrainingEnv(
         factory,
@@ -138,6 +142,8 @@ def _training_env(
         max_actions=16,
         max_steps=max_steps,
         delta_time_seconds=20,
+        decision_interval_ms=decision_interval_ms,
+        frame_interval_ms=frame_interval_ms,
     )
     return environment, factory, agent
 
@@ -419,8 +425,104 @@ def test_action_encoder_preserves_upstream_order_and_fixed_capacity() -> None:
     assert encoded.mask == (True, True, False, False)
     assert encoder.resolve(encoded, 0) == "second"
     assert encoder.resolve(encoded, 1) == "first"
+    assert encoder.resolve_batch(encoded, (1, 0)) == ("first", "second")
+    assert encoder.resolve_batch(encoded, ()) == ()
+    with pytest.raises(ValueError, match="more than once"):
+        encoder.resolve_batch(encoded, (0, 0))
     records[0]["action"]["value"].append(99)
     assert encoded.actions[0]["action"]["value"] == [2]
+
+
+def test_one_training_decision_can_generate_ten_fact_frames(
+    tmp_path: Path,
+) -> None:
+    environment, factory, _ = _training_env(
+        tmp_path,
+        decision_interval_ms=10_000,
+        frame_interval_ms=1_000,
+    )
+    try:
+        initial = environment.reset(seed=42)
+        result = environment.step_batch(())
+
+        assert initial.info["decision_window_index"] == 0
+        assert result.info["processed_decision_window_index"] == 0
+        assert result.info["decision_window_index"] == 1
+        assert result.info["frame_range"] == [1, 10]
+        assert result.info["generated_frame_count"] == 10
+        assert result.info["sim_time_range_ms"] == [0, 10_000]
+        assert result.info["frame_index"] == 10
+        assert result.info["sim_time_ms"] == 10_000
+        assert factory.environments[0].session.step.call_count == 10  # type: ignore[attr-defined]
+    finally:
+        environment.close()
+
+
+def test_training_accepts_ordered_multi_actor_batch_and_records_only_first_frame(
+    tmp_path: Path,
+) -> None:
+    document = json.loads(SCENARIO_PATH.read_text(encoding="utf-8"))
+    second = deepcopy(document["operators"][0])
+    second.update({"operator_id": 3, "current_hex": 102, "x": 2})
+    document["operators"].append(second)
+    document["deployment"]["positions"]["red"]["3"] = [2, 1]
+    factory = EnvironmentFactory(scenario_from_dict(document))
+    environment, _, _ = _training_env(
+        tmp_path,
+        factory=factory,
+        decision_interval_ms=3_000,
+        frame_interval_ms=1_000,
+    )
+    output = tmp_path / "published"
+    try:
+        initial = environment.reset(seed=42)
+        waits = [
+            (index, value["action"]["actor_id"])
+            for index, value in enumerate(initial.action_space.actions)
+            if value["action"]["action_type"] == ActionType.WAIT.value
+        ]
+        assert {actor for _, actor in waits} == {1, 3}
+        selected = tuple(index for index, _ in reversed(waits))
+
+        result = environment.step_batch(selected)
+
+        assert result.info["frame_range"] == [1, 3]
+        publication = environment.publish(output)
+        with ZipFile(publication.replay_path) as archive:
+            steps = [
+                json.loads(line)
+                for line in archive.read("steps.jsonl").decode("utf-8").splitlines()
+            ]
+        assert [
+            item["actor_id"] for item in steps[0]["ordered_actions"]
+        ] == [1, 3]
+        assert steps[1]["ordered_actions"] == []
+        assert steps[2]["ordered_actions"] == []
+    finally:
+        environment.close()
+
+
+def test_opponent_batch_extension_uses_same_frozen_gateway_contract(
+    tmp_path: Path,
+) -> None:
+    class BatchNoOpOpponent(RecordingNoOpAgent):
+        def act(self, *, observation, valid_actions, context):
+            raise AssertionError("legacy single-action method must not be used")
+
+        def act_batch(self, *, observation, valid_actions, context):
+            del observation, valid_actions, context
+            return ()
+
+    environment, factory, _ = _training_env(
+        tmp_path,
+        opponent=BatchNoOpOpponent(),
+    )
+    try:
+        environment.reset(seed=42)
+        environment.step_batch(())
+        assert factory.environments[0].session.step.call_count == 1  # type: ignore[attr-defined]
+    finally:
+        environment.close()
 
 
 def _preferred_index(actions, preferences: tuple[ActionType, ...]) -> int | None:
