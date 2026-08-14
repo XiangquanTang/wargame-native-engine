@@ -1,0 +1,175 @@
+{
+  "schema": "source-scenario-native-supplement/1.0",
+  "supplement_id": "source-2201010105-native-acceptance-v1",
+  "supplement_version": "1.0.0",
+  "scenario_id": "2201010105",
+  "map_id": "123",
+  "native_rules_equivalence": false,
+  "map_profile": {
+    "coordinate_system": "odd-r",
+    "hex_size_m": 200,
+    "elevation_unit_m": 10
+  },
+  "platform_profiles": {
+    "1:2": {
+      "source_names": ["步兵"],
+      "native_domain": "PERSONNEL",
+      "canonical_type": "INFANTRY",
+      "sensor_range": 25,
+      "allows_unarmed": false,
+      "native_basis": "Native ObservationProfiles and Source type mapping; not an SDK platform claim"
+    },
+    "2:0": {
+      "source_names": ["重型坦克"],
+      "native_domain": "VEHICLE",
+      "canonical_type": "HEAVY_TANK",
+      "sensor_range": 25,
+      "allows_unarmed": false,
+      "native_basis": "Native simplified vehicle profile; not an SDK platform claim"
+    },
+    "2:1": {
+      "source_names": ["重型战车"],
+      "native_domain": "VEHICLE",
+      "canonical_type": "HEAVY_COMBAT_VEHICLE",
+      "sensor_range": 25,
+      "allows_unarmed": false,
+      "native_basis": "Native simplified vehicle profile; not an SDK platform claim"
+    },
+    "2:3": {
+      "source_names": ["炮兵"],
+      "native_domain": "VEHICLE",
+      "canonical_type": "ARTILLERY",
+      "sensor_range": 25,
+      "allows_unarmed": false,
+      "native_basis": "Native runtime explicitly prevents artillery movement; indirect fire is not implemented"
+    },
+    "3:5": {
+      "source_names": ["无人机"],
+      "native_domain": "AIR",
+      "canonical_type": "DRONE",
+      "sensor_range": 25,
+      "allows_unarmed": true,
+      "native_basis": "Native air observation profile; Native air movement remains unsupported"
+    }
+  },
+  "armor_profiles": {
+    "0": "NONE",
+    "2": "MEDIUM",
+    "4": "COMPOSITE"
+  },
+  "weapon_profiles": {
+    "4": {
+      "weapon_class": "rapid_fire_gun_ground",
+      "maximum_range": 10,
+      "target_domains": ["PERSONNEL"],
+      "ammunition_key": "0",
+      "cooldown_seconds": null,
+      "requires_unfolded": true,
+      "can_fire_while_moving": false,
+      "native_basis": "Native curated direct-fire table personnel range"
+    },
+    "5": {
+      "weapon_class": "portable_missile_ground",
+      "maximum_range": 0,
+      "target_domains": [],
+      "ammunition_key": "100",
+      "cooldown_seconds": null,
+      "requires_unfolded": false,
+      "can_fire_while_moving": false,
+      "native_basis": "Source ID is mapped but the current Native direct-fire tables do not execute this class"
+    },
+    "29": {
+      "weapon_class": "infantry_light_weapon",
+      "maximum_range": 3,
+      "target_domains": ["PERSONNEL", "VEHICLE"],
+      "ammunition_key": "0",
+      "cooldown_seconds": null,
+      "requires_unfolded": false,
+      "can_fire_while_moving": false,
+      "native_basis": "Native curated direct-fire personnel and infantry-vs-vehicle tables"
+    },
+    "35": {
+      "weapon_class": "rocket_launcher",
+      "maximum_range": 4,
+      "target_domains": ["VEHICLE"],
+      "ammunition_key": "100",
+      "cooldown_seconds": null,
+      "requires_unfolded": false,
+      "can_fire_while_moving": false,
+      "native_basis": "Native curated direct-fire vehicle table"
+    },
+    "36": {
+      "weapon_class": "large_direct_fire_gun",
+      "maximum_range": 10,
+      "target_domains": ["PERSONNEL", "VEHICLE"],
+      "ammunition_key": "0",
+      "cooldown_seconds": null,
+      "requires_unfolded": true,
+      "can_fire_while_moving": false,
+      "native_basis": "Conservative shared range across Native curated personnel and vehicle tables"
+    },
+    "43": {
+      "weapon_class": "vehicle_light_weapon",
+      "maximum_range": 10,
+      "target_domains": ["PERSONNEL"],
+      "ammunition_key": "0",
+      "cooldown_seconds": null,
+      "requires_unfolded": true,
+      "can_fire_while_moving": false,
+      "native_basis": "Native curated direct-fire personnel table; no vehicle table is asserted"
+    },
+    "54": {
+      "weapon_class": "small_direct_fire_gun",
+      "maximum_range": 10,
+      "target_domains": ["PERSONNEL", "VEHICLE"],
+      "ammunition_key": "0",
+      "cooldown_seconds": null,
+      "requires_unfolded": true,
+      "can_fire_while_moving": false,
+      "native_basis": "Conservative shared range across Native curated personnel and vehicle tables"
+    },
+    "72": {
+      "weapon_class": "heavy_artillery",
+      "maximum_range": 0,
+      "target_domains": [],
+      "ammunition_key": "0",
+      "cooldown_seconds": null,
+      "requires_unfolded": true,
+      "can_fire_while_moving": false,
+      "native_basis": "Source ID is mapped but indirect fire is outside the current Native runtime"
+    },
+    "73": {
+      "weapon_class": "heavy_missile",
+      "maximum_range": 20,
+      "target_domains": ["VEHICLE"],
+      "ammunition_key": "100",
+      "cooldown_seconds": null,
+      "requires_unfolded": true,
+      "can_fire_while_moving": false,
+      "native_basis": "Native curated direct-fire vehicle table"
+    }
+  },
+  "initial_state_defaults": {
+    "altitude": 0,
+    "heading": 0,
+    "speed": 0,
+    "state": "STOPPED",
+    "stopped": true,
+    "weapon_locked": false,
+    "weapon_unfolded": true
+  },
+  "objective_policy": {
+    "mode": "SOURCE_CITIES_AS_NATIVE_OBJECTIVES",
+    "radius_hex": 0
+  },
+  "termination": {
+    "max_ticks": 900,
+    "elimination": true,
+    "objective_score_to_win": null,
+    "native_basis": "Explicit 900-second Native acceptance horizon; not the formal Source conversion termination and not SDK-equivalent"
+  },
+  "seed_policy": {
+    "default_seed": 42,
+    "native_basis": "Explicit deterministic Native default; Source Scenario provides no episode seed"
+  }
+}
