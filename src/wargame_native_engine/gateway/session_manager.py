@@ -157,6 +157,18 @@ class SessionManager:
             _require_side(managed, side)
             return tuple(managed.environment.session.valid_actions(side))
 
+    def sim_time_ms(self, session_id: str) -> int:
+        """Return the authoritative integer simulation clock, never wall time."""
+
+        managed = self._managed(session_id)
+        with managed.lock:
+            self._require_usable(managed)
+            world = managed.environment.session.snapshot()["world"]
+            value = world["elapsed_time_ms"]
+            if type(value) is not int or value < 0:
+                raise RuntimeError("invalid_authoritative_sim_time")
+            return value
+
     def agent_reset_context(
         self,
         session_id: str,

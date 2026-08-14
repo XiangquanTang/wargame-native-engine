@@ -35,6 +35,34 @@ class SessionDescriptor:
 
 
 @dataclass(frozen=True, slots=True)
+class DecisionWindowView:
+    session_id: str
+    decision_window_index: int
+    opened_at_sim_time_ms: int
+    closes_at_sim_time_ms: int | None
+    deadline_policy: str
+    lifecycle_state: str
+    close_reason: str | None
+    submitted: bool
+    pending_perspectives: tuple[str, ...]
+    valid_actions: tuple[Mapping[str, Any], ...]
+
+    def to_record(self) -> dict[str, object]:
+        return {
+            "session_id": self.session_id,
+            "decision_window_index": self.decision_window_index,
+            "opened_at_sim_time_ms": self.opened_at_sim_time_ms,
+            "closes_at_sim_time_ms": self.closes_at_sim_time_ms,
+            "deadline_policy": self.deadline_policy,
+            "lifecycle_state": self.lifecycle_state,
+            "close_reason": self.close_reason,
+            "submitted": self.submitted,
+            "pending_perspectives": list(self.pending_perspectives),
+            "valid_actions": json_clone(self.valid_actions),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class ControllerView:
     session_id: str
     perspective: str
@@ -67,6 +95,7 @@ class CommandResult:
     advanced: bool
     pending_perspectives: tuple[str, ...]
     view: ControllerView
+    decision_window: DecisionWindowView | None = None
 
     def to_record(self) -> dict[str, object]:
         return {
@@ -75,6 +104,11 @@ class CommandResult:
             "advanced": self.advanced,
             "pending_perspectives": list(self.pending_perspectives),
             "view": self.view.to_record(),
+            "decision_window": (
+                None
+                if self.decision_window is None
+                else self.decision_window.to_record()
+            ),
         }
 
 

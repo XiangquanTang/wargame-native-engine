@@ -3,17 +3,20 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from threading import RLock
-from typing import Any
 
-from wargame_native_engine.core.action import EngineAction
 from wargame_native_engine.gateway.models import (
     CommandGatewayError,
     CommandResult,
     ControllerView,
+    DecisionWindowView,
     SessionDescriptor,
     SessionPublication,
+)
+from wargame_native_engine.gateway.decision_window import (
+    DecisionWindow,
+    DecisionWindowState,
 )
 from wargame_native_engine.gateway.session_manager import SessionManager
 
@@ -21,7 +24,7 @@ from wargame_native_engine.gateway.session_manager import SessionManager
 @dataclass(slots=True)
 class _GatewaySession:
     bindings: dict[str, str]
-    pending: dict[str, EngineAction | None] = field(default_factory=dict)
+    window: DecisionWindow
     requests: dict[str, tuple[tuple[object, ...], CommandResult]] = field(
         default_factory=dict
     )
@@ -65,17 +68,17 @@ class CommandGateway:
             )
         descriptor = self.manager.create_session(seed=seed, record=record)
         with self._lock:
-            self._sessions[descriptor.session_id] = _GatewaySession({
-                "red": red,
-                "blue": blue,
-            })
+            self._sessions[descriptor.session_id] = _GatewaySession(
+                {"red": red, "blue": blue},
+                self._open_window(descriptor.session_id, descriptor.step_index),
+            )
         return descriptor
 
     def view(self, session_id: str, controller_id: str) -> ControllerView:
         gateway_session = self._gateway_session(session_id)
         with gateway_session.lock:
             side = _bound_side(gateway_session, controller_id)
-            return self.manager.controller_view(session_id, side)
+            return self._controller_view(session_id, side, gateway_session.window)
 
     def submit(
         self,
@@ -86,28 +89,41 @@ class CommandGateway:
         expected_step: int,
         valid_action_id: str | None,
     ) -> CommandResult:
+        return self.submit_batch(
+            session_id,
+            controller_id,
+            request_id=request_id,
+            expected_window=expected_step,
+            ordered_action_ids=(
+                () if valid_action_id is None else (valid_action_id,)
+            ),
+        )
+
+    def submit_batch(
+        self,
+        session_id: str,
+        controller_id: str,
+        *,
+        request_id: str,
+        expected_window: int,
+        ordered_action_ids: tuple[str, ...] | list[str],
+    ) -> CommandResult:
         if not isinstance(request_id, str) or not request_id.strip():
             raise CommandGatewayError(
                 "invalid_request_id", "request_id must be a non-empty string"
             )
         request = request_id
-        if type(expected_step) is not int or expected_step < 0:
+        if type(expected_window) is not int or expected_window < 0:
             raise CommandGatewayError(
                 "invalid_expected_step",
-                "expected_step must be a non-negative exact int",
-            )
-        if valid_action_id is not None and (
-            not isinstance(valid_action_id, str) or not valid_action_id.strip()
-        ):
-            raise CommandGatewayError(
-                "invalid_action_id",
-                "valid_action_id must be a non-empty string or null",
+                "expected_window must be a non-negative exact int",
             )
         gateway_session = self._gateway_session(session_id)
         with gateway_session.lock:
             side = _bound_side(gateway_session, controller_id)
+            action_ids = tuple(ordered_action_ids)
             signature = (
-                str(controller_id), expected_step, valid_action_id,
+                str(controller_id), expected_window, action_ids,
             )
             cached = gateway_session.requests.get(request)
             if cached is not None:
@@ -118,12 +134,14 @@ class CommandGateway:
                     )
                 return deepcopy(cached[1])
 
-            descriptor = self.manager.descriptor(session_id)
-            if descriptor.step_index != expected_step:
+            window = gateway_session.window
+            if window.decision_window_index != expected_window:
                 raise CommandGatewayError(
                     "stale_expected_step",
-                    f"expected {expected_step}, current {descriptor.step_index}",
+                    f"expected {expected_window}, current "
+                    f"{window.decision_window_index}",
                 )
+            descriptor = self.manager.descriptor(session_id)
             if descriptor.terminal:
                 raise CommandGatewayError(
                     "session_terminal", "terminal session cannot advance"
@@ -132,40 +150,38 @@ class CommandGateway:
                 raise CommandGatewayError(
                     "session_finalized", "published session cannot advance"
                 )
-            if side in gateway_session.pending:
-                raise CommandGatewayError(
-                    "side_already_submitted",
-                    f"{side.upper()} already submitted for step {expected_step}",
-                )
-            action = self._resolve_action(
-                session_id,
-                side,
-                valid_action_id,
+            window.submit(
+                side=side,
+                request_id=request,
+                ordered_action_ids=action_ids,
             )
-            gateway_session.pending[side] = action
             pending = tuple(
                 item.upper() for item in ("red", "blue")
-                if item not in gateway_session.pending
+                if item not in window.submissions
             )
             advanced = not pending
             if advanced:
-                actions = tuple(
-                    value for item in ("red", "blue")
-                    for value in (gateway_session.pending[item],)
-                    if value is not None
-                )
+                window.close()
+                window.mark_advancing()
                 self.manager.advance(
                     session_id,
-                    actions,
+                    window.merged_action_batch,
                     delta_time_seconds=self.delta_time_seconds,
                 )
-                gateway_session.pending.clear()
+                window.mark_completed()
+                descriptor = self.manager.descriptor(session_id)
+                if not descriptor.terminal:
+                    gateway_session.window = self._open_window(
+                        session_id, window.decision_window_index + 1,
+                    )
+            active_window = gateway_session.window
             result = CommandResult(
                 request_id=request,
                 accepted=True,
                 advanced=advanced,
                 pending_perspectives=pending,
-                view=self.manager.controller_view(session_id, side),
+                view=self._controller_view(session_id, side, active_window),
+                decision_window=self._window_view(active_window, side),
             )
             gateway_session.requests[request] = (signature, deepcopy(result))
             return deepcopy(result)
@@ -182,7 +198,10 @@ class CommandGateway:
         gateway_session = self._gateway_session(session_id)
         with gateway_session.lock:
             _bound_side(gateway_session, controller_id)
-            if gateway_session.pending:
+            if gateway_session.window.submissions and (
+                gateway_session.window.lifecycle_state
+                is DecisionWindowState.OPEN
+            ):
                 raise CommandGatewayError(
                     "pending_joint_action",
                     "cannot publish while one perspective is pending",
@@ -210,31 +229,51 @@ class CommandGateway:
                     "session_not_found", f"unknown session {session_id!r}"
                 ) from exc
 
-    def _resolve_action(
-        self,
-        session_id: str,
-        side: str,
-        action_id: str | None,
-    ) -> EngineAction | None:
-        if action_id is None:
-            return None
-        matches = tuple(
-            value.action
-            for value in self.manager.valid_actions(session_id, side)
-            if value.action_id == action_id
+    def window(
+        self, session_id: str, controller_id: str,
+    ) -> DecisionWindowView:
+        gateway_session = self._gateway_session(session_id)
+        with gateway_session.lock:
+            side = _bound_side(gateway_session, controller_id)
+            return self._window_view(gateway_session.window, side)
+
+    def _open_window(
+        self, session_id: str, decision_window_index: int,
+    ) -> DecisionWindow:
+        return DecisionWindow.open(
+            session_id=session_id,
+            decision_window_index=decision_window_index,
+            opened_at_sim_time_ms=self.manager.sim_time_ms(session_id),
+            red_valid_actions=self.manager.valid_actions(session_id, "red"),
+            blue_valid_actions=self.manager.valid_actions(session_id, "blue"),
         )
-        if len(matches) != 1:
-            raise CommandGatewayError(
-                "action_not_currently_valid",
-                f"action {action_id!r} is not a current {side.upper()} action",
-            )
-        action = matches[0]
-        if action.side != side:
-            raise CommandGatewayError(
-                "action_side_mismatch",
-                f"action {action_id!r} belongs to {action.side!r}",
-            )
-        return action
+
+    def _controller_view(
+        self, session_id: str, side: str, window: DecisionWindow,
+    ) -> ControllerView:
+        view = self.manager.controller_view(session_id, side)
+        return replace(view, valid_actions=window.action_records(side))
+
+    @staticmethod
+    def _window_view(
+        window: DecisionWindow, side: str,
+    ) -> DecisionWindowView:
+        pending = tuple(
+            value.upper() for value in ("red", "blue")
+            if value not in window.submissions
+        )
+        return DecisionWindowView(
+            session_id=window.session_id,
+            decision_window_index=window.decision_window_index,
+            opened_at_sim_time_ms=window.opened_at_sim_time_ms,
+            closes_at_sim_time_ms=window.closes_at_sim_time_ms,
+            deadline_policy=window.deadline_policy,
+            lifecycle_state=window.lifecycle_state.value,
+            close_reason=window.close_reason,
+            submitted=side in window.submissions,
+            pending_perspectives=pending,
+            valid_actions=window.action_records(side),
+        )
 
 
 def _controller_id(value: object, side: str) -> str:
