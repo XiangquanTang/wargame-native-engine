@@ -3,6 +3,20 @@
   "scope": "Native simplified rules; five specified historical replay samples only",
   "baseline_head": "65955dc1fb7f2af99711970ffb7750162717527a",
   "verified_implementation_head": "89e9ef27b7f3be5a8bb16259a091dca216d6d756",
+  "stage_commits": [
+    {"sha": "8ed0ace", "subject": "docs(architecture): map current product boundaries"},
+    {"sha": "ddfaf67", "subject": "feat(data): add canonical scenario bundles"},
+    {"sha": "93d8496", "subject": "feat(movement): add deterministic destination planning"},
+    {"sha": "4770910", "subject": "feat(operations): add immutable window action proposals"},
+    {"sha": "d1113c1", "subject": "feat(operations): add unified command facade"},
+    {"sha": "7972477", "subject": "refactor(viewer): add shared render scene contract"},
+    {"sha": "54a6566", "subject": "feat(viewer): complete live destination controls"},
+    {"sha": "040096f", "subject": "feat(training): use unified operation controller"},
+    {"sha": "4a1112f", "subject": "feat(agents): add operation facade match runner"},
+    {"sha": "95220ff", "subject": "test(integration): verify move fire replay product loop"},
+    {"sha": "25e814e", "subject": "feat(api): expose product match lifecycle"},
+    {"sha": "89e9ef2", "subject": "test(perf): measure product facade at 100 operators"}
+  ],
   "facade": {
     "entry": "WargameFacade -> MatchHandle -> SideController",
     "advance_chain": "CommandGateway -> DecisionWindow -> SimulationScheduler -> LiveAnalyzedSession -> SourceCompatibleEnvironment -> GameSession.step -> NativeEngine.step",
@@ -25,6 +39,20 @@
     "online_offline_analysis_jsonl_bytes_match": true,
     "analysis_and_control_audit_outside_replay_zip": true,
     "evidence": "tests/test_product_loop.py"
+  },
+  "loopback_application_smoke": {
+    "entry": "scripts.run_dual_side_control",
+    "scenario": "examples/source_movement_scenario.json",
+    "red_page_status": 200,
+    "blue_page_status": 200,
+    "red_page_bytes": 2671,
+    "blue_page_bytes": 2671,
+    "bootstrap_perspective": "RED",
+    "bootstrap_map_id": "source-movement-fixture-map",
+    "bootstrap_window": 0,
+    "bootstrap_valid_actions": 3,
+    "bootstrap_visible_units": 1,
+    "service_stopped_without_residual_process": true
   },
   "five_sample_acceptance": {
     "temporary_report": "/tmp/wargame_product_facade_acceptance.CmMltT/five_samples/acceptance_report.json",
