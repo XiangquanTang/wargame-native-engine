@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -15,6 +16,10 @@ from wargame_native_engine.io.importers.source_replay_archive import (
 )
 from wargame_native_engine.io.replay import replay_source_archive
 from wargame_native_engine.io.scenario import load_scenario
+from wargame_native_engine.io.serialization import canonical_hash
+from wargame_native_engine.compat.source_frame.serialization import (
+    canonical_source_json,
+)
 from wargame_native_engine.replay import SourceFrameRecorder
 
 
@@ -146,6 +151,124 @@ def test_native_source_steps_strictly_replay_final_hash(acceptance) -> None:
     assert verification.actual_world_hash == report["actual_final_hash"]
 
 
+def test_strict_replay_rejects_self_consistent_tampered_intermediate_frame(
+    tmp_path: Path,
+    acceptance,
+) -> None:
+    root, _ = acceptance
+    output = tmp_path / "self-consistent-frame-tamper.zip"
+
+    def mutate(values):
+        frame = json.loads(values["1.json"])
+        frame["operators"][0]["blood"] = max(
+            0, int(frame["operators"][0]["blood"]) - 1
+        )
+        values["1.json"] = (canonical_source_json(frame) + "\n").encode()
+
+    _rewrite_native_zip(root / "replay.zip", output, mutate)
+    SourceReplayArchiveImporter().import_path(output)
+    with pytest.raises(ValueError, match="GREEN frame hash mismatch"):
+        replay_source_archive(
+            load_scenario("examples/source_movement_scenario.json"),
+            output,
+            strict=True,
+        )
+
+
+def test_strict_replay_rejects_terminal_step_and_frame_suffix(
+    tmp_path: Path,
+    acceptance,
+) -> None:
+    root, _ = acceptance
+    output = tmp_path / "terminal-suffix.zip"
+
+    def mutate(values):
+        manifest = _manifest(values)
+        final_index = int(manifest["frame_count"]) - 1
+        suffix_index = final_index + 1
+        values[f"{suffix_index}.json"] = values[f"{final_index}.json"]
+        steps = values["steps.jsonl"].decode().splitlines()
+        previous = json.loads(steps[-1])
+        previous.update({
+            "step_index": suffix_index,
+            "tick_before": previous["tick_after"],
+            "ordered_actions": [],
+            "action_sequences": [],
+        })
+        steps.append(canonical_source_json(previous))
+        values["steps.jsonl"] = ("\n".join(steps) + "\n").encode()
+
+    _rewrite_native_zip(root / "replay.zip", output, mutate)
+    SourceReplayArchiveImporter().import_path(output)
+    with pytest.raises(ValueError, match="step after terminal"):
+        replay_source_archive(
+            load_scenario("examples/source_movement_scenario.json"),
+            output,
+            strict=True,
+        )
+
+
+@pytest.mark.parametrize("member", [
+    "0.json",
+    "steps.jsonl",
+    "replay_manifest.native.jsonl",
+])
+def test_source_archive_rejects_duplicate_zip_members(
+    tmp_path: Path,
+    acceptance,
+    member: str,
+) -> None:
+    root, _ = acceptance
+    output = tmp_path / f"duplicate-{member.replace('.', '-')}.zip"
+    with ZipFile(root / "replay.zip") as source:
+        values = [(info.filename, source.read(info)) for info in source.infolist()]
+        duplicate_payload = source.read(member)
+    with ZipFile(output, "w") as target:
+        for name, payload in values:
+            target.writestr(name, payload)
+        with pytest.warns(UserWarning, match="Duplicate name"):
+            target.writestr(member, duplicate_payload)
+    with pytest.raises(ValueError, match="duplicate ZIP member"):
+        SourceReplayArchiveImporter().import_path(output)
+
+
+@pytest.mark.parametrize("member", ["../0.json", "/0.json", "nested/0.json"])
+def test_source_archive_rejects_unsafe_or_nested_member_paths(
+    tmp_path: Path,
+    member: str,
+) -> None:
+    output = tmp_path / "unsafe.zip"
+    with ZipFile(output, "w") as archive:
+        archive.writestr(member, b"{}")
+    with pytest.raises(ValueError, match="ZIP member|top-level"):
+        SourceReplayArchiveImporter().import_path(output)
+
+
+def test_source_archive_rejects_file_directory_conflict(tmp_path: Path) -> None:
+    output = tmp_path / "conflict.zip"
+    with ZipFile(output, "w") as archive:
+        archive.writestr("0.json/", b"")
+        archive.writestr("0.json", b"{}")
+    with pytest.raises(ValueError, match="file/directory conflict"):
+        SourceReplayArchiveImporter().import_path(output)
+
+
+def test_source_archive_rejects_multiple_manifest_records(
+    tmp_path: Path,
+    acceptance,
+) -> None:
+    root, _ = acceptance
+    output = tmp_path / "two-manifests.zip"
+    with ZipFile(root / "replay.zip") as source, ZipFile(output, "w") as target:
+        for info in source.infolist():
+            payload = source.read(info)
+            if info.filename == "replay_manifest.native.jsonl":
+                payload += payload
+            target.writestr(info, payload)
+    with pytest.raises(ValueError, match="exactly one"):
+        SourceReplayArchiveImporter().import_path(output)
+
+
 def test_recorder_is_observer_and_does_not_change_engine_trace(acceptance) -> None:
     _, report = acceptance
     assert report["recorder_is_observer"] is True
@@ -213,3 +336,37 @@ def _minimal_green() -> dict:
         "actions": [], "judge_info": [],
         "extra": {"native": {"perspective": "GREEN"}},
     }
+
+
+def _manifest(values: dict[str, bytes]) -> dict:
+    return json.loads(values["replay_manifest.native.jsonl"].decode())
+
+
+def _rewrite_native_zip(source: Path, output: Path, mutate) -> None:
+    with ZipFile(source) as archive:
+        values = {info.filename: archive.read(info) for info in archive.infolist()}
+    mutate(values)
+    manifest = _manifest(values)
+    frame_names = sorted(
+        (name for name in values if name.endswith(".json") and name[:-5].isdigit()),
+        key=lambda name: int(name[:-5]),
+    )
+    hashes = [hashlib.sha256(values[name]).hexdigest() for name in frame_names]
+    manifest.update({
+        "frame_count": len(frame_names),
+        "step_count": len(values["steps.jsonl"].decode().splitlines()),
+        "frame_hashes": hashes,
+        "frames_merkle_root": canonical_hash(hashes),
+        "steps_sha256": hashlib.sha256(values["steps.jsonl"]).hexdigest(),
+    })
+    deterministic = {
+        key: value for key, value in manifest.items()
+        if key not in {"started_at", "deterministic_content_hash"}
+    }
+    manifest["deterministic_content_hash"] = canonical_hash(deterministic)
+    values["replay_manifest.native.jsonl"] = (
+        canonical_source_json(manifest) + "\n"
+    ).encode()
+    with ZipFile(output, "w") as archive:
+        for name in sorted(values):
+            archive.writestr(name, values[name])

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
 import json
 from pathlib import Path
 from typing import Any, Mapping
@@ -146,6 +147,9 @@ class ReplayReader:
             raise ValueError("replay result hash mismatch")
         return {"manifest": manifest,
                 "initial_state": self._json(path / "initial_state.json"),
+                "snapshots": [self._json(item) for item in sorted(
+                    (path / "snapshots").glob("*.json")
+                )],
                 "actions": self._jsonl(path / "actions.jsonl"),
                 "events": self._jsonl(path / "events.jsonl"),
                 "steps": (self._jsonl(path / "steps.jsonl")
@@ -205,19 +209,68 @@ def replay_actions(scenario: NativeScenario, root: str | Path, *,
                           max_ticks=int(manifest["max_ticks"]),
                           ruleset=active_ruleset)
     engine.reset(int(manifest["seed"]))
+    if strict and canonical_hash(engine.snapshot()) != canonical_hash(
+        bundle["initial_state"]
+    ):
+        engine.close()
+        raise ValueError("replay initial state mismatch")
     if bundle.get("steps"):
-        for record in bundle["steps"]:
+        generated_actions: list[Mapping[str, Any]] = []
+        generated_events: list[Mapping[str, Any]] = []
+        snapshots = bundle.get("snapshots", [])
+        if strict and len(snapshots) != len(bundle["steps"]) + 1:
+            engine.close()
+            raise ValueError("replay snapshot/step count mismatch")
+        if strict and snapshots and canonical_hash(snapshots[0]) != canonical_hash(
+            engine.snapshot()
+        ):
+            engine.close()
+            raise ValueError("replay initial snapshot mismatch")
+        for offset, record in enumerate(bundle["steps"], start=1):
             if engine.is_terminal():
-                break
+                engine.close()
+                raise ValueError(
+                    f"replay contains step after terminal at step {offset}"
+                )
+            _validate_classic_step_record(record, offset)
             ordered = [EngineAction.from_dict(item)
                        for item in record["ordered_actions"]]
             delta_seconds = int(record["delta_time_ms"]) / 1000
             if record.get("ordered_action_input", bool(record.get("action_sequences"))):
-                engine.step(ordered, delta_time_seconds=delta_seconds)
+                result = engine.step(ordered, delta_time_seconds=delta_seconds)
             else:
-                engine.step({item.side: item for item in ordered},
-                            delta_time_seconds=delta_seconds)
+                result = engine.step({item.side: item for item in ordered},
+                                     delta_time_seconds=delta_seconds)
+            snapshot = engine.snapshot()
+            if strict:
+                actual_step = {
+                    "schema_version": "native-step/1.0",
+                    "tick_before": result.tick_before,
+                    "tick_after": result.tick_after,
+                    "delta_time_ms": result.delta_time_ms,
+                    "ordered_actions": [item.to_dict() for item in result.actions],
+                    "action_sequences": list(result.action_sequences),
+                    "ordered_action_input": result.ordered_action_input,
+                    "world_hash": canonical_hash(snapshot["world"]),
+                }
+                if json_clone(record) != actual_step:
+                    engine.close()
+                    raise ValueError(f"replay step mismatch at step {offset}")
+                if canonical_hash(snapshots[offset]) != canonical_hash(snapshot):
+                    engine.close()
+                    raise ValueError(f"replay snapshot mismatch at step {offset}")
+            generated_actions.extend(_classic_action_records(result))
+            generated_events.extend(item.to_dict() for item in result.events)
+        if strict and json_clone(bundle["actions"]) != json_clone(generated_actions):
+            engine.close()
+            raise ValueError("replay action trajectory mismatch")
+        if strict and json_clone(bundle["events"]) != json_clone(generated_events):
+            engine.close()
+            raise ValueError("replay event trajectory mismatch")
     else:
+        if strict and manifest.get("schema_version") == REPLAY_SCHEMA_VERSION:
+            engine.close()
+            raise ValueError("strict native replay requires steps.jsonl")
         grouped: dict[int, dict[str, EngineAction]] = {}
         for record in bundle["actions"]:
             grouped.setdefault(int(record["tick_before"]), {})[str(record["side"])] = (
@@ -228,6 +281,11 @@ def replay_actions(scenario: NativeScenario, root: str | Path, *,
             engine.step(grouped[tick])
     actual = engine.result()
     expected_hash = str(bundle["summary"]["result"]["world_hash"])
+    if strict:
+        expected_result = bundle["summary"].get("result", {})
+        if actual.to_dict() != expected_result:
+            engine.close()
+            raise ValueError("replay final result mismatch")
     engine.close()
     return ReplayVerification(expected_hash == actual.world_hash, expected_hash,
                               actual.world_hash, actual.ticks)
@@ -263,32 +321,173 @@ def replay_source_archive(scenario: NativeScenario, source: str | Path, *,
             raise ValueError(message)
         warnings.warn(message + "; continuing in non-strict mode", RuntimeWarning,
                       stacklevel=2)
-    engine = NativeEngine(
-        scenario, max_ticks=int(manifest.get(
-            "max_ticks", scenario.terminal_rules.max_ticks)),
-        ruleset=active_ruleset)
-    engine.reset(int(manifest["episode_seed"]))
-    for record in archive.steps:
-        if engine.is_terminal():
-            break
+    from wargame_native_engine.backends.native import NativeEngineBackend
+    from wargame_native_engine.session.game_session import GameSession
+    from wargame_native_engine.session.source_environment import (
+        SourceCompatibleEnvironment,
+    )
+
+    environment = SourceCompatibleEnvironment(
+        GameSession(NativeEngineBackend(
+            scenario,
+            max_ticks=int(manifest.get(
+                "max_ticks", scenario.terminal_rules.max_ticks)),
+            ruleset=active_ruleset,
+        )),
+        template=archive.frames[0],
+    )
+    bundle = environment.setup_views(_exact_int(
+        manifest.get("episode_seed"), "episode_seed", minimum=0
+    ))
+    if strict:
+        if environment.initial_state_hash != manifest.get("initial_state_hash"):
+            environment.session.close()
+            raise ValueError("source replay initial state hash mismatch")
+        _verify_green_frame_hash(bundle.green, archive.frames[0].source_hash, 0)
+
+    for offset, record in enumerate(archive.steps, start=1):
+        if environment.session.is_terminal():
+            environment.session.close()
+            raise ValueError(
+                f"source replay contains step after terminal at step {offset}"
+            )
+        _validate_source_step_record(record, offset)
         ordered = [EngineAction.from_dict(value)
                    for value in record.get("ordered_actions", [])]
-        result = engine.step(
+        bundle, _ = environment.step_views(
             ordered,
-            delta_time_seconds=int(record["delta_time_ms"]) / 1000)
-        actual_step_hash = canonical_hash(engine.snapshot()["world"])
-        expected_step_hash = str(record["expected_state_hash"])
-        if strict and actual_step_hash != expected_step_hash:
-            engine.close()
-            raise ValueError(
-                f"source replay state hash mismatch at step {record.get('step_index')}")
-        if strict and result.action_sequences != tuple(
-                int(value) for value in record.get("action_sequences", [])):
-            engine.close()
-            raise ValueError(
-                f"source replay action sequence mismatch at step {record.get('step_index')}")
-    actual = engine.result()
+            delta_time_seconds=_exact_int(
+                record.get("delta_time_ms"), "delta_time_ms", minimum=1
+            ) / 1000,
+        )
+        actual_record = environment.last_step_record
+        if actual_record is None:
+            environment.session.close()
+            raise RuntimeError("strict replay did not produce a step record")
+        if strict:
+            for key in (
+                "tick_before", "tick_after", "delta_time_ms",
+                "ordered_actions", "action_sequences",
+                "ordered_action_input", "expected_state_hash",
+            ):
+                if json_clone(record.get(key)) != json_clone(actual_record.get(key)):
+                    environment.session.close()
+                    raise ValueError(
+                        f"source replay {key} mismatch at step {offset}"
+                    )
+            _verify_green_frame_hash(
+                bundle.green, archive.frames[offset].source_hash, offset
+            )
+
+    actual = environment.session.result()
     expected_hash = str(manifest["final_state_hash"])
-    engine.close()
+    if strict:
+        expected_terminal = bool(manifest.get("termination", False))
+        expected_truncated = bool(manifest.get("truncated", False))
+        if actual.terminal != expected_terminal:
+            environment.session.close()
+            raise ValueError("source replay terminal status mismatch")
+        if actual.truncated != expected_truncated:
+            environment.session.close()
+            raise ValueError("source replay truncated status mismatch")
+        if actual.winner != manifest.get("winner"):
+            environment.session.close()
+            raise ValueError("source replay winner mismatch")
+    environment.session.close()
     return ReplayVerification(expected_hash == actual.world_hash, expected_hash,
                               actual.world_hash, actual.ticks)
+
+
+def _verify_green_frame_hash(
+    frame: Mapping[str, Any],
+    expected_hash: str,
+    frame_index: int,
+) -> None:
+    from wargame_native_engine.compat.source_frame.serialization import (
+        canonical_green_frame_payload,
+    )
+
+    actual_hash = hashlib.sha256(canonical_green_frame_payload(frame)).hexdigest()
+    if actual_hash != expected_hash:
+        raise ValueError(
+            f"source replay GREEN frame hash mismatch at frame {frame_index}"
+        )
+
+
+def _validate_source_step_record(record: Mapping[str, Any], offset: int) -> None:
+    if not isinstance(record, Mapping):
+        raise ValueError(f"source replay step {offset} must be an object")
+    if _exact_int(record.get("step_index"), "step_index", minimum=1) != offset:
+        raise ValueError(f"source replay step_index mismatch at step {offset}")
+    before = _exact_int(record.get("tick_before"), "tick_before", minimum=0)
+    after = _exact_int(record.get("tick_after"), "tick_after", minimum=0)
+    if after < before:
+        raise ValueError(f"source replay tick order mismatch at step {offset}")
+    _exact_int(record.get("delta_time_ms"), "delta_time_ms", minimum=1)
+    actions = record.get("ordered_actions")
+    sequences = record.get("action_sequences")
+    if not isinstance(actions, list) or not isinstance(sequences, list):
+        raise ValueError(f"source replay action lists invalid at step {offset}")
+    if len(actions) != len(sequences):
+        raise ValueError(f"source replay action sequence length mismatch at step {offset}")
+    for value in sequences:
+        _exact_int(value, "action_sequence", minimum=0)
+    if type(record.get("ordered_action_input")) is not bool:
+        raise ValueError(f"source replay ordered_action_input invalid at step {offset}")
+    state_hash = record.get("expected_state_hash")
+    if not isinstance(state_hash, str) or not state_hash:
+        raise ValueError(f"source replay expected_state_hash invalid at step {offset}")
+
+
+def _exact_int(value: Any, field: str, *, minimum: int) -> int:
+    if type(value) is not int or value < minimum:
+        raise ValueError(
+            f"source replay {field} must be an exact int >= {minimum}"
+        )
+    return value
+
+
+def _validate_classic_step_record(record: Mapping[str, Any], offset: int) -> None:
+    if not isinstance(record, Mapping):
+        raise ValueError(f"replay step {offset} must be an object")
+    before = _exact_int(record.get("tick_before"), "tick_before", minimum=0)
+    after = _exact_int(record.get("tick_after"), "tick_after", minimum=0)
+    if after < before:
+        raise ValueError(f"replay tick order mismatch at step {offset}")
+    _exact_int(record.get("delta_time_ms"), "delta_time_ms", minimum=1)
+    actions = record.get("ordered_actions")
+    sequences = record.get("action_sequences")
+    if not isinstance(actions, list) or not isinstance(sequences, list):
+        raise ValueError(f"replay action lists invalid at step {offset}")
+    if sequences and len(sequences) != len(actions):
+        raise ValueError(f"replay action sequence length mismatch at step {offset}")
+    if type(record.get("ordered_action_input")) is not bool:
+        raise ValueError(f"replay ordered_action_input invalid at step {offset}")
+    world_hash = record.get("world_hash")
+    if not isinstance(world_hash, str) or not world_hash:
+        raise ValueError(f"replay world_hash invalid at step {offset}")
+
+
+def _classic_action_records(result: StepResult) -> list[Mapping[str, Any]]:
+    decisions: dict[str, list[Any]] = {}
+    for item in result.decisions:
+        decisions.setdefault(item.action_id, []).append(item)
+    records: list[Mapping[str, Any]] = []
+    for index, action in enumerate(result.actions):
+        decision = decisions[action.action_id].pop(0)
+        records.append({
+            "schema_version": "native-action/1.0",
+            "tick_before": result.tick_before,
+            "tick_after": result.tick_after,
+            "action_id": action.action_id,
+            "side": action.side,
+            "action": action.to_dict(),
+            "accepted": decision.accepted,
+            "decision_code": decision.code,
+            "action_sequence": (
+                None if not result.action_sequences
+                else result.action_sequences[index]
+            ),
+            "delta_time_ms": result.delta_time_ms,
+        })
+    return records
