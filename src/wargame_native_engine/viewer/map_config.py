@@ -43,6 +43,7 @@ class ViewerMapCell:
     terrain_level: int | None
     terrain_code: int | None
     terrain_semantic: str
+    neighbors: tuple[int, int, int, int, int, int] | None
     roads: tuple[int, int, int, int, int, int]
     rivers: tuple[int, int, int, int, int, int]
 
@@ -55,6 +56,9 @@ class ViewerMapCell:
             "terrain_level": self.terrain_level,
             "terrain_code": self.terrain_code,
             "terrain_semantic": self.terrain_semantic,
+            "neighbors": (
+                None if self.neighbors is None else list(self.neighbors)
+            ),
             "roads": list(self.roads),
             "rivers": list(self.rivers),
         }
@@ -181,6 +185,14 @@ def load_viewer_map_config(
                 row=cell_row,
                 column=cell_column,
             )
+            if (
+                "neighbors" in raw_cell
+                and "nb" in raw_cell
+                and raw_cell["neighbors"] != raw_cell["nb"]
+            ):
+                raise ViewerMapConfigError(
+                    f"map cell {position_id} has conflicting neighbors and nb"
+                )
             cells.append(ViewerMapCell(
                 row=cell_row,
                 column=cell_column,
@@ -192,6 +204,9 @@ def load_viewer_map_config(
                 ),
                 terrain_code=terrain_code,
                 terrain_semantic=_TERRAIN_NAMES.get(terrain_code, "unknown"),
+                neighbors=_optional_neighbor_values(
+                    raw_cell.get("neighbors", raw_cell.get("nb")),
+                ),
                 roads=_edge_values(raw_cell.get("roads")),
                 rivers=_edge_values(raw_cell.get("rivers")),
             ))
@@ -305,6 +320,25 @@ def _edge_values(value: object) -> tuple[int, int, int, int, int, int]:
         if type(item) is not int or item < 0:
             raise ViewerMapConfigError(
                 "map cell roads/rivers values must be non-negative ints"
+            )
+        result.append(item)
+    return tuple(result)  # type: ignore[return-value]
+
+
+def _optional_neighbor_values(
+    value: object,
+) -> tuple[int, int, int, int, int, int] | None:
+    if value is None:
+        return None
+    if not _is_array(value) or len(value) != 6:
+        raise ViewerMapConfigError(
+            "map cell neighbors must contain six values"
+        )
+    result: list[int] = []
+    for item in value:
+        if type(item) is not int or item < -1:
+            raise ViewerMapConfigError(
+                "map cell neighbors values must be ints greater than or equal to -1"
             )
         result.append(item)
     return tuple(result)  # type: ignore[return-value]
