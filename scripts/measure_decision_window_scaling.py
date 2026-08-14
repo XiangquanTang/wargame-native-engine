@@ -21,11 +21,14 @@ from wargame_native_engine.backends.native import NativeEngineBackend
 from wargame_native_engine.compat.source_frame.serialization import (
     canonical_green_frame_payload,
 )
+from wargame_native_engine.data import DataProvenance, ScenarioBundle
 from wargame_native_engine.gateway import CommandGateway, DecisionWindow, SessionManager
 from wargame_native_engine.io.native_map_converter import (
     convert_benchmark_basic_map,
 )
 from wargame_native_engine.io.scenario import scenario_from_dict
+from wargame_native_engine.operations import SideController
+from wargame_native_engine.rendering import live_render_scene
 from wargame_native_engine.session.game_session import GameSession
 from wargame_native_engine.session.source_environment import (
     SourceCompatibleEnvironment,
@@ -63,6 +66,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         elevation_unit_m_override=args.elevation_unit_m,
     )
     scenario = _scaling_scenario(conversion.native_map.to_dict(), args.operator_count)
+    bundle_ms, scenario_bundle = _measure(lambda: ScenarioBundle.from_scenario(
+        scenario,
+        provenance=DataProvenance(
+            source_sha256=scenario.scenario_hash,
+            source_kind="synthetic_scaling_scenario",
+            converter_id="measure_decision_window_scaling",
+            converter_version="1.0",
+            warnings=("measurement-only 50-vs-50 placement",),
+        ),
+    ))
+    render_map_ms, render_map = _measure(scenario_bundle.render_map_record)
     environment = _environment(scenario)
 
     setup_ms, bundle = _measure(lambda: environment.setup_views(args.seed))
@@ -161,6 +175,36 @@ def main(argv: Sequence[str] | None = None) -> int:
             seed=args.seed,
             record=True,
         ))
+        product_controller = SideController(
+            gateway, descriptor.session_id, "measure-red"
+        )
+        command_menu_ms, command_menu = _measure(
+            lambda: product_controller.get_unit_commands(1)
+        )
+        scene_ms, scene = _measure(lambda: live_render_scene(
+            scenario_bundle,
+            product_controller.observe(),
+        ))
+        scene_payload = json.dumps(
+            scene.to_record(), ensure_ascii=False, sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        occupied = {item.current_hex for item in scenario.operators}
+        destination = next(
+            int(item["pos"])
+            for item in reversed(conversion.native_map.to_dict()["hexes"])
+            if int(item["pos"]) not in occupied
+        )
+        route_ms, route = _measure(lambda: product_controller.plan_move(
+            1,
+            destination,
+            request_id="measure-long-route",
+        ))
+        proposal_lookup_ms, looked_up = _measure(
+            lambda: product_controller.proposal(route.proposal_id)
+        )
+        if looked_up != route:
+            raise RuntimeError("proposal lookup changed the immutable route")
         managed_window = gateway.window(
             descriptor.session_id, "measure-red"
         )
@@ -219,6 +263,24 @@ def main(argv: Sequence[str] | None = None) -> int:
             "profiled_empty_frame_step": profiled_step_ms,
             "managed_setup_with_recorder_and_analyzer": managed_setup_ms,
             "managed_frame_advance_with_recorder_and_analyzer": managed_advance_ms,
+            "canonical_scenario_bundle": bundle_ms,
+            "render_map_projection": render_map_ms,
+            "unit_command_menu": command_menu_ms,
+            "side_render_scene": scene_ms,
+            "long_route_plan_and_proposal_registration": route_ms,
+            "proposal_registry_lookup": proposal_lookup_ms,
+        },
+        "product_facade": {
+            "map_identity_sha256": render_map["map_identity"]["sha256"],
+            "scenario_identity_sha256": scenario_bundle.scenario_identity.sha256,
+            "command_menu_action_count": sum(
+                len(values) for values in command_menu.available.values()
+            ),
+            "scene_payload_bytes": len(scene_payload),
+            "route_destination_hex": destination,
+            "route_reachable": route.reachable,
+            "route_segment_count": len(route.ordered_path),
+            "route_estimated_duration_ms": route.estimated_duration_ms,
         },
         "memory_bytes": {
             "freeze_action_snapshots_peak_tracemalloc": freeze_peak,
