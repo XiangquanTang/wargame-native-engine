@@ -422,6 +422,13 @@ class DualSideControlRequestHandler(BaseHTTPRequestHandler):
             self.server.session_id, controller,
         )
         scene = self._scene(side, view)
+        frame = scene.get("frame")
+        if not isinstance(frame, Mapping):
+            raise RuntimeError("render scene lacks a frame record")
+        scene["frame"] = {
+            key: frame[key]
+            for key in ("frame_index", "time", "cities", "viewer_units")
+        }
         scene["overlays"] = {
             "selected_unit_ids": [],
             "planned_paths": [],

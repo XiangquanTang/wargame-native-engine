@@ -425,6 +425,10 @@ def test_product_http_contract_hides_control_internals_and_executes_once(
             assert "window" not in bootstrap
             assert "view" not in bootstrap
             assert "valid_actions" not in json.dumps(bootstrap).lower()
+            assert set(bootstrap["scene"]["frame"]) == {
+                "frame_index", "time", "cities", "viewer_units",
+            }
+            assert "frame_analysis" not in json.dumps(bootstrap).lower()
 
             capabilities = decoded(request(
                 address,

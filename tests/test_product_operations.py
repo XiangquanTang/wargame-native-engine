@@ -219,6 +219,39 @@ def test_zero_executable_preview_cannot_execute(product_match) -> None:
     assert product_match.status.frame_index == 0
 
 
+def test_stop_weapon_state_and_wait_follow_current_frozen_actions(
+    product_match,
+) -> None:
+    red = ProductOperationService(product_match.bind_controller(
+        "red", controller_id="product-red"
+    ))
+    blue = ProductOperationService(product_match.bind_controller(
+        "blue", controller_id="product-blue"
+    ))
+    capabilities = red.capabilities([1])
+    assert capabilities["operations"]["WEAPON_LOCK"]["applicable_count"] == 1
+    assert capabilities["operations"]["WEAPON_UNFOLD"]["applicable_count"] == 0
+    lock = red.preview_operation(
+        [1], "WEAPON_LOCK", request_id="lock-preview"
+    )
+    assert lock.executable_count == 1
+    assert lock.per_unit_results[0].human_readable_summary == "锁定武器"
+
+    move = red.preview_operation(
+        [1], "MOVE", request_id="move-before-stop", destination_hex=105
+    )
+    red.execute_preview(move.preview_token, request_id="move-before-stop-submit")
+    wait = blue.preview_operation(
+        [], "WAIT", request_id="blue-wait-stop", whole_side_wait=True
+    )
+    blue.execute_preview(wait.preview_token, request_id="blue-wait-stop-submit")
+    stop = red.preview_operation(
+        [1], "STOP_MOVE", request_id="stop-preview"
+    )
+    assert stop.executable_count == 1
+    assert stop.per_unit_results[0].human_readable_summary == "停止当前移动"
+
+
 def test_shoot_preview_uses_frozen_server_target_after_movement(product_match) -> None:
     red_controller = product_match.bind_controller(
         "red", controller_id="product-red"
