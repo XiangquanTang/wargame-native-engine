@@ -389,3 +389,151 @@ def test_http_rejects_arbitrary_action_payload_cross_side_id_and_mutation_method
                 assert request(address, method, "/api/batch", {})[0] == 405
     finally:
         fixture.close()
+
+
+def test_product_http_contract_hides_control_internals_and_executes_once(
+    tmp_path: Path,
+) -> None:
+    fixture = Fixture(tmp_path)
+    try:
+        with running_server(fixture.server) as address:
+            status, payload, _ = request(
+                address,
+                "GET",
+                "/api/product/bootstrap?token=red-token-123",
+            )
+            assert status == 200
+            bootstrap = decoded(payload)
+            assert set(bootstrap) == {
+                "session_id", "side", "referee_data_exposed", "scene",
+                "product_status",
+            }
+            assert bootstrap["side"] == "red"
+            assert bootstrap["referee_data_exposed"] is False
+            assert bootstrap["scene"]["perspective"] == "RED"
+            assert "window" not in bootstrap
+            assert "view" not in bootstrap
+            assert "valid_actions" not in json.dumps(bootstrap).lower()
+
+            capabilities = decoded(request(
+                address,
+                "POST",
+                "/api/product/capabilities",
+                {"token": "red-token-123", "actor_ids": [1]},
+            )[1])
+            assert capabilities["selected_count"] == 1
+            assert capabilities["operations"]["MOVE"]["applicable_count"] == 1
+            assert "action_id" not in json.dumps(capabilities).lower()
+
+            preview_body = {
+                "token": "red-token-123",
+                "request_id": "product-preview-move",
+                "actor_ids": [1],
+                "operation_type": "MOVE",
+                "destination_hex": 105,
+            }
+            status, payload, _ = request(
+                address, "POST", "/api/product/preview", preview_body
+            )
+            assert status == 200
+            preview = decoded(payload)
+            assert preview["executable_count"] == 1
+            assert preview["per_unit_results"][0]["path"] == [102, 103, 104, 105]
+            assert "action_id" not in json.dumps(preview).lower()
+            assert "proposal_id" not in json.dumps(preview).lower()
+            token = preview["preview_token"]
+
+            execute_body = {
+                "token": "red-token-123",
+                "preview_token": token,
+                "request_id": "product-execute-move",
+            }
+            first = decoded(request(
+                address, "POST", "/api/product/execute", execute_body
+            )[1])
+            repeated = decoded(request(
+                address, "POST", "/api/product/execute", execute_body
+            )[1])
+            assert repeated == first
+            assert first["product_state"] == "WAITING_OPPONENT"
+            assert fixture.manager.descriptor(fixture.session_id).frame_index == 0
+
+            blue_preview = decoded(request(
+                address,
+                "POST",
+                "/api/product/preview",
+                {
+                    "token": "blue-token-456",
+                    "request_id": "product-blue-wait-preview",
+                    "actor_ids": [],
+                    "operation_type": "WAIT",
+                    "whole_side_wait": True,
+                },
+            )[1])
+            advanced = decoded(request(
+                address,
+                "POST",
+                "/api/product/execute",
+                {
+                    "token": "blue-token-456",
+                    "preview_token": blue_preview["preview_token"],
+                    "request_id": "product-blue-wait-execute",
+                },
+            )[1])
+            assert advanced["advanced"] is True
+            assert fixture.manager.descriptor(fixture.session_id).frame_index == 1
+    finally:
+        fixture.close()
+
+
+def test_product_http_partial_confirmation_and_input_boundary(
+    tmp_path: Path,
+) -> None:
+    fixture = Fixture(tmp_path)
+    try:
+        with running_server(fixture.server) as address:
+            body = {
+                "token": "red-token-123",
+                "request_id": "partial-http-preview",
+                "actor_ids": [1, 2],
+                "operation_type": "MOVE",
+                "destination_hex": 105,
+            }
+            preview = decoded(request(
+                address, "POST", "/api/product/preview", body
+            )[1])
+            assert preview["executable_count"] == 1
+            assert preview["rejected_count"] == 1
+            assert preview["partial_confirmation_required"] is True
+            execute = {
+                "token": "red-token-123",
+                "preview_token": preview["preview_token"],
+                "request_id": "partial-http-execute",
+            }
+            assert request(
+                address, "POST", "/api/product/execute", execute
+            )[0] == 409
+            execute["confirm_partial"] = True
+            assert request(
+                address, "POST", "/api/product/execute", execute
+            )[0] == 200
+            assert fixture.manager.descriptor(fixture.session_id).frame_index == 0
+
+            injected = dict(body)
+            injected["request_id"] = "injected-client-path"
+            injected["path"] = [999]
+            assert request(
+                address, "POST", "/api/product/preview", injected
+            )[0] == 400
+            unavailable = decoded(request(
+                address,
+                "POST",
+                "/api/product/capabilities",
+                {"token": "red-token-123", "actor_ids": [2]},
+            )[1])
+            assert unavailable["operations"]["MOVE"]["applicable_count"] == 0
+            assert unavailable["operations"]["MOVE"]["unavailable"][0][
+                "code"
+            ] == "unit_not_controllable"
+    finally:
+        fixture.close()

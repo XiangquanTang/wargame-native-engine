@@ -14,6 +14,7 @@ from wargame_native_engine.gateway import (
     CommandGatewayError,
     DeadlineMode,
 )
+from wargame_native_engine.operations import ProductOperationService
 from wargame_native_engine.operations.controller import SideController
 from wargame_native_engine.rendering import RenderScene
 from wargame_native_engine.viewer.live_control import controller_view_record
@@ -65,6 +66,10 @@ class DualSideControlHTTPServer(ThreadingHTTPServer):
             side: SideController(gateway, self.session_id, controller)
             for side, controller in self.controllers.items()
         }
+        self.product_services = {
+            side: ProductOperationService(controller)
+            for side, controller in self.side_controllers.items()
+        }
         super().__init__(address, DualSideControlRequestHandler)
 
 
@@ -101,6 +106,25 @@ class DualSideControlRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(
                     HTTPStatus.OK, self._bootstrap(side, controller),
                 )
+                return
+            if path == "/api/product/bootstrap":
+                side, controller = self._seat(_one(query, "token"))
+                self._send_json(
+                    HTTPStatus.OK, self._product_bootstrap(side, controller),
+                )
+                return
+            if path == "/api/product/status":
+                side, _ = self._seat(_one(query, "token"))
+                self._send_json(
+                    HTTPStatus.OK, self.server.product_services[side].status(),
+                )
+                return
+            if path == "/api/product/preview":
+                side, _ = self._seat(_one(query, "token"))
+                preview = self.server.product_services[side].preview(
+                    _one(query, "preview_token")
+                )
+                self._send_json(HTTPStatus.OK, preview.to_record())
                 return
             if path == "/api/view":
                 _, controller = self._seat(_one(query, "token"))
@@ -160,6 +184,60 @@ class DualSideControlRequestHandler(BaseHTTPRequestHandler):
         path = unquote(urlsplit(self.path).path)
         try:
             body = self._read_json_body()
+            if path == "/api/product/capabilities":
+                if set(body) != {"token", "actor_ids"}:
+                    raise ValueError(
+                        "capabilities requires exactly token and actor_ids"
+                    )
+                side, _ = self._seat(body["token"])
+                self._send_json(
+                    HTTPStatus.OK,
+                    self.server.product_services[side].capabilities(
+                        body["actor_ids"]
+                    ),
+                )
+                return
+            if path == "/api/product/preview":
+                allowed = {
+                    "token", "request_id", "actor_ids", "operation_type",
+                    "destination_hex", "target_id", "movement_mode",
+                    "weapon_choices", "whole_side_wait",
+                }
+                required = {"token", "request_id", "actor_ids", "operation_type"}
+                if not required.issubset(body) or not set(body).issubset(allowed):
+                    raise ValueError(
+                        "operation preview contains missing or unsupported fields"
+                    )
+                side, _ = self._seat(body["token"])
+                preview = self.server.product_services[side].preview_operation(
+                    body["actor_ids"],
+                    body["operation_type"],
+                    request_id=_nonempty_text(body["request_id"], "request_id"),
+                    destination_hex=body.get("destination_hex"),
+                    target_id=body.get("target_id"),
+                    movement_mode=body.get("movement_mode", "NORMAL"),
+                    weapon_choices=body.get("weapon_choices"),
+                    whole_side_wait=body.get("whole_side_wait", False),
+                )
+                self._send_json(HTTPStatus.OK, preview.to_record())
+                return
+            if path == "/api/product/execute":
+                allowed = {
+                    "token", "preview_token", "request_id", "confirm_partial",
+                }
+                required = {"token", "preview_token", "request_id"}
+                if not required.issubset(body) or not set(body).issubset(allowed):
+                    raise ValueError(
+                        "operation execute contains missing or unsupported fields"
+                    )
+                side, _ = self._seat(body["token"])
+                result = self.server.product_services[side].execute_preview(
+                    _nonempty_text(body["preview_token"], "preview_token"),
+                    request_id=_nonempty_text(body["request_id"], "request_id"),
+                    confirm_partial=body.get("confirm_partial", False),
+                )
+                self._send_json(HTTPStatus.OK, result.to_record())
+                return
             if path == "/api/batch":
                 allowed = {
                     "token", "request_id", "expected_window",
@@ -332,6 +410,26 @@ class DualSideControlRequestHandler(BaseHTTPRequestHandler):
             ],
         }
 
+    def _product_bootstrap(
+        self, side: str, controller: str,
+    ) -> dict[str, object]:
+        _, view = self.server.gateway.controller_state(
+            self.server.session_id, controller,
+        )
+        scene = self._scene(side, view)
+        scene["overlays"] = {
+            "selected_unit_ids": [],
+            "planned_paths": [],
+            "shoot_target_ids": [],
+        }
+        return {
+            "session_id": self.server.session_id,
+            "side": side,
+            "referee_data_exposed": False,
+            "scene": scene,
+            "product_status": self.server.product_services[side].status(),
+        }
+
     def _scene(self, side: str, view) -> dict[str, object]:
         record = controller_view_record(view)
         scene = RenderScene(
@@ -392,6 +490,8 @@ class DualSideControlRequestHandler(BaseHTTPRequestHandler):
             "stale_expected_step", "request_id_conflict",
             "side_already_submitted", "decision_window_closed",
             "decision_window_expired", "session_terminal", "session_finalized",
+            "preview_not_found", "preview_expired", "preview_already_executed",
+            "partial_confirmation_required", "side_already_submitted",
         }
         self._send_json(
             HTTPStatus.CONFLICT if exc.code in conflict else HTTPStatus.FORBIDDEN,

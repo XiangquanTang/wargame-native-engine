@@ -170,6 +170,60 @@ class ProductOperationService:
             "can_operate": state == "WAITING_SELECTION",
         }
 
+    def capabilities(self, actor_ids: Sequence[int]) -> dict[str, object]:
+        """Summarize toolbar applicability without exposing frozen IDs."""
+
+        actors = _actor_ids(actor_ids)
+        operations = {
+            kind: {"applicable_count": 0, "unavailable": []}
+            for kind in PRODUCT_OPERATION_TYPES
+        }
+        summaries = []
+        shoot_targets: set[int] = set()
+        for unit_id in actors:
+            try:
+                menu = self.controller.get_unit_commands(unit_id)
+            except CommandGatewayError as exc:
+                for value in operations.values():
+                    value["unavailable"].append({
+                        "unit_id": unit_id,
+                        "code": exc.code,
+                        "message": exc.message,
+                    })
+                continue
+            summaries.append({
+                "unit_id": unit_id,
+                "display_name": _display_name(menu.unit, unit_id),
+                "operator_type": menu.unit.get("operator_type"),
+                "subtype": menu.unit.get("subtype"),
+                "current_hex": menu.unit.get("current_hex"),
+                "health": menu.unit.get("health", menu.unit.get("blood")),
+                "state": menu.unit.get("state"),
+            })
+            for kind, value in operations.items():
+                available = bool(menu.available.get(kind))
+                if kind == "MOVE":
+                    available = menu.move_planning_available
+                if available:
+                    value["applicable_count"] += 1
+                    if kind == "SHOOT":
+                        for item in menu.available.get("SHOOT", ()):
+                            target = item.get("action", {}).get("target_id")
+                            if type(target) is int:
+                                shoot_targets.add(target)
+                else:
+                    value["unavailable"].append({
+                        "unit_id": unit_id,
+                        "code": "operation_unavailable",
+                        "message": _unavailable_message(kind),
+                    })
+        return {
+            "selected_count": len(actors),
+            "selected_units": summaries,
+            "operations": operations,
+            "shoot_target_ids": sorted(shoot_targets),
+        }
+
     def preview_operation(
         self,
         actor_ids: Sequence[int],
