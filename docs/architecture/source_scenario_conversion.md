@@ -38,3 +38,21 @@
 旧 Scenario、Map 和 Replay 保持在旧仓库只读位置，不复制进本仓库。转换器代码和 supplement 在当前仓库；转换产生的 canonical Scenario、Manifest 和运行产物写入调用者指定目录（通常 `/tmp` 或 `local_data/`），不提交历史私有输入或生成对局。
 
 转换后的 canonical Scenario 可由 `ScenarioBundle` 和 `ScenarioCatalog` 直接加载，随后只通过 `WargameFacade → CommandGateway → GameSession.step → NativeEngine` 推进。产品 Web 不能读取转换 Manifest 中的隐藏部署，也不能绕过 Side Observation。
+
+## Map 123 的两个显式 Profile
+
+`2201010105.native-supplement.json` 是正式 Native simplified 转换配置，使用显式的 2880 秒上限。`2201010105.native-acceptance-supplement.json` 只把终止上限替换为明确标识的 900 秒验收条件；平台、武器、传感器、部署和地图字段与正式 Profile 相同。后者用于在有限测试时间内走到 Native termination，并不冒充 Source 原始终止规则。
+
+正式转换命令：
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python -m scripts.convert_source_scenario \
+  --source-scenario /home/txq/wargame/wargame_benchmark_lab/local_data/sdk_data_snapshot/phase9a_multireplay_pilot/scenarios/2201010105.json \
+  --source-map /home/txq/wargame/wargame_benchmark_lab/local_data/sdk_data_snapshot/phase9a_multireplay_pilot/maps/123/basic.json \
+  --source-scenario-identity scenarios/2201010105.json \
+  --source-map-identity maps/123/basic.json \
+  --scenario-id 2201010105 --map-id 123 \
+  --mode explicit-native-supplement \
+  --supplement config/source_scenario_conversion/scenarios/2201010105.native-supplement.json \
+  --output-dir /tmp/wargame_source_2201010105
+```
