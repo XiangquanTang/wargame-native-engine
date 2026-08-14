@@ -704,3 +704,102 @@ def test_valid_actions_recompute_after_arrival() -> None:
     assert not any(item.action.actor_id == 1
                    and item.action.action_type in {ActionType.MOVE, ActionType.SHOOT}
                    for item in engine.valid_actions("red"))
+
+
+@pytest.mark.parametrize(
+    ("terrain", "elevation", "roads", "rivers", "speed_kph", "traversal_ms"),
+    [
+        ({102: 0}, {}, {}, {}, 36.0, 20_000),
+        ({102: 1}, {}, {}, {}, 18.0, 40_000),
+        ({102: 2}, {}, {}, {}, 12.0, 60_000),
+        ({102: 3}, {}, {}, {}, 9.0, 80_000),
+        ({102: 4}, {}, {}, {}, 9.0, 80_000),
+        ({102: 0}, {}, {}, {(101, 102): 1}, 18.0, 40_000),
+        ({102: 0}, {102: 2}, {}, {}, 18.0, 40_000),
+        ({102: 1}, {102: 3}, {}, {}, 6.0, 120_000),
+        ({102: 2}, {102: 6}, {(101, 102): 1}, {}, 36.0, 20_000),
+    ],
+)
+def test_vehicle_segment_cost_matrix_matches_exact_arrival_time(
+    terrain,
+    elevation,
+    roads,
+    rivers,
+    speed_kph: float,
+    traversal_ms: int,
+) -> None:
+    engine = _engine(
+        terrain=terrain,
+        elevation=elevation,
+        roads=roads,
+        rivers=rivers,
+    )
+    route = engine.plan_move("red", 1, 102)
+    assert route.reachable and len(route.segments) == 1
+    segment = route.segments[0]
+    assert segment.effective_speed_kph == speed_kph
+    assert segment.traversal_ms == traversal_ms
+    assert route.estimated_duration_ms == traversal_ms
+
+    action = EngineAction(
+        "red",
+        1,
+        ActionType.MOVE,
+        parameters={"path": [102], "movement_mode": "NORMAL"},
+    )
+    result = engine.step_ms([action], delta_time_ms=traversal_ms)
+    assert result.decisions[0].accepted
+    assert _operator_state(engine).current_hex == 102
+    evidence = engine._require_world().movement_evidence[0]
+    assert evidence["event_time"] == traversal_ms
+    assert evidence["arrived"] is True
+
+
+@pytest.mark.parametrize(
+    ("mode", "locked", "road", "speed_kph", "traversal_ms"),
+    [
+        ("NORMAL", False, None, 5.0, 144_000),
+        ("CHARGE_1", False, None, 10.0, 72_000),
+        ("CHARGE_2", False, None, 20.0, 36_000),
+        ("MARCHING", True, 1, 40.0, 18_000),
+        ("MARCHING", True, 2, 60.0, 12_000),
+        ("MARCHING", True, 3, 90.0, 8_000),
+    ],
+)
+def test_personnel_and_road_mode_cost_matrix_is_exact(
+    mode: str,
+    locked: bool,
+    road: int | None,
+    speed_kph: float,
+    traversal_ms: int,
+) -> None:
+    engine = _engine(
+        mover_domain="PERSONNEL" if mode != "MARCHING" else "VEHICLE",
+        mover_speed=5 if mode != "MARCHING" else 36,
+        roads={} if road is None else {(101, 102): road},
+    )
+    unit = _operator_state(engine)
+    unit.weapon_locked = locked
+    unit.movement_mode = mode
+    route = engine.plan_move("red", 1, 102, mode)
+    assert route.reachable and len(route.segments) == 1
+    assert route.segments[0].effective_speed_kph == speed_kph
+    assert route.segments[0].traversal_ms == traversal_ms
+
+
+def test_segment_estimate_and_execution_remain_equal_for_subsecond_rounding() -> None:
+    engine = _engine(mover_speed=37)
+    route = engine.plan_move("red", 1, 102)
+    assert route.reachable
+    # 200m at 37km/h is 19.459... seconds and the policy rounds upward.
+    assert route.estimated_duration_ms == 19_460
+    action = EngineAction(
+        "red",
+        1,
+        ActionType.MOVE,
+        parameters={"path": [102], "movement_mode": "NORMAL"},
+    )
+    engine.step_ms([action], delta_time_ms=19_459)
+    assert _operator_state(engine).current_hex == 101
+    engine.step_ms([], delta_time_ms=1)
+    assert _operator_state(engine).current_hex == 102
