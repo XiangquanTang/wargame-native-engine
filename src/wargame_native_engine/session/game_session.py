@@ -9,6 +9,7 @@ from wargame_native_engine.core.observation import SideObservation
 from wargame_native_engine.core.result import GameResult, StepResult
 from wargame_native_engine.core.world import Stage, WorldState
 from wargame_native_engine.io.serialization import canonical_hash
+from wargame_native_engine.movement.models import MovementMode, RoutePlan
 
 
 class GameSession:
@@ -49,6 +50,14 @@ class GameSession:
     def valid_actions(self, side: str) -> tuple[ValidAction, ...]:
         self._require_active()
         return self.backend.valid_actions(side)
+
+    def plan_move(self, side: str, unit_id: int, destination_hex: int,
+                  movement_mode: MovementMode | str = MovementMode.NORMAL
+                  ) -> RoutePlan:
+        self._require_active()
+        return self.backend.plan_move(
+            side, unit_id, destination_hex, movement_mode
+        )
 
     def step(self, action_batch: Mapping[
             str, AgentAction | EngineAction | None] | Sequence[EngineAction], *,

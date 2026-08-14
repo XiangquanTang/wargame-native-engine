@@ -9,6 +9,7 @@ from wargame_native_engine.core.observation import SideObservation
 from wargame_native_engine.core.result import GameResult, StepResult
 from wargame_native_engine.core.world import WorldState
 from wargame_native_engine.io.scenario import NativeScenario
+from wargame_native_engine.movement.models import MovementMode, RoutePlan
 from wargame_native_engine.rules.config import Ruleset
 
 
@@ -34,6 +35,13 @@ class NativeEngineBackend:
 
     def valid_actions(self, side: str) -> tuple[ValidAction, ...]:
         return self.engine.valid_actions(side)
+
+    def plan_move(self, side: str, unit_id: int, destination_hex: int,
+                  movement_mode: MovementMode | str = MovementMode.NORMAL
+                  ) -> RoutePlan:
+        return self.engine.plan_move(
+            side, unit_id, destination_hex, movement_mode
+        )
 
     def step(self, actions: Mapping[str, EngineAction | None] | Sequence[EngineAction],
              *, delta_time_seconds: int | float = 1) -> StepResult:

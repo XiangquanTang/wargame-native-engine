@@ -28,6 +28,50 @@ class MovementPlanner:
                     "path": list(values), "movement_mode": mode.value}
         if not values:
             return _illegal("PATH_REQUIRED", evidence)
+        operator_legality = self.validate_operator(operator, mode)
+        if not operator_legality.legal:
+            return MovementLegalityResult(
+                False,
+                operator_legality.reason_code,
+                {**evidence, **dict(operator_legality.evidence)},
+            )
+
+        current = operator.current_hex
+        if current is None:  # kept explicit for static type narrowing
+            return _illegal("CURRENT_HEX_REQUIRED", evidence)
+        segment_evidence: list[dict[str, object]] = []
+        for target in values:
+            legality, plan = self.plan_segment(operator, current, target, mode)
+            segment_evidence.append(legality.to_dict())
+            if not legality.legal:
+                return MovementLegalityResult(False, legality.reason_code,
+                                              {**evidence,
+                                               "segments": segment_evidence})
+            if self.friendly_ground_count(world, target,
+                                          side=operator.side,
+                                          exclude=operator.operator_id) >= (
+                                              self.policy.friendly_ground_stack_limit):
+                return _illegal("FRIENDLY_STACK_LIMIT",
+                                {**evidence, "target_hex": target,
+                                 "segments": segment_evidence})
+            if plan is None:
+                raise RuntimeError("legal segment did not produce a plan")
+            current = target
+        return MovementLegalityResult(True, "LEGAL",
+                                      {**evidence, "segments": segment_evidence})
+
+    def validate_operator(
+        self,
+        operator: OperatorState,
+        mode: MovementMode,
+    ) -> MovementLegalityResult:
+        """Validate movement-task state without duplicating segment costs."""
+
+        evidence = {
+            "unit_id": operator.operator_id,
+            "current_hex": operator.current_hex,
+            "movement_mode": mode.value,
+        }
         if operator.current_hex is None:
             return _illegal("CURRENT_HEX_REQUIRED", evidence)
         if operator.moving or operator.move_path:
@@ -58,28 +102,7 @@ class MovementPlanner:
             return _illegal("VEHICLE_CANNOT_CHARGE", evidence)
         if mode is MovementMode.MARCHING and not operator.weapon_locked:
             return _illegal("WEAPON_NOT_LOCKED", evidence)
-
-        current = operator.current_hex
-        segment_evidence: list[dict[str, object]] = []
-        for target in values:
-            legality, plan = self.plan_segment(operator, current, target, mode)
-            segment_evidence.append(legality.to_dict())
-            if not legality.legal:
-                return MovementLegalityResult(False, legality.reason_code,
-                                              {**evidence,
-                                               "segments": segment_evidence})
-            if self.friendly_ground_count(world, target,
-                                          side=operator.side,
-                                          exclude=operator.operator_id) >= (
-                                              self.policy.friendly_ground_stack_limit):
-                return _illegal("FRIENDLY_STACK_LIMIT",
-                                {**evidence, "target_hex": target,
-                                 "segments": segment_evidence})
-            if plan is None:
-                raise RuntimeError("legal segment did not produce a plan")
-            current = target
-        return MovementLegalityResult(True, "LEGAL",
-                                      {**evidence, "segments": segment_evidence})
+        return MovementLegalityResult(True, "LEGAL", evidence)
 
     def plan_segment(self, operator: OperatorState, from_hex: int, to_hex: int,
                      mode: MovementMode

@@ -94,3 +94,29 @@ class SegmentPlan:
             "segment_distance_m": self.segment_distance_m,
             "traversal_seconds": self.traversal_ms / 1000.0,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class RoutePlan:
+    reachable: bool
+    reason_code: str
+    unit_id: int
+    source_hex: int | None
+    destination_hex: int
+    movement_mode: MovementMode
+    ordered_path: tuple[int, ...] = ()
+    estimated_duration_ms: int | None = None
+    segments: tuple[SegmentPlan, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "reachable": self.reachable,
+            "reason_code": self.reason_code,
+            "unit_id": self.unit_id,
+            "source_hex": self.source_hex,
+            "destination_hex": self.destination_hex,
+            "movement_mode": self.movement_mode.value,
+            "ordered_path": list(self.ordered_path),
+            "estimated_duration_ms": self.estimated_duration_ms,
+            "segment_details": [item.to_dict() for item in self.segments],
+        }

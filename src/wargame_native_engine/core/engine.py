@@ -26,12 +26,13 @@ from wargame_native_engine.core.world import Stage, WorldState
 from wargame_native_engine.io.scenario import NativeScenario
 from wargame_native_engine.io.serialization import canonical_hash
 from wargame_native_engine.movement.map_adapter import SourceHexMap
-from wargame_native_engine.movement.models import MovementMode
+from wargame_native_engine.movement.models import MovementMode, RoutePlan
 from wargame_native_engine.movement.planner import MovementPlanner
 from wargame_native_engine.movement.policy import (
     SourceMovementPolicy, load_source_movement_policy,
 )
 from wargame_native_engine.movement.runtime import MovementRuntime
+from wargame_native_engine.movement.route_planner import DeterministicRoutePlanner
 from wargame_native_engine.rules.config import Ruleset, load_ruleset
 from wargame_native_engine.rules.terminal_rules import TerminalRules
 from wargame_native_engine.systems.combat import validate_attack
@@ -77,14 +78,19 @@ class NativeEngine:
         self._source_map: SourceHexMap | None = None
         self._source_visibility_map: HexMapProfile | None = None
         self._movement: MovementRuntime | None = None
+        self._route_planner: DeterministicRoutePlanner | None = None
         self._action_router: ActionRouter | None = None
         self._adjudication_tables: AdjudicationTableSet | None = None
         if scenario.map.hexes:
             self._source_policy = load_source_movement_policy()
             self._source_map = SourceHexMap(scenario.map, self._source_policy)
+            movement_planner = MovementPlanner(
+                self._source_map, self._source_policy
+            )
             self._movement = MovementRuntime(
-                MovementPlanner(self._source_map, self._source_policy),
+                movement_planner,
                 self._source_policy)
+            self._route_planner = DeterministicRoutePlanner(movement_planner)
             self._action_router = ActionRouter()
             self._adjudication_tables = AdjudicationTableSet(
                 Path(__file__).resolve().parents[3]
@@ -208,6 +214,40 @@ class NativeEngine:
                 wait = EngineAction(side, None, ActionType.WAIT)
                 values.append(ValidAction(wait, ACTION_PRIORITY[wait.action_type]))
         return tuple(sorted(values, key=valid_action_sort_key))
+
+    def plan_move(
+        self,
+        side: str,
+        unit_id: int,
+        destination_hex: int,
+        movement_mode: MovementMode | str = MovementMode.NORMAL,
+    ) -> RoutePlan:
+        """Read-only destination proposal using the execution cost model."""
+
+        world = self._require_world()
+        self._require_side(side)
+        mode = (
+            movement_mode
+            if isinstance(movement_mode, MovementMode)
+            else MovementMode(str(movement_mode).upper())
+        )
+        if world.done:
+            return RoutePlan(
+                False, "SESSION_TERMINAL", int(unit_id), None,
+                int(destination_hex), mode,
+            )
+        try:
+            operator = world.operators[int(unit_id)]
+        except KeyError as exc:
+            raise ValueError(f"unknown unit: {unit_id}") from exc
+        if operator.side != side:
+            raise ValueError("unit is not controlled by side")
+        if self._route_planner is None:
+            return RoutePlan(
+                False, "HEX_MAP_REQUIRED", int(unit_id), operator.current_hex,
+                int(destination_hex), mode,
+            )
+        return self._route_planner.plan(operator, int(destination_hex), mode, world)
 
     def step(self, actions: Mapping[str, EngineAction | None]
              | Sequence[EngineAction], *,
