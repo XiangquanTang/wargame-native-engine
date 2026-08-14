@@ -46,6 +46,8 @@ class DecisionWindow:
     valid_action_snapshots: Mapping[str, Mapping[str, ValidAction]]
     deadline_policy: str = "synchronous"
     closes_at_sim_time_ms: int | None = None
+    opened_at_server_monotonic: float | None = None
+    deadline_at_server_monotonic: float | None = None
     lifecycle_state: DecisionWindowState = DecisionWindowState.OPEN
     close_reason: str | None = None
     submissions: dict[str, SideActionSubmission] = field(default_factory=dict)
@@ -61,6 +63,8 @@ class DecisionWindow:
         red_valid_actions: Sequence[ValidAction],
         blue_valid_actions: Sequence[ValidAction],
         deadline_policy: str = "synchronous",
+        opened_at_server_monotonic: float | None = None,
+        deadline_at_server_monotonic: float | None = None,
     ) -> "DecisionWindow":
         return cls(
             session_id=str(session_id),
@@ -71,6 +75,8 @@ class DecisionWindow:
                 "blue": _freeze_side_actions("blue", blue_valid_actions),
             }),
             deadline_policy=str(deadline_policy),
+            opened_at_server_monotonic=opened_at_server_monotonic,
+            deadline_at_server_monotonic=deadline_at_server_monotonic,
         )
 
     def submit(
@@ -140,8 +146,20 @@ class DecisionWindow:
         self.close_reason = str(reason)
         self.lifecycle_state = DecisionWindowState.CLOSED
 
+    def expire(self) -> None:
+        if self.lifecycle_state is not DecisionWindowState.READY:
+            raise CommandGatewayError(
+                "decision_window_not_ready",
+                f"window {self.decision_window_index} is not ready for expiry",
+            )
+        self.close(reason="deadline")
+        self.lifecycle_state = DecisionWindowState.EXPIRED
+
     def mark_advancing(self) -> None:
-        if self.lifecycle_state is not DecisionWindowState.CLOSED:
+        if self.lifecycle_state not in {
+            DecisionWindowState.CLOSED,
+            DecisionWindowState.EXPIRED,
+        }:
             raise RuntimeError("decision_window_not_closed")
         self.lifecycle_state = DecisionWindowState.ADVANCING
 

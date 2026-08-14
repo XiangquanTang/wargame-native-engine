@@ -222,6 +222,8 @@ class SessionManager:
         actions: Sequence[EngineAction],
         *,
         delta_time_seconds: int | float,
+        decision_window_index: int | None = None,
+        frame_interval_offset: int | None = None,
     ) -> SessionDescriptor:
         managed = self._managed(session_id)
         with managed.lock:
@@ -251,6 +253,11 @@ class SessionManager:
             if step_record is None:
                 managed.failed = "missing_committed_step_record"
                 raise RuntimeError("environment did not expose committed step record")
+            step_record = json_clone(step_record)
+            if decision_window_index is not None:
+                step_record["decision_window_index"] = decision_window_index
+            if frame_interval_offset is not None:
+                step_record["frame_interval_offset"] = frame_interval_offset
             if managed.recorder is not None:
                 try:
                     managed.recorder.record_step(
@@ -277,6 +284,7 @@ class SessionManager:
         *,
         truncated: bool = False,
         overwrite: bool = False,
+        control_audit_payload: bytes | None = None,
     ) -> SessionPublication:
         managed = self._managed(session_id)
         target = Path(output_dir)
@@ -317,6 +325,11 @@ class SessionManager:
                     staging / "frame_analysis.native.jsonl",
                     analysis_payload,
                 )
+                if control_audit_payload is not None:
+                    _write_bytes(
+                        staging / "control_audit.native.jsonl",
+                        bytes(control_audit_payload),
+                    )
                 _publish_directory(staging, target, overwrite=overwrite)
             finally:
                 _remove_path(staging)
@@ -329,6 +342,11 @@ class SessionManager:
                 step_count=int(manifest["step_count"]),
                 terminal=terminal,
                 truncated=bool(outcome.get("truncated", False)),
+                control_audit_path=(
+                    None
+                    if control_audit_payload is None
+                    else target / "control_audit.native.jsonl"
+                ),
             )
 
     def close_session(self, session_id: str) -> None:

@@ -365,11 +365,14 @@ def replay_source_archive(scenario: NativeScenario, source: str | Path, *,
             environment.session.close()
             raise RuntimeError("strict replay did not produce a step record")
         if strict:
-            for key in (
+            comparable_keys = [
                 "tick_before", "tick_after", "delta_time_ms",
                 "ordered_actions", "action_sequences",
                 "ordered_action_input", "expected_state_hash",
-            ):
+            ]
+            if "sim_time_ms" in record:
+                comparable_keys.append("sim_time_ms")
+            for key in comparable_keys:
                 if json_clone(record.get(key)) != json_clone(actual_record.get(key)):
                     environment.session.close()
                     raise ValueError(
@@ -419,11 +422,29 @@ def _validate_source_step_record(record: Mapping[str, Any], offset: int) -> None
         raise ValueError(f"source replay step {offset} must be an object")
     if _exact_int(record.get("step_index"), "step_index", minimum=1) != offset:
         raise ValueError(f"source replay step_index mismatch at step {offset}")
+    if "frame_index" in record and _exact_int(
+        record.get("frame_index"), "frame_index", minimum=1
+    ) != offset:
+        raise ValueError(f"source replay frame_index mismatch at step {offset}")
     before = _exact_int(record.get("tick_before"), "tick_before", minimum=0)
     after = _exact_int(record.get("tick_after"), "tick_after", minimum=0)
     if after < before:
         raise ValueError(f"source replay tick order mismatch at step {offset}")
     _exact_int(record.get("delta_time_ms"), "delta_time_ms", minimum=1)
+    if "sim_time_ms" in record:
+        _exact_int(record.get("sim_time_ms"), "sim_time_ms", minimum=1)
+    if "decision_window_index" in record:
+        _exact_int(
+            record.get("decision_window_index"),
+            "decision_window_index",
+            minimum=0,
+        )
+    if "frame_interval_offset" in record:
+        _exact_int(
+            record.get("frame_interval_offset"),
+            "frame_interval_offset",
+            minimum=0,
+        )
     actions = record.get("ordered_actions")
     sequences = record.get("action_sequences")
     if not isinstance(actions, list) or not isinstance(sequences, list):

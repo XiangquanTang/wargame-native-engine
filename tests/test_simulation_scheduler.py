@@ -112,6 +112,14 @@ def test_ten_second_decision_generates_ten_one_second_fact_frames(
     assert archive.steps[0]["ordered_actions"] == [blue_move["action"]]
     assert all(step["ordered_actions"] == [] for step in archive.steps[1:])
     assert all(step["delta_time_ms"] == 1_000 for step in archive.steps)
+    assert [step["frame_index"] for step in archive.steps] == list(range(1, 11))
+    assert [step["decision_window_index"] for step in archive.steps] == [0] * 10
+    assert [step["frame_interval_offset"] for step in archive.steps] == list(
+        range(10)
+    )
+    assert [step["sim_time_ms"] for step in archive.steps] == list(
+        range(1_000, 10_001, 1_000)
+    )
 
 
 def test_scheduler_stops_immediately_when_terminal_occurs_mid_window() -> None:
@@ -131,9 +139,19 @@ def test_scheduler_stops_immediately_when_terminal_occurs_mid_window() -> None:
                 sim_time_ms=self.sim_time,
             )
 
-        def advance(self, session_id, actions, *, delta_time_seconds):
+        def advance(
+            self,
+            session_id,
+            actions,
+            *,
+            delta_time_seconds,
+            decision_window_index,
+            frame_interval_offset,
+        ):
             del session_id
-            self.calls.append(tuple(actions))
+            self.calls.append((
+                tuple(actions), decision_window_index, frame_interval_offset,
+            ))
             self.frame += 1
             self.sim_time += int(delta_time_seconds * 1000)
             return self.descriptor("session")
@@ -152,7 +170,7 @@ def test_scheduler_stops_immediately_when_terminal_occurs_mid_window() -> None:
     assert result.sim_time_before_ms == 2_000
     assert result.sim_time_after_ms == 5_000
     assert result.terminal is True
-    assert manager.calls == [(), (), ()]
+    assert manager.calls == [((), 3, 0), ((), 3, 1), ((), 3, 2)]
 
 
 @pytest.mark.parametrize(

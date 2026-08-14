@@ -70,6 +70,8 @@ class SimulationScheduler:
                 session_id,
                 tuple(ordered_actions) if offset == 0 else (),
                 delta_time_seconds=seconds,
+                decision_window_index=decision_window_index,
+                frame_interval_offset=offset,
             )
             generated += 1
             if current.terminal:

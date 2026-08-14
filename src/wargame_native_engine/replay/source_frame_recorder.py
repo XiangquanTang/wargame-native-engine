@@ -69,6 +69,9 @@ class SourceFrameRecorder:
         record = json_clone(step_record)
         expected_index = len(self._frame_hashes)
         record["step_index"] = expected_index
+        record["frame_index"] = expected_index
+        record.setdefault("decision_window_index", expected_index - 1)
+        record.setdefault("frame_interval_offset", 0)
         required = {"delta_time_ms", "ordered_actions", "expected_state_hash"}
         missing = sorted(required - set(record))
         if missing:

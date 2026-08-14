@@ -1,6 +1,15 @@
 """Local identity-bound session and command orchestration."""
 
 from wargame_native_engine.gateway.command_gateway import CommandGateway
+from wargame_native_engine.gateway.control_audit import (
+    CONTROL_AUDIT_NAME,
+    ControlAuditLog,
+)
+from wargame_native_engine.gateway.deadline import (
+    DeadlineMode,
+    MonotonicClock,
+    SystemMonotonicClock,
+)
 from wargame_native_engine.gateway.decision_window import (
     DecisionWindow,
     DecisionWindowState,
@@ -27,6 +36,9 @@ __all__ = [
     "CommandGatewayError",
     "CommandResult",
     "ControllerView",
+    "CONTROL_AUDIT_NAME",
+    "ControlAuditLog",
+    "DeadlineMode",
     "DecisionWindow",
     "DecisionWindowState",
     "DecisionWindowView",
@@ -37,5 +49,7 @@ __all__ = [
     "SimulationSchedule",
     "SimulationScheduler",
     "SideActionSubmission",
+    "MonotonicClock",
+    "SystemMonotonicClock",
     "canonical_action_order_key",
 ]

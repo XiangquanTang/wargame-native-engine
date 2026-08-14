@@ -325,6 +325,34 @@ def test_repeat_package_for_same_run_is_byte_stable(acceptance, tmp_path: Path) 
     assert first == second
 
 
+def test_strict_replay_rejects_self_consistent_sim_time_tampering(
+    acceptance,
+    tmp_path: Path,
+) -> None:
+    root, _ = acceptance
+    output = tmp_path / "tampered-sim-time.zip"
+
+    def mutate(values):
+        steps = [
+            json.loads(line)
+            for line in values["steps.jsonl"].decode().splitlines()
+        ]
+        assert "sim_time_ms" in steps[0]
+        steps[0]["sim_time_ms"] += 1
+        values["steps.jsonl"] = (
+            "\n".join(canonical_source_json(step) for step in steps) + "\n"
+        ).encode()
+
+    _rewrite_native_zip(root / "replay.zip", output, mutate)
+    SourceReplayArchiveImporter().import_path(output)
+    with pytest.raises(ValueError, match="sim_time_ms mismatch at step 1"):
+        replay_source_archive(
+            load_scenario("examples/source_movement_scenario.json"),
+            output,
+            strict=True,
+        )
+
+
 def _minimal_green() -> dict:
     return {
         "scenario_id": "minimal", "terrain_id": 1,

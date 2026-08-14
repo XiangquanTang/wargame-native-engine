@@ -96,6 +96,7 @@ class SourceCompatibleEnvironment:
             "tick_before": int(result.tick_before),
             "tick_after": int(result.tick_after),
             "delta_time_ms": int(result.delta_time_ms),
+            "sim_time_ms": int(world.elapsed_time_ms),
             "ordered_actions": [item.to_dict() for item in result.actions],
             "action_sequences": list(result.action_sequences),
             "ordered_action_input": bool(result.ordered_action_input),

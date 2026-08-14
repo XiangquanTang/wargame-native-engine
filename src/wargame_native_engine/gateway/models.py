@@ -44,6 +44,8 @@ class DecisionWindowView:
     decision_window_index: int
     opened_at_sim_time_ms: int
     closes_at_sim_time_ms: int | None
+    opened_at_server_monotonic: float | None
+    deadline_at_server_monotonic: float | None
     deadline_policy: str
     lifecycle_state: str
     close_reason: str | None
@@ -57,6 +59,8 @@ class DecisionWindowView:
             "decision_window_index": self.decision_window_index,
             "opened_at_sim_time_ms": self.opened_at_sim_time_ms,
             "closes_at_sim_time_ms": self.closes_at_sim_time_ms,
+            "opened_at_server_monotonic": self.opened_at_server_monotonic,
+            "deadline_at_server_monotonic": self.deadline_at_server_monotonic,
             "deadline_policy": self.deadline_policy,
             "lifecycle_state": self.lifecycle_state,
             "close_reason": self.close_reason,
@@ -129,3 +133,4 @@ class SessionPublication:
     step_count: int
     terminal: bool
     truncated: bool
+    control_audit_path: Path | None = None

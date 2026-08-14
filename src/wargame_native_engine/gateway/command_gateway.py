@@ -6,6 +6,13 @@ from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from threading import RLock
 
+from wargame_native_engine.gateway.control_audit import ControlAuditLog
+from wargame_native_engine.gateway.deadline import (
+    DeadlineMode,
+    MonotonicClock,
+    SystemMonotonicClock,
+    require_deadline_seconds,
+)
 from wargame_native_engine.gateway.models import (
     CommandGatewayError,
     CommandResult,
@@ -30,6 +37,7 @@ from wargame_native_engine.session.scheduler import (
 class _GatewaySession:
     bindings: dict[str, str]
     window: DecisionWindow
+    audit: ControlAuditLog
     last_advance: SimulationAdvance | None = None
     requests: dict[str, tuple[tuple[object, ...], CommandResult]] = field(
         default_factory=dict
@@ -47,6 +55,9 @@ class CommandGateway:
         delta_time_seconds: int | float = 20,
         decision_interval_ms: int | None = None,
         frame_interval_ms: int | None = None,
+        deadline_mode: DeadlineMode | str = DeadlineMode.SYNCHRONOUS,
+        deadline_seconds: int | float | None = None,
+        clock: MonotonicClock | None = None,
     ) -> None:
         if not isinstance(manager, SessionManager):
             raise TypeError("manager must be a SessionManager")
@@ -65,6 +76,19 @@ class CommandGateway:
         self.schedule = SimulationSchedule(decision_ms, frame_ms)
         self.scheduler = SimulationScheduler(manager, self.schedule)
         self.delta_time_seconds = delta_time_seconds
+        try:
+            self.deadline_mode = DeadlineMode(deadline_mode)
+        except ValueError as exc:
+            raise ValueError(f"unsupported deadline_mode: {deadline_mode!r}") from exc
+        if self.deadline_mode is DeadlineMode.SYNCHRONOUS:
+            if deadline_seconds is not None:
+                raise ValueError(
+                    "deadline_seconds is only valid for server_monotonic mode"
+                )
+            self.deadline_seconds = None
+        else:
+            self.deadline_seconds = require_deadline_seconds(deadline_seconds)
+        self.clock = clock or SystemMonotonicClock()
         self._sessions: dict[str, _GatewaySession] = {}
         self._lock = RLock()
 
@@ -84,10 +108,14 @@ class CommandGateway:
                 "RED and BLUE require distinct controller identities",
             )
         descriptor = self.manager.create_session(seed=seed, record=record)
+        window = self._open_window(descriptor.session_id, 0)
+        audit = ControlAuditLog(descriptor.session_id)
+        _record_window_open(audit, window)
         with self._lock:
             self._sessions[descriptor.session_id] = _GatewaySession(
                 {"red": red, "blue": blue},
-                self._open_window(descriptor.session_id, 0),
+                window,
+                audit,
             )
         return descriptor
 
@@ -139,16 +167,45 @@ class CommandGateway:
         with gateway_session.lock:
             side = _bound_side(gateway_session, controller_id)
             action_ids = tuple(ordered_action_ids)
+            received_at = self._server_now()
             signature = (
                 str(controller_id), expected_window, action_ids,
             )
             cached = gateway_session.requests.get(request)
             if cached is not None:
                 if cached[0] != signature:
+                    gateway_session.audit.append(
+                        "submission_rejected",
+                        decision_window_index=expected_window,
+                        controller_id=str(controller_id),
+                        side=side,
+                        request_id=request,
+                        expected_window=expected_window,
+                        ordered_action_ids=action_ids,
+                        server_received_at=received_at,
+                        accepted=False,
+                        reject_reason="request_id_conflict",
+                        timeout=False,
+                        retry=True,
+                    )
                     raise CommandGatewayError(
                         "request_id_conflict",
                         f"request_id {request!r} was reused with another command",
                     )
+                gateway_session.audit.append(
+                    "submission_retry",
+                    decision_window_index=expected_window,
+                    controller_id=str(controller_id),
+                    side=side,
+                    request_id=request,
+                    expected_window=expected_window,
+                    ordered_action_ids=action_ids,
+                    server_received_at=received_at,
+                    accepted=True,
+                    reject_reason=None,
+                    timeout=False,
+                    retry=True,
+                )
                 return deepcopy(cached[1])
 
             window = gateway_session.window
@@ -167,10 +224,44 @@ class CommandGateway:
                 raise CommandGatewayError(
                     "session_finalized", "published session cannot advance"
                 )
+            if self._deadline_reached(window, received_at):
+                self._expire_and_advance(gateway_session)
+                gateway_session.audit.append(
+                    "submission_rejected",
+                    decision_window_index=expected_window,
+                    controller_id=str(controller_id),
+                    side=side,
+                    request_id=request,
+                    expected_window=expected_window,
+                    ordered_action_ids=action_ids,
+                    server_received_at=received_at,
+                    accepted=False,
+                    reject_reason="decision_window_expired",
+                    timeout=True,
+                    retry=False,
+                )
+                raise CommandGatewayError(
+                    "decision_window_expired",
+                    f"window {expected_window} deadline has elapsed",
+                )
             window.submit(
                 side=side,
                 request_id=request,
                 ordered_action_ids=action_ids,
+            )
+            gateway_session.audit.append(
+                "submission_accepted",
+                decision_window_index=expected_window,
+                controller_id=str(controller_id),
+                side=side,
+                request_id=request,
+                expected_window=expected_window,
+                ordered_action_ids=action_ids,
+                server_received_at=received_at,
+                accepted=True,
+                reject_reason=None,
+                timeout=False,
+                retry=False,
             )
             pending = tuple(
                 item.upper() for item in ("red", "blue")
@@ -179,18 +270,7 @@ class CommandGateway:
             advanced = not pending
             if advanced:
                 window.close()
-                window.mark_advancing()
-                gateway_session.last_advance = self.scheduler.advance_window(
-                    session_id,
-                    decision_window_index=window.decision_window_index,
-                    ordered_actions=window.merged_action_batch,
-                )
-                window.mark_completed()
-                descriptor = self.manager.descriptor(session_id)
-                if not descriptor.terminal:
-                    gateway_session.window = self._open_window(
-                        session_id, window.decision_window_index + 1,
-                    )
+                self._advance_closed_window(gateway_session)
             active_window = gateway_session.window
             result = CommandResult(
                 request_id=request,
@@ -223,11 +303,28 @@ class CommandGateway:
                     "pending_joint_action",
                     "cannot publish while one perspective is pending",
                 )
+            gateway_session.audit.append(
+                "publication_requested",
+                decision_window_index=(
+                    gateway_session.window.decision_window_index
+                ),
+                controller_id=str(controller_id),
+                side=_bound_side(gateway_session, controller_id),
+                request_id=None,
+                expected_window=None,
+                ordered_action_ids=[],
+                server_received_at=self._server_now(),
+                accepted=True,
+                reject_reason=None,
+                timeout=False,
+                retry=False,
+            )
             return self.manager.publish_session(
                 session_id,
                 output_dir,
                 truncated=truncated,
                 overwrite=overwrite,
+                control_audit_payload=gateway_session.audit.jsonl_bytes(),
             )
 
     def close_session(self, session_id: str) -> None:
@@ -254,16 +351,135 @@ class CommandGateway:
             side = _bound_side(gateway_session, controller_id)
             return self._window_view(gateway_session.window, side)
 
+    def control_audit(
+        self, session_id: str, controller_id: str,
+    ) -> tuple[object, ...]:
+        gateway_session = self._gateway_session(session_id)
+        with gateway_session.lock:
+            _bound_side(gateway_session, controller_id)
+            return tuple(gateway_session.audit.records)
+
+    def expire_window(self, session_id: str) -> SimulationAdvance:
+        """Close a wall-deadline window and substitute empty missing batches."""
+
+        gateway_session = self._gateway_session(session_id)
+        with gateway_session.lock:
+            if self.deadline_mode is not DeadlineMode.SERVER_MONOTONIC:
+                raise CommandGatewayError(
+                    "deadline_not_enabled",
+                    "synchronous windows require explicit side submissions",
+                )
+            now = self._server_now()
+            if not self._deadline_reached(gateway_session.window, now):
+                raise CommandGatewayError(
+                    "deadline_not_reached", "decision window is still open"
+                )
+            return self._expire_and_advance(gateway_session)
+
     def _open_window(
         self, session_id: str, decision_window_index: int,
     ) -> DecisionWindow:
+        opened_at = self._server_now()
+        deadline_at = (
+            None
+            if opened_at is None
+            else opened_at + float(self.deadline_seconds)
+        )
         return DecisionWindow.open(
             session_id=session_id,
             decision_window_index=decision_window_index,
             opened_at_sim_time_ms=self.manager.sim_time_ms(session_id),
             red_valid_actions=self.manager.valid_actions(session_id, "red"),
             blue_valid_actions=self.manager.valid_actions(session_id, "blue"),
+            deadline_policy=self.deadline_mode.value,
+            opened_at_server_monotonic=opened_at,
+            deadline_at_server_monotonic=deadline_at,
         )
+
+    def _advance_closed_window(
+        self, gateway_session: _GatewaySession,
+    ) -> SimulationAdvance:
+        window = gateway_session.window
+        gateway_session.audit.append(
+            "window_closed",
+            decision_window_index=window.decision_window_index,
+            controller_id=None,
+            side=None,
+            request_id=None,
+            expected_window=window.decision_window_index,
+            ordered_action_ids={
+                side: list(submission.ordered_action_ids)
+                for side, submission in sorted(window.submissions.items())
+            },
+            merged_action_ids=[
+                action.action_id for action in window.merged_action_batch
+            ],
+            server_received_at=self._server_now(),
+            accepted=True,
+            reject_reason=None,
+            timeout=window.close_reason == "deadline",
+            retry=False,
+            close_reason=window.close_reason,
+        )
+        window.mark_advancing()
+        result = self.scheduler.advance_window(
+            window.session_id,
+            decision_window_index=window.decision_window_index,
+            ordered_actions=window.merged_action_batch,
+        )
+        gateway_session.last_advance = result
+        window.mark_completed()
+        descriptor = self.manager.descriptor(window.session_id)
+        if not descriptor.terminal:
+            gateway_session.window = self._open_window(
+                window.session_id, window.decision_window_index + 1,
+            )
+            _record_window_open(gateway_session.audit, gateway_session.window)
+        return result
+
+    def _expire_and_advance(
+        self, gateway_session: _GatewaySession,
+    ) -> SimulationAdvance:
+        window = gateway_session.window
+        for side in ("red", "blue"):
+            if side in window.submissions:
+                continue
+            request_id = f"timeout:{window.decision_window_index}:{side}"
+            window.submit(
+                side=side,
+                request_id=request_id,
+                ordered_action_ids=(),
+            )
+            gateway_session.audit.append(
+                "submission_timeout",
+                decision_window_index=window.decision_window_index,
+                controller_id=gateway_session.bindings[side],
+                side=side,
+                request_id=request_id,
+                expected_window=window.decision_window_index,
+                ordered_action_ids=[],
+                server_received_at=self._server_now(),
+                accepted=True,
+                reject_reason=None,
+                timeout=True,
+                retry=False,
+            )
+        window.expire()
+        return self._advance_closed_window(gateway_session)
+
+    def _server_now(self) -> float | None:
+        if self.deadline_mode is DeadlineMode.SYNCHRONOUS:
+            return None
+        return float(self.clock.now())
+
+    def _deadline_reached(
+        self, window: DecisionWindow, now: float | None,
+    ) -> bool:
+        if self.deadline_mode is DeadlineMode.SYNCHRONOUS:
+            return False
+        if now is None or window.deadline_at_server_monotonic is None:
+            raise RuntimeError("wall deadline window lacks server clock evidence")
+        return now >= window.deadline_at_server_monotonic
 
     def _controller_view(
         self, session_id: str, side: str, window: DecisionWindow,
@@ -288,6 +504,8 @@ class CommandGateway:
             decision_window_index=window.decision_window_index,
             opened_at_sim_time_ms=window.opened_at_sim_time_ms,
             closes_at_sim_time_ms=window.closes_at_sim_time_ms,
+            opened_at_server_monotonic=window.opened_at_server_monotonic,
+            deadline_at_server_monotonic=window.deadline_at_server_monotonic,
             deadline_policy=window.deadline_policy,
             lifecycle_state=window.lifecycle_state.value,
             close_reason=window.close_reason,
@@ -328,3 +546,23 @@ def _seconds_to_milliseconds(value: int | float) -> int:
             "delta_time_seconds must resolve to positive integer milliseconds"
         )
     return int(milliseconds)
+
+
+def _record_window_open(audit: ControlAuditLog, window: DecisionWindow) -> None:
+    audit.append(
+        "window_opened",
+        decision_window_index=window.decision_window_index,
+        controller_id=None,
+        side=None,
+        request_id=None,
+        expected_window=window.decision_window_index,
+        ordered_action_ids=[],
+        server_received_at=window.opened_at_server_monotonic,
+        accepted=True,
+        reject_reason=None,
+        timeout=False,
+        retry=False,
+        opened_at_sim_time_ms=window.opened_at_sim_time_ms,
+        deadline_policy=window.deadline_policy,
+        deadline_at_server_monotonic=window.deadline_at_server_monotonic,
+    )
