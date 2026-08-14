@@ -497,6 +497,46 @@ def test_observation_uses_old_hex_until_center_then_refreshes() -> None:
     assert observer.raw_attributes["see_enemy_bop_ids"] == [2]
 
 
+def test_source_valid_actions_cache_is_detached_rng_neutral_and_state_keyed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = _engine()
+    calls = 0
+    original = engine._source_valid_actions
+
+    def counted(side: str):
+        nonlocal calls
+        calls += 1
+        return original(side)
+
+    monkeypatch.setattr(engine, "_source_valid_actions", counted)
+    rng_before = engine.snapshot()["rng"]
+    first = engine.valid_actions("red")
+    second = engine.valid_actions("red")
+    assert calls == 1
+    assert tuple(item.to_dict() for item in first) == tuple(
+        item.to_dict() for item in second
+    )
+    assert engine.snapshot()["rng"] == rng_before
+
+    move = next(
+        item for item in first if item.action.action_type is ActionType.MOVE
+    )
+    move.action.parameters["path"].append(999)
+    third = engine.valid_actions("red")
+    assert calls == 1
+    assert all(
+        999 not in item.action.parameters.get("path", ()) for item in third
+    )
+    engine.valid_actions("blue")
+    engine.valid_actions("red")
+    assert calls == 2
+
+    engine._require_world().operators[1].weapon_locked = True
+    engine.valid_actions("red")
+    assert calls == 3
+
+
 def _source_template(document: dict):
     units = []
     for item in document["operators"]:

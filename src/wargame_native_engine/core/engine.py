@@ -77,6 +77,10 @@ class NativeEngine:
         self._source_policy: SourceMovementPolicy | None = None
         self._source_map: SourceHexMap | None = None
         self._source_visibility_map: HexMapProfile | None = None
+        self._source_valid_actions_cache: dict[
+            str, tuple[Mapping[str, Any], ...]
+        ] = {}
+        self._source_valid_actions_state_hash: str | None = None
         self._movement: MovementRuntime | None = None
         self._route_planner: DeterministicRoutePlanner | None = None
         self._action_router: ActionRouter | None = None
@@ -120,6 +124,8 @@ class NativeEngine:
                   "ruleset_version": self.ruleset.ruleset_version,
                   "ruleset_hash": self.ruleset.content_hash},
         ),)
+        self._source_valid_actions_cache.clear()
+        self._source_valid_actions_state_hash = None
         if self._source_policy is not None:
             self._refresh_source_observation()
         return WorldState.from_dict(self._world.to_dict())
@@ -153,7 +159,24 @@ class NativeEngine:
         if world.done:
             return ()
         if self._source_policy is not None:
-            return self._source_valid_actions(side)
+            state_hash = canonical_hash(world.to_dict())
+            if state_hash != self._source_valid_actions_state_hash:
+                self._source_valid_actions_cache.clear()
+                self._source_valid_actions_state_hash = state_hash
+            records = self._source_valid_actions_cache.get(side)
+            if records is None:
+                records = tuple(
+                    item.to_dict() for item in self._source_valid_actions(side)
+                )
+                self._source_valid_actions_cache[side] = records
+            return tuple(
+                ValidAction(
+                    EngineAction.from_dict(item["action"]),
+                    int(item["priority"]),
+                    str(item["source"]),
+                )
+                for item in records
+            )
         values: list[ValidAction] = []
         if world.stage is Stage.DEPLOYMENT:
             for operator in self._friendly(side):
@@ -867,6 +890,8 @@ class NativeEngine:
         self._error_counts = {str(key): int(item)
                               for key, item in snapshot["error_counts"].items()}
         self._last_events = ()
+        self._source_valid_actions_cache.clear()
+        self._source_valid_actions_state_hash = None
         if self._source_policy is not None:
             self._refresh_source_observation()
         return WorldState.from_dict(self._world.to_dict())
@@ -1002,10 +1027,20 @@ class NativeEngine:
                         values.append(ValidAction(
                             action, ACTION_PRIORITY[action.action_type],
                             "source_action_router"))
+            visible_targets = {
+                int(value)
+                for value in operator.raw_attributes.get(
+                    "see_enemy_bop_ids", ()
+                )
+            }
             for weapon_id in sorted(operator.weapon_ids):
                 for target in sorted(world.operators.values(),
                                      key=lambda item: item.operator_id):
-                    if target.side == side or not target.alive:
+                    if (
+                        target.side == side
+                        or not target.alive
+                        or target.operator_id not in visible_targets
+                    ):
                         continue
                     action = EngineAction(
                         side, operator.operator_id, ActionType.SHOOT,
@@ -1046,6 +1081,8 @@ class NativeEngine:
         if self._source_map is None or self._source_visibility_map is None:
             return
         world = self._require_world()
+        self._source_valid_actions_cache.clear()
+        self._source_valid_actions_state_hash = None
         for observer in sorted(world.operators.values(),
                                key=lambda item: item.operator_id):
             visible: list[int] = []
