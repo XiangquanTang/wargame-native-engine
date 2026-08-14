@@ -25,6 +25,7 @@ from wargame_native_engine.gateway.models import (
     SessionPublication,
 )
 from wargame_native_engine.gateway.session_manager import SessionManager
+from wargame_native_engine.operations.proposals import ActionProposal
 from wargame_native_engine.session.scheduler import (
     SimulationAdvance,
     SimulationSchedule,
@@ -44,6 +45,7 @@ __all__ = [
     "DecisionWindowView",
     "SessionDescriptor",
     "SessionManager",
+    "ActionProposal",
     "SessionPublication",
     "SimulationAdvance",
     "SimulationSchedule",

@@ -6,6 +6,12 @@ from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from threading import RLock
 
+from wargame_native_engine.core.action import (
+    ACTION_PRIORITY,
+    ActionType,
+    EngineAction,
+    ValidAction,
+)
 from wargame_native_engine.gateway.control_audit import ControlAuditLog
 from wargame_native_engine.gateway.deadline import (
     DeadlineMode,
@@ -26,6 +32,12 @@ from wargame_native_engine.gateway.decision_window import (
     DecisionWindowState,
 )
 from wargame_native_engine.gateway.session_manager import SessionManager
+from wargame_native_engine.movement.models import MovementMode
+from wargame_native_engine.operations.proposals import (
+    ActionProposal,
+    ActionProposalRegistry,
+    OperationError,
+)
 from wargame_native_engine.session.scheduler import (
     SimulationAdvance,
     SimulationSchedule,
@@ -43,6 +55,7 @@ class _GatewaySession:
         default_factory=dict
     )
     lock: RLock = field(default_factory=RLock)
+    proposals: ActionProposalRegistry | None = None
 
 
 class CommandGateway:
@@ -112,12 +125,140 @@ class CommandGateway:
         audit = ControlAuditLog(descriptor.session_id)
         _record_window_open(audit, window)
         with self._lock:
-            self._sessions[descriptor.session_id] = _GatewaySession(
+            gateway_session = _GatewaySession(
                 {"red": red, "blue": blue},
                 window,
                 audit,
             )
+            gateway_session.proposals = ActionProposalRegistry(
+                descriptor.session_id, window.decision_window_index
+            )
+            self._sessions[descriptor.session_id] = gateway_session
         return descriptor
+
+    def plan_move(
+        self,
+        session_id: str,
+        controller_id: str,
+        *,
+        request_id: str,
+        expected_window: int,
+        unit_id: int,
+        destination_hex: int,
+        movement_mode: str = "NORMAL",
+    ) -> ActionProposal:
+        """Create one immutable destination proposal in the active window."""
+
+        if not isinstance(request_id, str) or not request_id.strip():
+            raise CommandGatewayError(
+                "invalid_request_id", "request_id must be a non-empty string"
+            )
+        if type(expected_window) is not int or expected_window < 0:
+            raise CommandGatewayError(
+                "invalid_expected_step", "expected_window must be non-negative"
+            )
+        if type(unit_id) is not int or unit_id < 0:
+            raise CommandGatewayError("invalid_unit_id", "unit_id must be non-negative")
+        if type(destination_hex) is not int or destination_hex < 0:
+            raise CommandGatewayError(
+                "invalid_destination", "destination_hex must be non-negative"
+            )
+        try:
+            mode = MovementMode(str(movement_mode).upper())
+        except ValueError as exc:
+            raise CommandGatewayError(
+                "invalid_movement_mode", str(movement_mode)
+            ) from exc
+        gateway_session = self._gateway_session(session_id)
+        with gateway_session.lock:
+            side = _bound_side(gateway_session, controller_id)
+            window = gateway_session.window
+            if window.decision_window_index != expected_window:
+                raise CommandGatewayError(
+                    "stale_expected_step",
+                    f"expected {expected_window}, current {window.decision_window_index}",
+                )
+            if window.lifecycle_state is not DecisionWindowState.OPEN:
+                raise CommandGatewayError(
+                    "decision_window_closed", window.lifecycle_state.value
+                )
+            signature = (
+                str(controller_id), expected_window, unit_id,
+                destination_hex, mode.value,
+            )
+            registry = gateway_session.proposals
+            if registry is None:
+                raise RuntimeError("active window lacks proposal registry")
+            try:
+                cached = registry.cached(request_id, signature)
+            except OperationError as exc:
+                raise CommandGatewayError(exc.code, exc.message) from exc
+            if cached is not None:
+                return cached
+            try:
+                route, state_hash = self.manager.plan_move(
+                    session_id, side, unit_id, destination_hex, mode
+                )
+            except (TypeError, ValueError) as exc:
+                raise CommandGatewayError(
+                    "move_plan_rejected", str(exc)
+                ) from exc
+            action = None
+            valid = None
+            if route.reachable:
+                action = EngineAction(
+                    side,
+                    unit_id,
+                    ActionType.MOVE,
+                    parameters={
+                        "path": list(route.ordered_path),
+                        "movement_mode": mode.value,
+                    },
+                )
+                valid = ValidAction(
+                    action,
+                    ACTION_PRIORITY[ActionType.MOVE],
+                    "operation_move_proposal",
+                )
+            proposal = ActionProposal.from_route(
+                session_id=session_id,
+                decision_window_index=expected_window,
+                side=side,
+                route=route,
+                state_hash=state_hash,
+                action=action,
+            )
+            try:
+                registered = registry.register(
+                    request_id=request_id,
+                    signature=signature,
+                    proposal=proposal,
+                    valid_action=valid,
+                )
+            except OperationError as exc:
+                raise CommandGatewayError(exc.code, exc.message) from exc
+            if valid is not None:
+                window.authorize_proposal(side, valid)
+            return registered
+
+    def proposal(
+        self,
+        session_id: str,
+        controller_id: str,
+        proposal_id: str,
+    ) -> ActionProposal:
+        gateway_session = self._gateway_session(session_id)
+        with gateway_session.lock:
+            side = _bound_side(gateway_session, controller_id)
+            registry = gateway_session.proposals
+            if registry is None:
+                raise CommandGatewayError(
+                    "proposal_expired", "active window has no matching proposal"
+                )
+            try:
+                return registry.get(proposal_id, side=side)
+            except OperationError as exc:
+                raise CommandGatewayError(exc.code, exc.message) from exc
 
     def view(self, session_id: str, controller_id: str) -> ControllerView:
         gateway_session = self._gateway_session(session_id)
@@ -487,6 +628,10 @@ class CommandGateway:
         if not descriptor.terminal:
             gateway_session.window = self._open_window(
                 window.session_id, window.decision_window_index + 1,
+            )
+            gateway_session.proposals = ActionProposalRegistry(
+                window.session_id,
+                gateway_session.window.decision_window_index,
             )
             _record_window_open(gateway_session.audit, gateway_session.window)
         return result

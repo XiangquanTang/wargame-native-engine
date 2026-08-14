@@ -172,6 +172,50 @@ class DecisionWindow:
         snapshot = self.valid_action_snapshots[side]
         return tuple(deepcopy(value.to_dict()) for value in snapshot.values())
 
+    def authorize_proposal(self, side: str, value: ValidAction) -> None:
+        """Extend the frozen ID map with one server-generated proposal.
+
+        Only a capability already present at window-open time may be extended.
+        For destination MOVE proposals this means the actor had at least one
+        Native MOVE capability in the original frozen action set.
+        """
+
+        if self.lifecycle_state is not DecisionWindowState.OPEN:
+            raise CommandGatewayError(
+                "decision_window_closed", "cannot authorize a closed proposal"
+            )
+        detached = deepcopy(value)
+        action = detached.action
+        if action.side != side:
+            raise CommandGatewayError(
+                "action_side_mismatch", "proposal belongs to another side"
+            )
+        if action.actor_id is None:
+            raise CommandGatewayError(
+                "proposal_actor_required", "proposal requires an actor"
+            )
+        snapshot = self.valid_action_snapshots[side]
+        capability = any(
+            item.action.actor_id == action.actor_id
+            and item.action.action_type is action.action_type
+            for item in snapshot.values()
+        )
+        if not capability:
+            raise CommandGatewayError(
+                "proposal_capability_not_frozen",
+                f"actor {action.actor_id} lacks frozen {action.action_type.value}",
+            )
+        existing = snapshot.get(detached.action_id)
+        if existing is not None and existing != detached:
+            raise CommandGatewayError(
+                "proposal_action_id_conflict", detached.action_id
+            )
+        updated = dict(snapshot)
+        updated[detached.action_id] = detached
+        outer = dict(self.valid_action_snapshots)
+        outer[side] = MappingProxyType(updated)
+        self.valid_action_snapshots = MappingProxyType(outer)
+
 
 def canonical_action_order_key(action: EngineAction) -> tuple[object, ...]:
     """Order a joint batch independently of submission arrival order.

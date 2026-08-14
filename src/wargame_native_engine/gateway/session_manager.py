@@ -29,7 +29,8 @@ from wargame_native_engine.gateway.models import (
     SessionDescriptor,
     SessionPublication,
 )
-from wargame_native_engine.io.serialization import json_clone
+from wargame_native_engine.io.serialization import canonical_hash, json_clone
+from wargame_native_engine.movement.models import MovementMode, RoutePlan
 from wargame_native_engine.replay import SourceFrameRecorder
 from wargame_native_engine.session.source_environment import (
     SourceCompatibleEnvironment,
@@ -171,6 +172,31 @@ class SessionManager:
         with managed.lock:
             self._require_usable(managed)
             return _managed_sim_time_ms(managed)
+
+    def plan_move(
+        self,
+        session_id: str,
+        side: str,
+        unit_id: int,
+        destination_hex: int,
+        movement_mode: MovementMode | str = MovementMode.NORMAL,
+    ) -> tuple[RoutePlan, str]:
+        """Plan under the Session lock without exposing mutable state."""
+
+        managed = self._managed(session_id)
+        with managed.lock:
+            self._require_usable(managed)
+            _require_side(managed, side)
+            snapshot = managed.environment.session.snapshot()
+            state_hash = canonical_hash(snapshot["world"])
+            route = managed.environment.session.plan_move(
+                side, unit_id, destination_hex, movement_mode
+            )
+            if canonical_hash(
+                managed.environment.session.snapshot()["world"]
+            ) != state_hash:
+                raise RuntimeError("move_planning_modified_world_state")
+            return deepcopy(route), state_hash
 
     def agent_reset_context(
         self,
