@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Native 双边决策窗口</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/live_styles.css">
+</head>
+<body>
+  <header>
+    <div>
+      <p class="eyebrow">LOCAL · DUAL SIDE · DECISION WINDOW</p>
+      <h1>Native 双边准实时控制</h1>
+    </div>
+    <div class="badges">
+      <span id="side-badge" class="badge"></span>
+      <span id="window-badge" class="badge warn"></span>
+      <span class="badge no">仅本方Observation和冻结动作ID</span>
+    </div>
+  </header>
+  <main class="live-main">
+    <section class="panel battle-panel">
+      <div class="section-title"><h2>本方态势</h2></div>
+      <pre id="observation">正在加载…</pre>
+    </section>
+    <aside class="panel command-panel">
+      <div class="section-title"><h2>本窗口待提交批次</h2></div>
+      <p id="deadline">同步模式</p>
+      <div id="actions" class="action-groups"></div>
+      <pre id="batch-preview">[]</pre>
+      <button id="submit-batch" type="button">提交有序action_id批次</button>
+      <button id="submit-empty" type="button">明确提交空批次 / NoOp</button>
+      <pre id="status">等待选择</pre>
+      <p class="boundary-note">同一actor后选动作替换前选动作；客户端不提交EngineAction参数。双方批次都到达后，Gateway只推进一个DecisionWindow。</p>
+    </aside>
+  </main>
+  <div id="error-banner" role="alert" hidden></div>
+  <script src="/static/dual_control.js"></script>
+</body>
+</html>

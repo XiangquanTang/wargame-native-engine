@@ -351,6 +351,50 @@ class CommandGateway:
             side = _bound_side(gateway_session, controller_id)
             return self._window_view(gateway_session.window, side)
 
+    def poll_window(
+        self, session_id: str, controller_id: str,
+    ) -> DecisionWindowView:
+        """Return current status, closing a reached wall deadline if needed."""
+
+        gateway_session = self._gateway_session(session_id)
+        with gateway_session.lock:
+            side = _bound_side(gateway_session, controller_id)
+            self._poll_deadline_locked(gateway_session)
+            return self._window_view(gateway_session.window, side)
+
+    def controller_state(
+        self, session_id: str, controller_id: str,
+    ) -> tuple[DecisionWindowView, ControllerView]:
+        """Atomically pair one side view with its current window snapshot."""
+
+        gateway_session = self._gateway_session(session_id)
+        with gateway_session.lock:
+            side = _bound_side(gateway_session, controller_id)
+            self._poll_deadline_locked(gateway_session)
+            window = gateway_session.window
+            return (
+                self._window_view(window, side),
+                self._controller_view(session_id, side, window),
+            )
+
+    def request_result(
+        self,
+        session_id: str,
+        controller_id: str,
+        request_id: str,
+    ) -> CommandResult | None:
+        gateway_session = self._gateway_session(session_id)
+        with gateway_session.lock:
+            _bound_side(gateway_session, controller_id)
+            cached = gateway_session.requests.get(str(request_id))
+            if cached is None:
+                return None
+            if cached[0][0] != str(controller_id):
+                raise CommandGatewayError(
+                    "request_not_owned", "request belongs to another controller"
+                )
+            return deepcopy(cached[1])
+
     def control_audit(
         self, session_id: str, controller_id: str,
     ) -> tuple[object, ...]:
@@ -471,6 +515,19 @@ class CommandGateway:
         if self.deadline_mode is DeadlineMode.SYNCHRONOUS:
             return None
         return float(self.clock.now())
+
+    def _poll_deadline_locked(
+        self, gateway_session: _GatewaySession,
+    ) -> None:
+        descriptor = self.manager.descriptor(gateway_session.window.session_id)
+        now = self._server_now()
+        if (
+            not descriptor.terminal
+            and gateway_session.window.lifecycle_state
+            is DecisionWindowState.OPEN
+            and self._deadline_reached(gateway_session.window, now)
+        ):
+            self._expire_and_advance(gateway_session)
 
     def _deadline_reached(
         self, window: DecisionWindow, now: float | None,
