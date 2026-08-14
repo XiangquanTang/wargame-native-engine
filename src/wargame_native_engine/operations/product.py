@@ -643,7 +643,23 @@ def _weapon_choices(values: Mapping[int | str, int] | None) -> dict[int, int]:
 
 
 def _display_name(unit: Mapping[str, Any], unit_id: int) -> str:
-    value = unit.get("name") or unit.get("subtype") or unit.get("operator_type")
+    raw_attributes = unit.get("raw_attributes")
+    source_frame = (
+        raw_attributes.get("source_frame")
+        if isinstance(raw_attributes, Mapping)
+        else None
+    )
+    source_name = (
+        source_frame.get("name")
+        if isinstance(source_frame, Mapping)
+        else None
+    )
+    value = (
+        source_name
+        or unit.get("name")
+        or unit.get("subtype")
+        or unit.get("operator_type")
+    )
     return f"{value or '单位'} {unit_id}"
 
 

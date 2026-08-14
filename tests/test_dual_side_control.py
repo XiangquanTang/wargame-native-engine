@@ -287,6 +287,11 @@ def test_plan_endpoint_rejects_client_path_and_stale_window_without_advancing(
     assert args.host == "127.0.0.1"
     assert args.decision_interval_ms == 10_000
     assert args.frame_interval_ms == 1_000
+    bundle_args = build_parser().parse_args([
+        "--scenario-bundle", "/tmp/native_scenario.json",
+        "--output-dir", "/tmp/dual-bundle",
+    ])
+    assert bundle_args.scenario_bundle == Path("/tmp/native_scenario.json")
 
 
 def test_each_token_receives_only_its_bound_side_observation(tmp_path: Path) -> None:

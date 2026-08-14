@@ -21,6 +21,11 @@ def build_parser() -> argparse.ArgumentParser:
         description="Run one loopback-only dual-side Native decision service",
     )
     parser.add_argument("--scenario", type=Path, default=DEFAULT_SCENARIO)
+    parser.add_argument(
+        "--scenario-bundle",
+        type=Path,
+        help="Canonical native_scenario.json emitted by convert_source_scenario.",
+    )
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--host", default="127.0.0.1")
@@ -35,7 +40,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    bundle = ScenarioBundle.from_path(args.scenario)
+    scenario_path = args.scenario_bundle or args.scenario
+    bundle = ScenarioBundle.from_path(scenario_path)
     catalog = ScenarioCatalog.from_bundles({
         bundle.scenario_identity.scenario_id: bundle,
     })
@@ -66,6 +72,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             port=args.port,
         )
         host, port = server.server_address[:2]
+        conversion = bundle.scenario.metadata.get("source_scenario_conversion", {})
+        conversion_mode = (
+            conversion.get("conversion_mode")
+            if isinstance(conversion, dict)
+            else None
+        )
+        print(
+            "SCENARIO: "
+            f"{bundle.scenario_identity.scenario_id} "
+            f"sha256={bundle.scenario_identity.sha256}",
+            flush=True,
+        )
+        print(
+            f"MAP: {bundle.map_identity.map_id} sha256={bundle.map_identity.sha256}",
+            flush=True,
+        )
+        print(f"CONVERSION_MODE: {conversion_mode or 'canonical-native'}", flush=True)
         print(f"RED:  http://{host}:{port}/red?token={args.red_token}", flush=True)
         print(f"BLUE: http://{host}:{port}/blue?token={args.blue_token}", flush=True)
         try:
