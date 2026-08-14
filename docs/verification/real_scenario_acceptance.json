@@ -5,13 +5,16 @@
   "scope": "one real Source Scenario only; no four-scenario or 370k-corpus claim",
   "git": {
     "starting_head": "82d96a52c54b7577ee001194ecc8d42b2779ab5f",
-    "verified_implementation_head": "692569f",
+    "product_followup_starting_head": "be3422e9bb94c3e3ab0b6dc49735d7c7178e3056",
+    "verified_implementation_head": "f105b06",
     "stage_commits": [
       "85b3bb0 docs(data): record source scenario readiness",
       "f373be8 feat(data): add explicit source scenario conversion",
       "a61a2c1 feat(viewer): launch product controls with scenario bundles",
       "a4c08ee test(integration): verify real source scenario product loop",
-      "692569f test(integration): verify real scenario dual HTTP controls"
+      "692569f test(integration): verify real scenario dual HTTP controls",
+      "dedb241 fix(viewer): keep dual-side controls responsive",
+      "f105b06 perf(engine): cache detached source valid actions"
     ],
     "final_head_note": "The final handoff reports the commit containing this self-referential document."
   },
@@ -47,7 +50,7 @@
     ]
   },
   "acceptance_profile": {
-    "purpose": "bounded terminal and strict-replay proof; not the formal termination",
+    "purpose": "bounded fast MOVE/SHOOT/strict-replay regression; not the formal termination",
     "supplement_sha256": "5dd2e45b3f4507fa0fa02d81f4052b3bfc2648bbd19409ed71844a0e9ac8929e",
     "scenario_hash": "9ee83487cd3c308cf9c0ebfa6b14919090e95d93b7370d60fafcd02c113a6627",
     "scenario_payload_sha256": "bf111be1612d48fd0298c911a4cf52ac26b848cbabf48ebe2b96df09d0e71d94",
@@ -101,8 +104,8 @@
     ]
   },
   "runtime": {
-    "formal_profile_proven_to_sim_time_ms": 720000,
-    "formal_profile_terminal": false,
+    "formal_profile_proven_to_sim_time_ms": 2880000,
+    "formal_profile_terminal": true,
     "acceptance_terminal": true,
     "acceptance_truncated_by_native_max_ticks": true,
     "termination_reason": "max_ticks",
@@ -114,6 +117,21 @@
     "strict_replay_match": true,
     "online_offline_analysis_bytes_match": true,
     "analysis_lines": 16
+  },
+  "formal_runtime": {
+    "terminal": true,
+    "truncated_by_native_max_ticks": true,
+    "termination_reason": "max_ticks",
+    "winner": null,
+    "decision_window_count": 48,
+    "frame_count": 49,
+    "step_count": 48,
+    "final_sim_time_ms": 2880000,
+    "strict_replay_match": true,
+    "online_offline_analysis_bytes_match": true,
+    "replay_sha256": "4e465cb123c318c5636ac75d47180b2b7bf9043bc3d07437bbc232f2072f0a21",
+    "analysis_sha256": "0fd368d77697b6921ea40621bc3348b2cbe2943ddd356855fd78e76c7433f2f1",
+    "offline_analysis_sha256": "0fd368d77697b6921ea40621bc3348b2cbe2943ddd356855fd78e76c7433f2f1"
   },
   "evidence_hashes": {
     "replay_sha256": "b3bba4204ac60e03ab5de8a08b389ddb886eb0721f0384b7f290c47408d28f1c",
@@ -129,6 +147,13 @@
     "hidden_blue_75_absent_from_initial_red_view": true,
     "green_or_frame_analysis_in_product_bootstrap": false,
     "real_dual_http_smoke": "passed",
+    "blue_wait_operation_count": 23,
+    "blue_move_capability_present": true,
+    "red_submitted_status": "WAITING_OPPONENT",
+    "blue_before_submit_status": "WAITING_SELECTION",
+    "lightweight_status_payload_under_bytes": 2048,
+    "full_scene_refetched_only_after_frame_change": true,
+    "overlapping_browser_refreshes_blocked": true,
     "loopback_only": true,
     "node_available": false,
     "browser_available": false,
@@ -157,11 +182,24 @@
     "render_scene_payload_bytes": 1725847,
     "note": "single local measurement, not a statistical benchmark or 1Hz claim"
   },
+  "performance_followup_ms": {
+    "optimization": "state-keyed detached Source valid-action records with per-side isolation; SHOOT candidates restricted to observed enemy ids before full rule validation",
+    "authorization_records_returned_detached": true,
+    "rng_unchanged": true,
+    "acceptance_profile_operation_runtime_before": 162338.382,
+    "acceptance_profile_operation_runtime_after": 106269.665,
+    "formal_profile_operation_runtime_before": 429876.052,
+    "formal_profile_operation_runtime_after": 327674.855,
+    "formal_replay_hash_unchanged": true,
+    "formal_analysis_hash_unchanged": true,
+    "note": "single-run comparison on one local machine; not a 1Hz or general scaling claim"
+  },
   "tests_at_report_creation": [
     {"command": "pytest tests/test_source_scenario_conversion.py tests/test_dual_side_control.py -q", "result": "18 passed", "seconds": 7.37},
     {"command": "pytest tests/test_real_source_scenario_runtime.py -q (pre-HTTP split)", "result": "1 passed", "seconds": 167.13},
     {"command": "pytest tests/test_real_source_scenario_runtime.py::test_real_source_scenario_dual_http_and_map_identity -q", "result": "1 passed", "seconds": 16.48},
-    {"command": "pytest -p no:cacheprovider -q", "result": "1152 passed, 2 skipped", "seconds": 252.07, "skips": ["Node.js is not installed: live action JS test", "Node.js is not installed: map renderer JS test"]}
+    {"command": "pytest source movement/visibility/direct-fire/gateway/recorder/replay/live-analysis/dual-side/real-scenario selection -q", "result": "169 passed", "seconds": 165.26},
+    {"command": "pytest -p no:cacheprovider -q", "result": "1153 passed, 2 skipped", "seconds": 222.23, "skips": ["Node.js is not installed: live action JS test", "Node.js is not installed: map renderer JS test"]}
   ],
   "immutability": {
     "source_scenario_unchanged": true,

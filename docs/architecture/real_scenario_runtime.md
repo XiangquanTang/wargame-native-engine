@@ -34,7 +34,7 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python -m scripts.run_dual_side_control
 
 ## 可重复的产品闭环验收
 
-900 秒验收 Profile 的转换参数与正式 Profile 相同，只替换显式 Native 终止上限。生成验收 Bundle 后执行：
+900 秒验收 Profile 的转换参数与正式 Profile 相同，只替换显式 Native 终止上限，用于较快的端到端回归。生成验收 Bundle 后执行：
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python -m scripts.run_source_native_match \
@@ -55,10 +55,18 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python -m scripts.run_source_native_mat
 
 3328 看似接近 3427，但在 odd-r 下距离为 2，且该视线受地形高程阻挡；验收使用真正相邻且由规划器可达的 3327。该选择来自同一 odd-r/LOS 规则链，不是临时扩大射程或修改位置。
 
+正式 2,880 秒 Profile 也已完整运行到 Native `max_ticks`：48 个决策窗口、48 个 step、49 个事实帧，最终 `sim_time_ms=2880000`。其 Replay SHA-256 为 `4e465cb123c318c5636ac75d47180b2b7bf9043bc3d07437bbc232f2072f0a21`，在线和离线分析 SHA-256 均为 `0fd368d77697b6921ea40621bc3348b2cbe2943ddd356855fd78e76c7433f2f1`，strict replay 通过。因此 900 秒 Profile 不再承担替代正式终局的含义，只保留为快速验收 Profile。
+
+## 双端控制与页面刷新
+
+RED 与 BLUE 在同一真实 Scenario 中分别取得 26/23 个己方单位；BLUE 初始同样具有 WAIT 和 MOVE 等产品操作能力。RED 提交后，RED 映射为“等待对方”，BLUE 保持“等待选择”，服务端并未阻止 BLUE 操作。
+
+控制页初次加载使用完整 bootstrap；之后每秒只轮询轻量 product status。仅当 `frame_index` 改变时重新取得完整 RenderScene 并重绘 10,000 格地图，同时拒绝重叠刷新请求。这样保留同一地图/单位事实契约，并避免双浏览器每秒重复传输、解析和重绘约 1.7 MiB 静态场景。
+
 ## 边界和限制
 
 * 这是历史数据校准的 Native simplified 运行，不是旧 SDK 或官方规则等价复刻。
-* 正式 Profile 已实际推进到 720 秒并完成相同 MOVE/SHOOT，未伪造终局；900 秒 Profile 只用于有限时间的终局/strict replay 验收。
+* 正式 Profile 已实际推进到 2,880 秒并由 Native `max_ticks` 终局；900 秒 Profile 只用于较快的 MOVE/SHOOT/strict replay 回归。
 * 武器 5 和 72 有来源 ID 映射，但当前 Native direct-fire 不执行其类别；转换 Manifest 明确告警。
 * Map 221、96、9601 尚无逐场景审定 supplement，不能作为已完成的可执行转换。
 * 本机没有 Node 或浏览器运行时；真实双端 HTTP 已测试，但没有伪造浏览器截图。
