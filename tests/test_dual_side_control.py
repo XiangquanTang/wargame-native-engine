@@ -102,6 +102,8 @@ def test_dual_pages_static_assets_and_default_cli_are_loopback_only(tmp_path: Pa
                 "/red?token=red-token-123",
                 "/blue?token=blue-token-456",
                 "/static/dual_control.js",
+                "/static/map_renderer.js",
+                "/static/live_actions.js",
                 "/static/styles.css",
                 "/static/live_styles.css",
             ):
@@ -111,6 +113,163 @@ def test_dual_pages_static_assets_and_default_cli_are_loopback_only(tmp_path: Pa
             assert request(
                 address, "GET", "/red?token=blue-token-456"
             )[0] == 403
+    finally:
+        fixture.close()
+
+
+def test_map_scene_commands_and_multicell_proposal_are_side_safe(
+    tmp_path: Path,
+) -> None:
+    fixture = Fixture(tmp_path)
+    try:
+        with running_server(fixture.server) as address:
+            red = decoded(request(
+                address, "GET", "/api/bootstrap?token=red-token-123"
+            )[1])
+            assert red["scene"]["perspective"] == "RED"
+            assert red["scene"]["map"]["map_id"] == fixture.scenario.map.map_id
+            assert red["scene"]["frame"]["viewer_units"]
+            assert request(
+                address,
+                "GET",
+                "/api/scene?token=red-token-123",
+            )[0] == 200
+
+            menu = decoded(request(
+                address,
+                "GET",
+                "/api/commands?token=red-token-123&unit_id=1",
+            )[1])
+            assert menu["unit_id"] == 1
+            assert menu["move_planning_available"] is True
+            assert "MOVE" in menu["available"]
+            assert request(
+                address,
+                "GET",
+                "/api/commands?token=red-token-123&unit_id=2",
+            )[0] == 403
+
+            plan_body = {
+                "token": "red-token-123",
+                "request_id": "plan-route",
+                "expected_window": 0,
+                "unit_id": 1,
+                "destination_hex": 106,
+                "movement_mode": "NORMAL",
+            }
+            status, payload, _ = request(
+                address, "POST", "/api/plan-move", plan_body
+            )
+            assert status == 200
+            proposal = decoded(payload)
+            assert proposal["reachable"] is True
+            assert len(proposal["ordered_path"]) >= 5
+            assert proposal["action_id"]
+            fetched = decoded(request(
+                address,
+                "GET",
+                "/api/proposal?token=red-token-123&proposal_id="
+                + proposal["proposal_id"],
+            )[1])
+            assert fetched == proposal
+            assert request(
+                address,
+                "GET",
+                "/api/proposal?token=blue-token-456&proposal_id="
+                + proposal["proposal_id"],
+            )[0] == 403
+    finally:
+        fixture.close()
+
+
+def test_server_staging_replaces_actor_and_submits_authorized_route_once(
+    tmp_path: Path,
+) -> None:
+    fixture = Fixture(tmp_path)
+    try:
+        with running_server(fixture.server) as address:
+            def plan(destination: int, suffix: str):
+                return decoded(request(address, "POST", "/api/plan-move", {
+                    "token": "red-token-123",
+                    "request_id": f"plan-{suffix}",
+                    "expected_window": 0,
+                    "unit_id": 1,
+                    "destination_hex": destination,
+                    "movement_mode": "NORMAL",
+                })[1])
+
+            first = plan(104, "first")
+            second = plan(106, "second")
+            stage_first = {
+                "token": "red-token-123",
+                "request_id": "stage-first",
+                "expected_window": 0,
+                "action_id": first["action_id"],
+            }
+            assert request(
+                address, "POST", "/api/batch/stage", stage_first
+            )[0] == 200
+            stage_second = {
+                **stage_first,
+                "request_id": "stage-second",
+                "action_id": second["action_id"],
+            }
+            staged = decoded(request(
+                address, "POST", "/api/batch/stage", stage_second
+            )[1])["staged_actions"]
+            assert len(staged) == 1
+            assert staged[0]["action_id"] == second["action_id"]
+            repeated = decoded(request(
+                address, "POST", "/api/batch/stage", stage_second
+            )[1])["staged_actions"]
+            assert repeated == staged
+            conflict = {**stage_second, "action_id": first["action_id"]}
+            assert request(
+                address, "POST", "/api/batch/stage", conflict
+            )[0] == 409
+
+            red = decoded(request(address, "POST", "/api/batch/submit", {
+                "token": "red-token-123",
+                "request_id": "submit-staged",
+                "expected_window": 0,
+            })[1])
+            assert red["result"]["advanced"] is False
+            blue = decoded(request(address, "POST", "/api/batch", {
+                "token": "blue-token-456",
+                "request_id": "blue-empty",
+                "expected_window": 0,
+                "ordered_action_ids": [],
+            })[1])
+            assert blue["result"]["advanced"] is True
+            assert fixture.manager.descriptor(fixture.session_id).frame_index == 1
+            assert fixture.environments[0].last_step_record[
+                "ordered_actions"
+            ][0]["parameters"]["path"] == second["ordered_path"]
+    finally:
+        fixture.close()
+
+
+def test_plan_endpoint_rejects_client_path_and_stale_window_without_advancing(
+    tmp_path: Path,
+) -> None:
+    fixture = Fixture(tmp_path)
+    try:
+        with running_server(fixture.server) as address:
+            raw = {
+                "token": "red-token-123",
+                "request_id": "client-path",
+                "expected_window": 0,
+                "unit_id": 1,
+                "destination_hex": 105,
+                "movement_mode": "NORMAL",
+                "path": [999],
+            }
+            assert request(address, "POST", "/api/plan-move", raw)[0] == 400
+            stale = dict(raw)
+            stale.pop("path")
+            stale["expected_window"] = 1
+            assert request(address, "POST", "/api/plan-move", stale)[0] == 409
+            assert fixture.manager.descriptor(fixture.session_id).frame_index == 0
     finally:
         fixture.close()
     args = build_parser().parse_args(["--output-dir", "/tmp/dual"])

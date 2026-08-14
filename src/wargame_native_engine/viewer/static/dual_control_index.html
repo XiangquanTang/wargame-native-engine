@@ -21,21 +21,39 @@
   </header>
   <main class="live-main">
     <section class="panel battle-panel">
-      <div class="section-title"><h2>本方态势</h2></div>
-      <pre id="observation">正在加载…</pre>
+      <div class="section-title">
+        <div><h2>本方可见地图态势</h2><p id="map-mode">正在加载…</p></div>
+        <div class="frame-readout">Frame <strong id="frame-index">0</strong></div>
+      </div>
+      <div class="map-tools">
+        <button id="reset-map-view" type="button">适配地图</button>
+        <span>滚轮缩放 · 拖动平移 · 点击己方算子 · MOVE后点击目的格</span>
+      </div>
+      <canvas id="battlefield" aria-label="当前方可见六角地图"></canvas>
+      <p id="hex-info" class="hex-info">移动鼠标查看六边形坐标</p>
     </section>
     <aside class="panel command-panel">
-      <div class="section-title"><h2>本窗口待提交批次</h2></div>
+      <div class="section-title"><h2>算子命令与本窗口批次</h2></div>
       <p id="deadline">同步模式</p>
+      <p id="selected-unit">请选择己方算子</p>
+      <pre id="unit-commands">{}</pre>
       <div id="actions" class="action-groups"></div>
+      <pre id="proposal-preview">尚未规划路径</pre>
+      <button id="confirm-proposal" type="button" disabled>确认并暂存路径 action_id</button>
       <pre id="batch-preview">[]</pre>
       <button id="submit-batch" type="button">提交有序action_id批次</button>
       <button id="submit-empty" type="button">明确提交空批次 / NoOp</button>
       <pre id="status">等待选择</pre>
       <p class="boundary-note">同一actor后选动作替换前选动作；客户端不提交EngineAction参数。双方批次都到达后，Gateway只推进一个DecisionWindow。</p>
     </aside>
+    <section class="panel observation-panel">
+      <div class="section-title"><h2>当前方 Observation</h2></div>
+      <pre id="observation">正在加载…</pre>
+    </section>
   </main>
   <div id="error-banner" role="alert" hidden></div>
+  <script src="/static/map_renderer.js"></script>
+  <script src="/static/live_actions.js"></script>
   <script src="/static/dual_control.js"></script>
 </body>
 </html>

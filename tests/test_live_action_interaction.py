@@ -36,6 +36,26 @@ def test_map_renderer_exposes_preview_and_double_activation_without_step() -> No
     assert "/api/command" not in source
 
 
+def test_dual_control_uses_shared_renderer_and_server_planning_only() -> None:
+    source = (STATIC / "dual_control.js").read_text(encoding="utf-8")
+    page = (STATIC / "dual_control_index.html").read_text(encoding="utf-8")
+    renderer = (STATIC / "map_renderer.js").read_text(encoding="utf-8")
+
+    assert 'new window.ReplayMapRenderer.MapRenderer' in source
+    assert '"/api/plan-move"' in source
+    assert '"/api/batch/stage"' in source
+    assert '"/api/batch/submit"' in source
+    assert "destination_hex" in source
+    assert "ordered_path" in source
+    assert "new EngineAction" not in source
+    assert "pathfind" not in source.lower()
+    assert "lineOfSight" not in source
+    assert '<script src="/static/map_renderer.js"></script>' in page
+    assert '<canvas id="battlefield"' in page
+    assert "plannedPath" in renderer
+    assert "this.actionTargets.plannedPath.map" in renderer
+
+
 def test_live_action_index_pure_functions_when_node_is_available() -> None:
     node = shutil.which("node")
     if node is None:

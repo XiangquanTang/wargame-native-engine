@@ -14,12 +14,16 @@ from wargame_native_engine.gateway import (
     CommandGatewayError,
     DeadlineMode,
 )
+from wargame_native_engine.operations.controller import SideController
+from wargame_native_engine.rendering import RenderScene
 from wargame_native_engine.viewer.live_control import controller_view_record
 
 
 _STATIC_ROOT = Path(__file__).with_name("static")
 _STATIC_FILES = {
     "/static/dual_control.js": ("dual_control.js", "text/javascript; charset=utf-8"),
+    "/static/map_renderer.js": ("map_renderer.js", "text/javascript; charset=utf-8"),
+    "/static/live_actions.js": ("live_actions.js", "text/javascript; charset=utf-8"),
     "/static/live_styles.css": ("live_styles.css", "text/css; charset=utf-8"),
     "/static/styles.css": ("styles.css", "text/css; charset=utf-8"),
 }
@@ -57,6 +61,10 @@ class DualSideControlHTTPServer(ThreadingHTTPServer):
             raise ValueError("RED and BLUE tokens must differ")
         self.map_data = map_data
         self.output_dir = output_dir
+        self.side_controllers = {
+            side: SideController(gateway, self.session_id, controller)
+            for side, controller in self.controllers.items()
+        }
         super().__init__(address, DualSideControlRequestHandler)
 
 
@@ -99,6 +107,26 @@ class DualSideControlRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(HTTPStatus.OK, controller_view_record(
                     self.server.gateway.view(self.server.session_id, controller)
                 ))
+                return
+            if path == "/api/scene":
+                side, controller = self._seat(_one(query, "token"))
+                _, view = self.server.gateway.controller_state(
+                    self.server.session_id, controller
+                )
+                self._send_json(HTTPStatus.OK, self._scene(side, view))
+                return
+            if path == "/api/commands":
+                side, _ = self._seat(_one(query, "token"))
+                unit_id = _exact_nonnegative_int(_one(query, "unit_id"), "unit_id")
+                menu = self.server.side_controllers[side].get_unit_commands(unit_id)
+                self._send_json(HTTPStatus.OK, menu.to_record())
+                return
+            if path == "/api/proposal":
+                side, _ = self._seat(_one(query, "token"))
+                proposal = self.server.side_controllers[side].proposal(
+                    _one(query, "proposal_id")
+                )
+                self._send_json(HTTPStatus.OK, proposal.to_record())
                 return
             if path == "/api/window":
                 _, controller = self._seat(_one(query, "token"))
@@ -154,6 +182,70 @@ class DualSideControlRequestHandler(BaseHTTPRequestHandler):
                     "result": result.to_record(),
                 })
                 return
+            if path == "/api/plan-move":
+                allowed = {
+                    "token", "request_id", "expected_window", "unit_id",
+                    "destination_hex", "movement_mode",
+                }
+                if set(body) != allowed:
+                    raise ValueError(
+                        f"plan-move fields must be exactly {sorted(allowed)!r}"
+                    )
+                side, _ = self._seat(body["token"])
+                expected_window = _exact_nonnegative_int(
+                    body["expected_window"], "expected_window"
+                )
+                proposal = self.server.side_controllers[side].plan_move(
+                    _exact_nonnegative_int(body["unit_id"], "unit_id"),
+                    _exact_nonnegative_int(
+                        body["destination_hex"], "destination_hex"
+                    ),
+                    request_id=_nonempty_text(body["request_id"], "request_id"),
+                    movement_mode=_nonempty_text(
+                        body["movement_mode"], "movement_mode"
+                    ),
+                    expected_window=expected_window,
+                )
+                self._send_json(HTTPStatus.OK, proposal.to_record())
+                return
+            if path == "/api/batch/stage":
+                allowed = {
+                    "token", "request_id", "expected_window", "action_id",
+                }
+                if set(body) != allowed:
+                    raise ValueError(
+                        f"stage fields must be exactly {sorted(allowed)!r}"
+                    )
+                side, _ = self._seat(body["token"])
+                staged = self.server.side_controllers[side].stage_action(
+                    _nonempty_text(body["action_id"], "action_id"),
+                    request_id=_nonempty_text(body["request_id"], "request_id"),
+                    expected_window=_exact_nonnegative_int(
+                        body["expected_window"], "expected_window"
+                    ),
+                )
+                self._send_json(HTTPStatus.OK, {
+                    "staged_actions": [item.to_record() for item in staged],
+                })
+                return
+            if path == "/api/batch/submit":
+                allowed = {"token", "request_id", "expected_window"}
+                if set(body) != allowed:
+                    raise ValueError(
+                        f"batch submit fields must be exactly {sorted(allowed)!r}"
+                    )
+                side, _ = self._seat(body["token"])
+                result = self.server.side_controllers[side].submit_batch(
+                    request_id=_nonempty_text(body["request_id"], "request_id"),
+                    expected_window=_exact_nonnegative_int(
+                        body["expected_window"], "expected_window"
+                    ),
+                )
+                self._send_json(HTTPStatus.OK, {
+                    "side": side,
+                    "result": result.to_record(),
+                })
+                return
             if path == "/api/publish":
                 if set(body) != {"token", "truncated"}:
                     raise ValueError("publish requires token and truncated")
@@ -186,7 +278,38 @@ class DualSideControlRequestHandler(BaseHTTPRequestHandler):
         self._method_not_allowed()
 
     do_PATCH = do_PUT
-    do_DELETE = do_PUT
+
+    def do_DELETE(self) -> None:  # noqa: N802
+        parsed = urlsplit(self.path)
+        path = unquote(parsed.path)
+        if not path.startswith("/api/batch/"):
+            self._method_not_allowed()
+            return
+        try:
+            query = parse_qs(parsed.query, keep_blank_values=True)
+            side, _ = self._seat(_one(query, "token"))
+            expected = _exact_nonnegative_int(
+                _one(query, "expected_window"), "expected_window"
+            )
+            window = self.server.side_controllers[side].window()
+            if window.decision_window_index != expected:
+                raise CommandGatewayError(
+                    "stale_expected_step",
+                    f"expected {expected}, current {window.decision_window_index}",
+                )
+            unit_text = path.removeprefix("/api/batch/")
+            unit_id = None if unit_text == "global" else _exact_nonnegative_int(
+                unit_text, "unit_id"
+            )
+            staged = self.server.side_controllers[side].unstage(unit_id)
+            self._send_json(HTTPStatus.OK, {
+                "request_id": _one(query, "request_id"),
+                "staged_actions": [item.to_record() for item in staged],
+            })
+        except CommandGatewayError as exc:
+            self._gateway_error(exc)
+        except (KeyError, TypeError, ValueError) as exc:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
 
     def log_message(self, format: str, *args: object) -> None:
         return
@@ -201,8 +324,32 @@ class DualSideControlRequestHandler(BaseHTTPRequestHandler):
             "control_contract": "frozen-valid-action-id-batch/1.0",
             "referee_data_exposed": False,
             "view": controller_view_record(view),
+            "scene": self._scene(side, view),
             "window": self._window_record(window),
+            "staged_actions": [
+                item.to_record()
+                for item in self.server.side_controllers[side].staged_actions
+            ],
         }
+
+    def _scene(self, side: str, view) -> dict[str, object]:
+        record = controller_view_record(view)
+        scene = RenderScene(
+            mode=f"live-{side}",
+            perspective=side.upper(),
+            map=self.server.map_data,
+            frame=record["frame"],
+            overlays={
+                "selected_unit_id": None,
+                "planned_path": [],
+                "planned_destination": None,
+                "proposal_id": None,
+                "proposal_action_id": None,
+                "shoot_target_ids": [],
+                "adjudication_events": [],
+            },
+        )
+        return scene.to_record()
 
     def _window_record(self, window) -> dict[str, object]:
         record = window.to_record()
@@ -317,3 +464,17 @@ def _one(query: Mapping[str, list[str]], field: str) -> str:
     if values is None or len(values) != 1 or not values[0]:
         raise ValueError(f"exactly one {field} is required")
     return values[0]
+
+
+def _nonempty_text(value: object, field: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field} must be a non-empty string")
+    return value
+
+
+def _exact_nonnegative_int(value: object, field: str) -> int:
+    if isinstance(value, str) and value.isdigit():
+        value = int(value)
+    if type(value) is not int or value < 0:
+        raise ValueError(f"{field} must be a non-negative exact int")
+    return value

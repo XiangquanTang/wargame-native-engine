@@ -284,6 +284,7 @@
       this.actionTargets = {
         moves: [], shootTargetIds: new Set(),
         previewMovePosition: null, previewShootTargetId: null,
+        plannedPath: [],
       };
       this._bindEvents();
     }
@@ -304,6 +305,7 @@
       shoot_target_ids: shootTargetIds = [],
       preview_move_position: previewMovePosition = null,
       preview_shoot_target_id: previewShootTargetId = null,
+      planned_path: plannedPath = [],
     } = {}) {
       this.actionTargets = {
         moves: Array.isArray(moves) ? moves.slice() : [],
@@ -313,6 +315,10 @@
           ? null : String(previewMovePosition),
         previewShootTargetId: previewShootTargetId === null
           ? null : String(previewShootTargetId),
+        plannedPath: Array.isArray(plannedPath)
+          ? plannedPath.filter((value) => Number.isInteger(value) && value >= 0)
+            .map((value) => Number(value))
+          : [],
       };
     }
 
@@ -698,6 +704,20 @@
     }
 
     _drawActionTargets(context) {
+      if (this.actionTargets.plannedPath.length > 1) {
+        const points = this.actionTargets.plannedPath.map((position) => this._screen(
+          hexToPixel(Math.floor(position / 100), position % 100, this.map.hex_size),
+        ));
+        context.beginPath();
+        points.forEach((point, index) => index
+          ? context.lineTo(point.x, point.y)
+          : context.moveTo(point.x, point.y));
+        context.strokeStyle = "#ffc857";
+        context.lineWidth = 4;
+        context.setLineDash([8, 4]);
+        context.stroke();
+        context.setLineDash([]);
+      }
       for (const target of this.actionTargets.moves) {
         if (!Number.isInteger(target.row) || !Number.isInteger(target.column)) continue;
         const vertices = hexVertices(
