@@ -15,6 +15,10 @@ _RUNNER_EXPORTS = frozenset({
     "LocalAgentMatchResult",
     "LocalAgentMatchRunner",
 })
+_OPERATION_RUNNER_EXPORTS = frozenset({
+    "OperationAgentMatchResult",
+    "OperationAgentMatchRunner",
+})
 
 
 def __getattr__(name: str):
@@ -22,6 +26,10 @@ def __getattr__(name: str):
         from wargame_native_engine.agents import runner
 
         return getattr(runner, name)
+    if name in _OPERATION_RUNNER_EXPORTS:
+        from wargame_native_engine.agents import operation_runner
+
+        return getattr(operation_runner, name)
     raise AttributeError(name)
 
 __all__ = [
@@ -35,6 +43,8 @@ __all__ = [
     "LocalAgentMatchResult",
     "LocalAgentMatchRunner",
     "NoOpAgent",
+    "OperationAgentMatchResult",
+    "OperationAgentMatchRunner",
     "RandomLegalAgent",
     "ScriptedAgent",
 ]
