@@ -272,6 +272,7 @@
       this.map = null;
       this.frame = null;
       this.selectedUnitId = null;
+      this.selectedUnitIds = new Set();
       this.scale = 1;
       this.offsetX = 0;
       this.offsetY = 0;
@@ -284,7 +285,7 @@
       this.actionTargets = {
         moves: [], shootTargetIds: new Set(),
         previewMovePosition: null, previewShootTargetId: null,
-        plannedPath: [],
+        plannedPath: [], plannedPaths: [],
       };
       this._bindEvents();
     }
@@ -306,6 +307,7 @@
       preview_move_position: previewMovePosition = null,
       preview_shoot_target_id: previewShootTargetId = null,
       planned_path: plannedPath = [],
+      planned_paths: plannedPaths = [],
     } = {}) {
       this.actionTargets = {
         moves: Array.isArray(moves) ? moves.slice() : [],
@@ -319,12 +321,25 @@
           ? plannedPath.filter((value) => Number.isInteger(value) && value >= 0)
             .map((value) => Number(value))
           : [],
+        plannedPaths: Array.isArray(plannedPaths)
+          ? plannedPaths.map((item) => ({
+            unitId: item?.unit_id === undefined ? null : String(item.unit_id),
+            path: Array.isArray(item?.path)
+              ? item.path.filter((value) => Number.isInteger(value) && value >= 0)
+                .map(Number)
+              : [],
+          })).filter((item) => item.path.length > 1)
+          : [],
       };
     }
 
     render(frame, selectedUnitId) {
       this.frame = frame;
-      this.selectedUnitId = selectedUnitId;
+      const selectedValues = Array.isArray(selectedUnitId)
+        ? selectedUnitId : selectedUnitId === null || selectedUnitId === undefined
+          ? [] : [selectedUnitId];
+      this.selectedUnitIds = new Set(selectedValues.map(String));
+      this.selectedUnitId = selectedValues.length === 1 ? selectedValues[0] : null;
       const resized = this._resizeCanvas();
       if (!this.hasFitted || resized && this.scale === 1) this.resetView();
       const context = this.context;
@@ -360,7 +375,7 @@
       this.offsetX = (width - worldWidth * this.scale) / 2 - bounds.minX * this.scale;
       this.offsetY = (height - worldHeight * this.scale) / 2 - bounds.minY * this.scale;
       this.hasFitted = true;
-      if (this.frame) this.render(this.frame, this.selectedUnitId);
+      if (this.frame) this.render(this.frame, Array.from(this.selectedUnitIds));
     }
 
     _bindEvents() {
@@ -376,7 +391,7 @@
         this.scale = nextScale;
         this.offsetX = point.x - worldX * nextScale;
         this.offsetY = point.y - worldY * nextScale;
-        this.render(this.frame, this.selectedUnitId);
+        this.render(this.frame, Array.from(this.selectedUnitIds));
       }, { passive: false });
       this.canvas.addEventListener("pointerdown", (event) => {
         const point = this._eventPoint(event);
@@ -402,7 +417,7 @@
         if (this.drag.moved) {
           this.offsetX = this.drag.offsetX + dx;
           this.offsetY = this.drag.offsetY + dy;
-          this.render(this.frame, this.selectedUnitId);
+          this.render(this.frame, Array.from(this.selectedUnitIds));
         }
       });
       this.canvas.addEventListener("pointerup", (event) => {
@@ -415,13 +430,17 @@
             Math.hypot(target.x - point.x, target.y - point.y) <= target.radius
           ));
           if (hit && this.onUnitSelected) {
-            this.onUnitSelected(hit.operatorId);
+            this.onUnitSelected(hit.operatorId, {
+              ctrlKey: event.ctrlKey,
+              metaKey: event.metaKey,
+              shiftKey: event.shiftKey,
+            });
           } else {
             const value = this._hexAtScreenPoint(point);
             if (value) {
               this.selectedHex = { row: value.row, column: value.column };
               if (this.onHexSelected) this.onHexSelected(value);
-              this.render(this.frame, this.selectedUnitId);
+              this.render(this.frame, Array.from(this.selectedUnitIds));
             }
           }
         }
@@ -704,6 +723,21 @@
     }
 
     _drawActionTargets(context) {
+      const colors = ["#ffc857", "#68d391", "#63b3ed", "#f687b3", "#b794f4"];
+      this.actionTargets.plannedPaths.forEach((planned, plannedIndex) => {
+        const points = planned.path.map((position) => this._screen(
+          hexToPixel(Math.floor(position / 100), position % 100, this.map.hex_size),
+        ));
+        context.beginPath();
+        points.forEach((point, index) => index
+          ? context.lineTo(point.x, point.y)
+          : context.moveTo(point.x, point.y));
+        context.strokeStyle = colors[plannedIndex % colors.length];
+        context.lineWidth = 4;
+        context.setLineDash([8, 4]);
+        context.stroke();
+        context.setLineDash([]);
+      });
       if (this.actionTargets.plannedPath.length > 1) {
         const points = this.actionTargets.plannedPath.map((position) => this._screen(
           hexToPixel(Math.floor(position / 100), position % 100, this.map.hex_size),
@@ -760,7 +794,8 @@
     }
 
     _drawUnit(context, unit, x, y) {
-      const selected = unit.operator_id === this.selectedUnitId;
+      const selected = unit.operator_id === this.selectedUnitId
+        || this.selectedUnitIds.has(String(unit.operator_id));
       const shootTarget = this.actionTargets.shootTargetIds.has(String(unit.operator_id));
       const previewShoot = String(unit.operator_id)
         === this.actionTargets.previewShootTargetId;

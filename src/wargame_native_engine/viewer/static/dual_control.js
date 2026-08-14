@@ -1,38 +1,74 @@
 "use strict";
 
 const token = new URLSearchParams(window.location.search).get("token");
-const ActionIndex = window.NativeLiveActions;
+const selectedUnitIds = new Set();
 let current = null;
-let currentWindowIndex = null;
-let selectedUnitId = null;
-let selectedShootTargetId = null;
-let moveSelectionMode = false;
-let currentProposal = null;
-let currentCommands = null;
-let requestSequence = 0;
-let submitting = false;
+let capabilities = null;
+let activeTool = null;
+let targetHex = null;
+let targetUnitId = null;
+let operationPreview = null;
+let isPlanning = false;
+let isExecuting = false;
+let lastError = null;
+let lastFrameIndex = null;
+let lastRequestId = null;
+let previewSequence = 0;
+let executeRequestId = null;
 let mapRenderer = null;
+const pageNonce = globalThis.crypto?.randomUUID?.()
+  || `${Date.now()}-${Math.floor(performance.now())}`;
 const $ = (id) => document.getElementById(id);
+const operationButtons = Array.from(document.querySelectorAll("[data-operation]"));
+const OPERATION_LABELS = {
+  MOVE: "机动",
+  SHOOT: "射击",
+  STOP_MOVE: "停止",
+  WEAPON_UNFOLD: "武器展开",
+  WEAPON_LOCK: "武器锁定",
+  WAIT: "等待",
+};
+const PRODUCT_STATE = {
+  WAITING_SELECTION: ["等待选择", "请选择单位并下达操作。"],
+  WAITING_OPPONENT: ["等待对方", "本方操作已提交，正在等待对方。"],
+  ADVANCING: ["推进中", "双方操作已齐备，引擎正在推进。"],
+  TERMINAL: ["已终局", "对局已经结束。"],
+};
 
 async function requestJson(path, options = {}) {
   const response = await fetch(path, { cache: "no-store", ...options });
   const body = await response.json();
-  if (!response.ok) throw new Error(body.error || `${response.status}`);
+  if (!response.ok) {
+    const error = new Error(body.error || `${response.status}`);
+    error.code = body.code || "request_failed";
+    throw error;
+  }
   return body;
 }
 
 function nextRequestId(kind) {
-  return `web-${current.side}-${current.window.decision_window_index}-${kind}-${requestSequence++}`;
+  const value = `web-${pageNonce}-${kind}-${previewSequence++}`;
+  lastRequestId = value;
+  return value;
 }
 
-function visibleActions() {
-  const values = current?.view?.valid_actions || [];
-  return selectedUnitId === null
-    ? values : ActionIndex.actionsForActor(values, selectedUnitId);
+function visibleUnits() {
+  return current?.scene?.frame?.viewer_units || [];
 }
 
-function stagedActionIds() {
-  return (current?.staged_actions || []).map((item) => item.action_id);
+function unitById(unitId) {
+  return visibleUnits().find((unit) => String(unit.operator_id) === String(unitId));
+}
+
+function isFriendlySelectable(unit) {
+  return Boolean(unit)
+    && String(unit.side).toLowerCase() === current?.side
+    && unit.category === "operator"
+    && !unit.destroyed;
+}
+
+function selectedIds() {
+  return Array.from(selectedUnitIds).map(Number).sort((left, right) => left - right);
 }
 
 function renderHexInfo(value) {
@@ -41,245 +77,429 @@ function renderHexInfo(value) {
     : "移动鼠标查看六边形坐标";
 }
 
+function plannedPaths() {
+  if (!operationPreview) return [];
+  return operationPreview.per_unit_results
+    .filter((result) => result.accepted_for_preview && result.path.length)
+    .map((result) => {
+      const source = unitById(result.unit_id)?.current_hex;
+      return {
+        unit_id: result.unit_id,
+        path: [source, ...result.path].filter(Number.isInteger),
+      };
+    });
+}
+
 function renderMap() {
   if (!mapRenderer || !current?.scene) return;
-  const targets = ActionIndex.actionTargets(current.view.valid_actions, selectedUnitId);
-  const selected = (current.scene.frame.viewer_units || []).find(
-    (item) => ActionIndex.sameId(item.operator_id, selectedUnitId),
-  );
-  const planned = currentProposal?.reachable
-    ? [selected?.current_hex, ...currentProposal.ordered_path].filter(Number.isInteger)
-    : [];
   mapRenderer.setActionTargets({
-    ...targets,
-    preview_move_position: currentProposal?.destination_hex ?? null,
-    preview_shoot_target_id: selectedShootTargetId,
-    planned_path: planned,
+    shoot_target_ids: activeTool === "SHOOT"
+      ? capabilities?.shoot_target_ids || [] : [],
+    preview_move_position: targetHex,
+    preview_shoot_target_id: targetUnitId,
+    planned_paths: plannedPaths(),
   });
-  mapRenderer.render(current.scene.frame, selectedUnitId);
+  mapRenderer.render(current.scene.frame, selectedIds());
 }
 
-function actionButton(item) {
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = "action-button";
-  button.dataset.actionId = item.action_id;
-  const detail = ActionIndex.actionDetail(item);
-  button.textContent = [
-    detail.action_type,
-    detail.target_id === null ? null : `target=${detail.target_id}`,
-    detail.weapon_id === null ? null : `weapon=${detail.weapon_id}`,
-    detail.path ? `path=${detail.path.join("→")}` : null,
-  ].filter(Boolean).join(" · ");
-  if (stagedActionIds().includes(item.action_id)) button.classList.add("selected");
-  button.disabled = current.window.submitted || current.view.terminal || submitting;
-  button.addEventListener("click", () => stageAction(item.action_id));
-  return button;
+function statusText() {
+  if (isPlanning) return ["正在规划", "服务端正在逐单位验证并生成预览。"];
+  if (isExecuting) return ["正在提交", "正在安全提交本方操作，请勿重复点击。"];
+  if (lastError) return ["操作失败", lastError];
+  const state = current?.product_status?.product_state || "WAITING_SELECTION";
+  return PRODUCT_STATE[state] || PRODUCT_STATE.WAITING_SELECTION;
 }
 
-function renderActions() {
-  const root = $("actions");
-  root.replaceChildren();
-  if (selectedUnitId === null) {
-    root.textContent = "点击己方可操作算子后显示命令";
-  } else {
-    for (const group of ActionIndex.groupedActions(
-      current.view.valid_actions, selectedUnitId,
-    )) {
-      const section = document.createElement("section");
-      section.className = "action-group";
-      const title = document.createElement("h3");
-      title.textContent = `${group.kind} (${group.actions.length})`;
-      const buttons = document.createElement("div");
-      buttons.className = "action-buttons";
-      if (group.kind === "MOVE") {
-        const plan = document.createElement("button");
-        plan.type = "button";
-        plan.className = `action-button move${moveSelectionMode ? " selected" : ""}`;
-        plan.textContent = "MOVE · 选择任意可规划目的格";
-        plan.addEventListener("click", () => {
-          moveSelectionMode = true;
-          currentProposal = null;
-          $("status").textContent = "MOVE规划模式：点击地图目的六边形；服务器计算并逐段校验。";
-          render();
-        });
-        buttons.appendChild(plan);
-      }
-      group.actions.forEach((item) => buttons.appendChild(actionButton(item)));
-      section.append(title, buttons);
-      root.appendChild(section);
-    }
+function renderStatus() {
+  const [label, message] = statusText();
+  $("status-label").textContent = label;
+  $("status-message").textContent = message;
+  $("product-state-badge").textContent = label;
+  $("product-state-badge").className = `badge ${label === "已终局" ? "no" : "warn"}`;
+}
+
+function renderSelection() {
+  const root = $("selection-summary");
+  const selected = selectedIds().map(unitById).filter(Boolean);
+  if (!selected.length) {
+    root.textContent = "尚未选择己方单位";
+    return;
   }
-  $("batch-preview").textContent = JSON.stringify(current.staged_actions || [], null, 2);
-  $("submit-batch").disabled = current.window.submitted || current.view.terminal || submitting;
-  $("submit-empty").disabled = current.window.submitted || current.view.terminal || submitting;
-  $("confirm-proposal").disabled = !currentProposal?.reachable
-    || !currentProposal.action_id || current.window.submitted || submitting;
+  const groups = new Map();
+  for (const unit of selected) {
+    const label = unit.operator_type || unit.subtype || unit.icon_key || "单位";
+    groups.set(label, (groups.get(label) || 0) + 1);
+  }
+  root.replaceChildren();
+  const title = document.createElement("strong");
+  title.textContent = `已选择 ${selected.length} 个单位`;
+  const details = document.createElement("span");
+  details.textContent = Array.from(groups.entries())
+    .map(([name, count]) => `${name} × ${count}`).join(" · ");
+  root.append(title, details);
+}
+
+function operationCount(kind) {
+  if (kind === "WAIT" && !selectedUnitIds.size) return "整方可用";
+  const applicable = capabilities?.operations?.[kind]?.applicable_count || 0;
+  return `${applicable}/${selectedUnitIds.size} 可用`;
+}
+
+function renderToolbar() {
+  const canOperate = current?.product_status?.can_operate && !isPlanning && !isExecuting;
+  for (const button of operationButtons) {
+    const kind = button.dataset.operation;
+    button.classList.toggle("active", activeTool === kind);
+    button.querySelector("small").textContent = operationCount(kind);
+    const applicable = kind === "WAIT" && !selectedUnitIds.size
+      ? 1 : capabilities?.operations?.[kind]?.applicable_count || 0;
+    button.disabled = !canOperate || applicable === 0;
+  }
+  $("cancel-operation").disabled = !activeTool && !operationPreview;
+  const partialReady = !operationPreview?.partial_confirmation_required
+    || $("confirm-partial").checked;
+  $("execute-operation").disabled = !canOperate
+    || !operationPreview?.can_execute || !partialReady;
+}
+
+function renderWeaponChoices() {
+  const root = $("weapon-choices");
+  root.replaceChildren();
+  if (!operationPreview || operationPreview.operation_type !== "SHOOT") {
+    root.hidden = true;
+    return;
+  }
+  const ambiguous = operationPreview.per_unit_results.filter((result) => (
+    result.reject_code === "weapon_choice_required"
+    && result.weapon_options.length > 1
+  ));
+  if (!ambiguous.length) {
+    root.hidden = true;
+    return;
+  }
+  root.hidden = false;
+  const heading = document.createElement("strong");
+  heading.textContent = "请选择武器后重新预览";
+  root.appendChild(heading);
+  for (const result of ambiguous) {
+    const label = document.createElement("label");
+    label.textContent = `${result.display_name}：`;
+    const select = document.createElement("select");
+    select.dataset.weaponUnit = String(result.unit_id);
+    for (const option of result.weapon_options) {
+      const element = document.createElement("option");
+      element.value = String(option.weapon_id);
+      element.textContent = option.summary;
+      select.appendChild(element);
+    }
+    label.appendChild(select);
+    root.appendChild(label);
+  }
+  const apply = document.createElement("button");
+  apply.type = "button";
+  apply.textContent = "应用武器选择";
+  apply.addEventListener("click", () => previewOperation("SHOOT", {
+    target_id: targetUnitId,
+    weapon_choices: Object.fromEntries(
+      Array.from(root.querySelectorAll("select")).map((select) => (
+        [select.dataset.weaponUnit, Number(select.value)]
+      )),
+    ),
+  }));
+  root.appendChild(apply);
+}
+
+function renderPreview() {
+  const root = $("operation-preview");
+  const confirmation = $("partial-confirmation");
+  if (!operationPreview) {
+    root.className = "operation-preview empty";
+    root.textContent = "选择功能和目标后，这里会显示逐单位的路径、时间或失败原因。";
+    $("preview-counts").textContent = "尚无预览";
+    confirmation.hidden = true;
+    $("confirm-partial").checked = false;
+    renderWeaponChoices();
+    return;
+  }
+  root.className = "operation-preview";
+  root.replaceChildren();
+  $("preview-counts").textContent = operationPreview.whole_side_wait
+    ? "整方本轮等待"
+    : `已选 ${operationPreview.selected_count} · 可执行 ${operationPreview.executable_count} · 不可执行 ${operationPreview.rejected_count}`;
+  for (const result of operationPreview.per_unit_results) {
+    const item = document.createElement("article");
+    item.className = `unit-preview ${result.accepted_for_preview ? "accepted" : "rejected"}`;
+    const title = document.createElement("strong");
+    title.textContent = result.display_name;
+    const summary = document.createElement("p");
+    summary.textContent = result.accepted_for_preview
+      ? result.human_readable_summary
+      : `不可执行：${result.reject_message || "当前条件不满足"}`;
+    item.append(title, summary);
+    if (result.path.length) {
+      const path = document.createElement("p");
+      path.className = "path-summary";
+      path.textContent = `路径 ${result.path.join(" → ")} · 预计 ${result.estimated_duration_ms} ms`;
+      item.appendChild(path);
+    }
+    root.appendChild(item);
+  }
+  if (operationPreview.whole_side_wait) {
+    const item = document.createElement("article");
+    item.className = "unit-preview accepted";
+    item.textContent = "本方本轮不下达新操作。";
+    root.appendChild(item);
+  }
+  confirmation.hidden = !operationPreview.partial_confirmation_required;
+  if (!operationPreview.partial_confirmation_required) {
+    $("confirm-partial").checked = false;
+  }
+  renderWeaponChoices();
 }
 
 function render() {
+  if (!current) return;
   $("side-badge").textContent = current.side.toUpperCase();
-  $("window-badge").textContent = `Window ${current.window.decision_window_index} · ${current.window.lifecycle_state}`;
-  $("frame-index").textContent = String(current.view.frame_index);
-  $("deadline").textContent = current.window.deadline_remaining_ms === null
-    ? "同步阻塞模式：必须显式提交"
-    : `服务器deadline剩余 ${current.window.deadline_remaining_ms} ms`;
+  $("side-summary").textContent = `${current.side.toUpperCase()} 控制席位`;
+  $("frame-index").textContent = String(current.product_status.frame_index);
+  $("time-summary").textContent = `仿真时间 ${current.product_status.sim_time_ms} ms`;
   $("map-mode").textContent = `${current.scene.map.mode} · ${current.scene.map.map_id}`;
-  $("selected-unit").textContent = selectedUnitId === null
-    ? "请选择己方算子"
-    : `已选择 ${current.side.toUpperCase()} 算子 ${selectedUnitId}`;
-  $("unit-commands").textContent = JSON.stringify(currentCommands || {}, null, 2);
-  $("proposal-preview").textContent = currentProposal
-    ? JSON.stringify(currentProposal, null, 2) : "尚未规划路径";
-  $("observation").textContent = JSON.stringify(current.view.observation, null, 2);
-  renderActions();
+  $("debug-session").textContent = current.session_id;
+  $("debug-side").textContent = current.side.toUpperCase();
+  $("debug-frame").textContent = String(current.product_status.frame_index);
+  $("debug-sim-time").textContent = `${current.product_status.sim_time_ms} ms`;
+  $("debug-request").textContent = lastRequestId || "—";
+  renderSelection();
+  renderPreview();
+  renderToolbar();
   renderMap();
+  renderStatus();
 }
 
-async function selectUnit(operatorId) {
-  const actions = ActionIndex.actionsForActor(current.view.valid_actions, operatorId);
-  if (!actions.length) {
-    const shoots = ActionIndex.actionsForShootTarget(
-      current.view.valid_actions, selectedUnitId, operatorId,
-    );
-    if (!shoots.length) return;
-    selectedShootTargetId = operatorId;
-    $("status").textContent = shoots.length === 1
-      ? `目标 ${operatorId} 只有一个合法射击选项，已暂存。`
-      : `目标 ${operatorId} 有 ${shoots.length} 个服务器合法武器选项，请在侧栏选择。`;
-    if (shoots.length === 1) await stageAction(shoots[0].action_id);
+function clearOperation({ clearSelection = false } = {}) {
+  activeTool = null;
+  targetHex = null;
+  targetUnitId = null;
+  operationPreview = null;
+  executeRequestId = null;
+  lastError = null;
+  $("confirm-partial").checked = false;
+  if (clearSelection) selectedUnitIds.clear();
+  $("tool-instruction").textContent = selectedUnitIds.size
+    ? "请选择操作。" : "请选择一个或多个己方单位。";
+  render();
+}
+
+async function loadCapabilities() {
+  if (!current || !selectedUnitIds.size) {
+    capabilities = {
+      selected_count: 0,
+      selected_units: [],
+      operations: {},
+      shoot_target_ids: [],
+    };
     render();
     return;
   }
-  selectedUnitId = operatorId;
-  selectedShootTargetId = null;
-  moveSelectionMode = false;
-  currentProposal = null;
   try {
-    currentCommands = await requestJson(
-      `/api/commands?token=${encodeURIComponent(token)}&unit_id=${encodeURIComponent(operatorId)}`,
-    );
+    capabilities = await requestJson("/api/product/capabilities", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token, actor_ids: selectedIds() }),
+    });
+    lastError = null;
   } catch (error) {
-    $("status").textContent = `命令查询失败：${error.message}`;
+    lastError = `无法读取单位操作：${error.message}`;
   }
   render();
 }
 
-async function planMove(hex) {
-  if (!moveSelectionMode || selectedUnitId === null || submitting) return;
-  submitting = true;
+async function handleUnitSelection(operatorId, modifiers = {}) {
+  const unit = unitById(operatorId);
+  if (activeTool === "SHOOT" && !isFriendlySelectable(unit)) {
+    if ((capabilities?.shoot_target_ids || []).map(String).includes(String(operatorId))) {
+      targetUnitId = Number(operatorId);
+      await previewOperation("SHOOT", { target_id: targetUnitId });
+    }
+    return;
+  }
+  if (!isFriendlySelectable(unit)) return;
+  const key = Number(operatorId);
+  if (modifiers.ctrlKey || modifiers.metaKey) {
+    if (selectedUnitIds.has(key)) selectedUnitIds.delete(key);
+    else selectedUnitIds.add(key);
+  } else if (modifiers.shiftKey) {
+    selectedUnitIds.add(key);
+  } else {
+    selectedUnitIds.clear();
+    selectedUnitIds.add(key);
+  }
+  clearOperation();
+  await loadCapabilities();
+}
+
+async function handleHexSelection(value) {
+  renderHexInfo(value);
+  if (activeTool === "MOVE") {
+    targetHex = Number(value.position_id);
+    await previewOperation("MOVE", { destination_hex: targetHex });
+    return;
+  }
+  if (!activeTool) {
+    selectedUnitIds.clear();
+    await loadCapabilities();
+  }
+}
+
+async function activateTool(kind) {
+  if (isPlanning || isExecuting || !current?.product_status?.can_operate) return;
+  lastError = null;
+  operationPreview = null;
+  executeRequestId = null;
+  targetHex = null;
+  targetUnitId = null;
+  activeTool = kind;
+  if (kind === "MOVE") {
+    $("tool-instruction").textContent = "请在地图上点击目的六边形。";
+  } else if (kind === "SHOOT") {
+    $("tool-instruction").textContent = "请点击地图上高亮的可见敌方目标。";
+  } else if (kind === "WAIT" && !selectedUnitIds.size) {
+    if (!window.confirm("确认本方本轮不下达新操作？")) {
+      clearOperation();
+      return;
+    }
+    await previewOperation("WAIT", { whole_side_wait: true });
+  } else {
+    await previewOperation(kind);
+  }
+  render();
+}
+
+async function previewOperation(kind, extra = {}) {
+  if (isPlanning || isExecuting) return;
+  isPlanning = true;
+  lastError = null;
+  operationPreview = null;
+  render();
   try {
-    currentProposal = await requestJson("/api/plan-move", {
+    operationPreview = await requestJson("/api/product/preview", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         token,
-        request_id: nextRequestId("plan"),
-        expected_window: current.window.decision_window_index,
-        unit_id: selectedUnitId,
-        destination_hex: Number(hex.position_id),
+        request_id: nextRequestId(`preview-${kind.toLowerCase()}`),
+        actor_ids: extra.whole_side_wait ? [] : selectedIds(),
+        operation_type: kind,
         movement_mode: "NORMAL",
+        ...extra,
       }),
     });
-    $("status").textContent = currentProposal.reachable
-      ? `路径已生成：${currentProposal.ordered_path.join("→")}，预计 ${currentProposal.estimated_duration_ms} ms；请确认。`
-      : `不可达：${currentProposal.blocked_reason}`;
+    executeRequestId = nextRequestId("execute");
+    $("tool-instruction").textContent = operationPreview.can_execute
+      ? "请检查逐单位结果，然后点击执行。"
+      : "当前没有单位可以执行该操作。";
   } catch (error) {
-    $("status").textContent = `规划失败：${error.message}`;
+    lastError = error.message;
   } finally {
-    submitting = false;
+    isPlanning = false;
     render();
   }
 }
 
-async function stageAction(actionId) {
-  if (!actionId || submitting) return;
-  submitting = true;
+async function executeOperation() {
+  if (isExecuting || !operationPreview?.can_execute || !executeRequestId) return;
+  if (operationPreview.partial_confirmation_required
+      && !$("confirm-partial").checked) {
+    lastError = "请先确认仅执行可执行单位。";
+    render();
+    return;
+  }
+  isExecuting = true;
+  lastError = null;
+  render();
   try {
-    const response = await requestJson("/api/batch/stage", {
+    const result = await requestJson("/api/product/execute", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         token,
-        request_id: nextRequestId("stage"),
-        expected_window: current.window.decision_window_index,
-        action_id: actionId,
+        preview_token: operationPreview.preview_token,
+        request_id: executeRequestId,
+        confirm_partial: $("confirm-partial").checked,
       }),
     });
-    current.staged_actions = response.staged_actions;
-    $("status").textContent = "动作已在服务端暂存；同一actor的新选择会替换旧选择。";
+    operationPreview = null;
+    activeTool = null;
+    targetHex = null;
+    targetUnitId = null;
+    if (result.product_state === "WAITING_OPPONENT") {
+      lastError = null;
+    }
+    await refresh();
   } catch (error) {
-    $("status").textContent = `暂存失败：${error.message}`;
+    lastError = error.message;
   } finally {
-    submitting = false;
+    isExecuting = false;
     render();
   }
 }
 
 async function refresh() {
   try {
-    const next = await requestJson(`/api/bootstrap?token=${encodeURIComponent(token)}`);
-    if (currentWindowIndex !== null
-        && next.window.decision_window_index !== currentWindowIndex) {
-      selectedUnitId = null;
-      selectedShootTargetId = null;
-      moveSelectionMode = false;
-      currentProposal = null;
-      currentCommands = null;
-    }
-    currentWindowIndex = next.window.decision_window_index;
+    const next = await requestJson(
+      `/api/product/bootstrap?token=${encodeURIComponent(token)}`,
+    );
+    const frameChanged = lastFrameIndex !== null
+      && next.product_status.frame_index !== lastFrameIndex;
+    lastFrameIndex = next.product_status.frame_index;
     current = next;
     if (!mapRenderer) {
       mapRenderer = new window.ReplayMapRenderer.MapRenderer($("battlefield"), {
-        onUnitSelected: selectUnit,
+        onUnitSelected: handleUnitSelection,
         onHexHovered: renderHexInfo,
-        onHexSelected: (value) => { renderHexInfo(value); planMove(value); },
+        onHexSelected: handleHexSelection,
       });
       mapRenderer.setMap(current.scene.map);
     }
-    render();
+    const retained = selectedIds().filter((unitId) => (
+      isFriendlySelectable(unitById(unitId))
+    ));
+    selectedUnitIds.clear();
+    retained.forEach((unitId) => selectedUnitIds.add(unitId));
+    if (current.product_status.terminal) {
+      selectedUnitIds.clear();
+      clearOperation();
+    } else if (frameChanged) {
+      activeTool = null;
+      targetHex = null;
+      targetUnitId = null;
+      operationPreview = null;
+      executeRequestId = null;
+      await loadCapabilities();
+    } else {
+      render();
+    }
+    $("error-banner").hidden = true;
   } catch (error) {
+    lastError = error.message;
     $("error-banner").hidden = false;
-    $("error-banner").textContent = error.message;
+    $("error-banner").textContent = `页面状态读取失败：${error.message}`;
+    renderStatus();
   }
 }
 
-async function submit(staged) {
-  if (submitting || current.window.submitted || current.view.terminal) return;
-  submitting = true;
-  renderActions();
-  try {
-    const endpoint = staged ? "/api/batch/submit" : "/api/batch";
-    const body = staged ? {
-      token,
-      request_id: nextRequestId("submit"),
-      expected_window: current.window.decision_window_index,
-    } : {
-      token,
-      request_id: nextRequestId("empty"),
-      expected_window: current.window.decision_window_index,
-      ordered_action_ids: [],
-    };
-    const response = await requestJson(endpoint, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    $("status").textContent = JSON.stringify(response.result, null, 2);
-    await refresh();
-  } catch (error) {
-    $("status").textContent = `提交失败：${error.message}`;
-  } finally {
-    submitting = false;
-    if (current) renderActions();
-  }
-}
-
-$("confirm-proposal").addEventListener("click", () => (
-  stageAction(currentProposal?.action_id)
+operationButtons.forEach((button) => button.addEventListener(
+  "click", () => activateTool(button.dataset.operation),
 ));
-$("submit-batch").addEventListener("click", () => submit(true));
-$("submit-empty").addEventListener("click", () => submit(false));
+$("cancel-operation").addEventListener("click", () => clearOperation());
+$("execute-operation").addEventListener("click", executeOperation);
+$("confirm-partial").addEventListener("change", renderToolbar);
 $("reset-map-view").addEventListener("click", () => mapRenderer?.resetView());
+window.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  if (activeTool || operationPreview) clearOperation();
+  else clearOperation({ clearSelection: true });
+});
+
 refresh();
-setInterval(refresh, 1000);
+setInterval(() => { if (!isPlanning && !isExecuting) refresh(); }, 1000);

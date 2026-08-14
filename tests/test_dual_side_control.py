@@ -110,6 +110,17 @@ def test_dual_pages_static_assets_and_default_cli_are_loopback_only(tmp_path: Pa
                 status, payload, _ = request(address, "GET", path)
                 assert status == 200
                 assert payload
+                if path.startswith("/red"):
+                    page = payload.decode("utf-8")
+                    assert "算子命令" not in page
+                    assert "本窗口批次" not in page
+                    assert "action_id" not in page.lower()
+                    assert "decisionwindow" not in page.lower()
+                    assert '<details id="advanced-debug"' in page
+                    assert (
+                        '<details id="advanced-debug" class="advanced-debug" open'
+                        not in page
+                    )
             assert request(
                 address, "GET", "/red?token=blue-token-456"
             )[0] == 403

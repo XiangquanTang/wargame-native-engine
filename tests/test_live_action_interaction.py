@@ -42,18 +42,48 @@ def test_dual_control_uses_shared_renderer_and_server_planning_only() -> None:
     renderer = (STATIC / "map_renderer.js").read_text(encoding="utf-8")
 
     assert 'new window.ReplayMapRenderer.MapRenderer' in source
-    assert '"/api/plan-move"' in source
-    assert '"/api/batch/stage"' in source
-    assert '"/api/batch/submit"' in source
+    assert '"/api/product/preview"' in source
+    assert '"/api/product/execute"' in source
+    assert '"/api/product/capabilities"' in source
+    assert '"/api/plan-move"' not in source
+    assert '"/api/batch/stage"' not in source
+    assert '"/api/batch/submit"' not in source
     assert "destination_hex" in source
-    assert "ordered_path" in source
+    assert "result.path" in source
     assert "new EngineAction" not in source
     assert "pathfind" not in source.lower()
     assert "lineOfSight" not in source
     assert '<script src="/static/map_renderer.js"></script>' in page
     assert '<canvas id="battlefield"' in page
-    assert "plannedPath" in renderer
-    assert "this.actionTargets.plannedPath.map" in renderer
+    assert "plannedPaths" in renderer
+    assert "planned.path.map" in renderer
+
+
+def test_product_page_hides_internal_control_panels_and_supports_multiselect() -> None:
+    source = (STATIC / "dual_control.js").read_text(encoding="utf-8")
+    page = (STATIC / "dual_control_index.html").read_text(encoding="utf-8")
+    renderer = (STATIC / "map_renderer.js").read_text(encoding="utf-8")
+
+    assert "算子命令" not in page
+    assert "本窗口批次" not in page
+    assert "action_id" not in page.lower()
+    assert "decisionwindow" not in page.lower()
+    assert "expected_window" not in page.lower()
+    assert '<details id="advanced-debug"' in page
+    assert '<details id="advanced-debug" class="advanced-debug" open' not in page
+    for identifier in (
+        "tool-move", "tool-shoot", "tool-stop", "tool-unfold",
+        "tool-lock", "tool-wait", "cancel-operation", "execute-operation",
+    ):
+        assert f'id="{identifier}"' in page
+    assert "const selectedUnitIds = new Set()" in source
+    assert "modifiers.ctrlKey || modifiers.metaKey" in source
+    assert "modifiers.shiftKey" in source
+    assert 'event.key !== "Escape"' in source
+    assert "isFriendlySelectable" in source
+    assert "selectedUnitIds.has" in renderer
+    assert "ctrlKey: event.ctrlKey" in renderer
+    assert "this.drag.moved" in renderer
 
 
 def test_live_action_index_pure_functions_when_node_is_available() -> None:

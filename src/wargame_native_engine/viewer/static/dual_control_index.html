@@ -3,57 +3,103 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Native 双边决策窗口</title>
+  <title>Native 本地兵棋控制</title>
   <link rel="stylesheet" href="/static/styles.css">
   <link rel="stylesheet" href="/static/live_styles.css">
 </head>
 <body>
   <header>
     <div>
-      <p class="eyebrow">LOCAL · DUAL SIDE · DECISION WINDOW</p>
-      <h1>Native 双边准实时控制</h1>
+      <p class="eyebrow">LOCAL · SIDE CONTROL</p>
+      <h1>Native 本地兵棋控制</h1>
     </div>
     <div class="badges">
       <span id="side-badge" class="badge"></span>
-      <span id="window-badge" class="badge warn"></span>
-      <span class="badge no">仅本方Observation和冻结动作ID</span>
+      <span id="product-state-badge" class="badge warn">正在连接</span>
+      <span class="badge no">仅显示本方可见态势</span>
     </div>
   </header>
-  <main class="live-main">
+
+  <main class="live-main product-live-main">
     <section class="panel battle-panel">
       <div class="section-title">
-        <div><h2>本方可见地图态势</h2><p id="map-mode">正在加载…</p></div>
+        <div>
+          <h2>地图态势</h2>
+          <p id="map-mode">正在加载…</p>
+        </div>
         <div class="frame-readout">Frame <strong id="frame-index">0</strong></div>
       </div>
       <div class="map-tools">
         <button id="reset-map-view" type="button">适配地图</button>
-        <span>滚轮缩放 · 拖动平移 · 点击己方算子 · MOVE后点击目的格</span>
+        <span>滚轮缩放 · 拖动平移 · 单击选择 · Ctrl/Cmd或Shift多选</span>
       </div>
-      <canvas id="battlefield" aria-label="当前方可见六角地图"></canvas>
+      <canvas id="battlefield" aria-label="当前阵营可见六角地图"></canvas>
       <p id="hex-info" class="hex-info">移动鼠标查看六边形坐标</p>
     </section>
-    <aside class="panel command-panel">
-      <div class="section-title"><h2>算子命令与本窗口批次</h2></div>
-      <p id="deadline">同步模式</p>
-      <p id="selected-unit">请选择己方算子</p>
-      <pre id="unit-commands">{}</pre>
-      <div id="actions" class="action-groups"></div>
-      <pre id="proposal-preview">尚未规划路径</pre>
-      <button id="confirm-proposal" type="button" disabled>确认并暂存路径 action_id</button>
-      <pre id="batch-preview">[]</pre>
-      <button id="submit-batch" type="button">提交有序action_id批次</button>
-      <button id="submit-empty" type="button">明确提交空批次 / NoOp</button>
-      <pre id="status">等待选择</pre>
-      <p class="boundary-note">同一actor后选动作替换前选动作；客户端不提交EngineAction参数。双方批次都到达后，Gateway只推进一个DecisionWindow。</p>
+
+    <aside class="panel command-panel product-command-panel">
+      <section class="product-section match-summary">
+        <h2>当前阵营与对局状态</h2>
+        <p><strong id="side-summary">正在加载</strong></p>
+        <p id="time-summary">仿真时间 0 ms</p>
+      </section>
+
+      <section class="product-section">
+        <h2>已选单位</h2>
+        <div id="selection-summary" class="selection-summary">尚未选择己方单位</div>
+      </section>
+
+      <section class="product-section">
+        <h2>操作</h2>
+        <div class="operation-toolbar" role="toolbar" aria-label="单位操作">
+          <button id="tool-move" data-operation="MOVE" type="button">机动 <small>0/0 可用</small></button>
+          <button id="tool-shoot" data-operation="SHOOT" type="button">射击 <small>0/0 可用</small></button>
+          <button id="tool-stop" data-operation="STOP_MOVE" type="button">停止 <small>0/0 可用</small></button>
+          <button id="tool-unfold" data-operation="WEAPON_UNFOLD" type="button">武器展开 <small>0/0 可用</small></button>
+          <button id="tool-lock" data-operation="WEAPON_LOCK" type="button">武器锁定 <small>0/0 可用</small></button>
+          <button id="tool-wait" data-operation="WAIT" type="button">等待 <small>整方或所选单位</small></button>
+        </div>
+        <p id="tool-instruction" class="tool-instruction">请选择一个或多个己方单位。</p>
+      </section>
+
+      <section class="product-section operation-preview-section">
+        <div class="preview-heading">
+          <h2>当前操作预览</h2>
+          <span id="preview-counts" class="preview-counts">尚无预览</span>
+        </div>
+        <div id="operation-preview" class="operation-preview empty">
+          选择功能和目标后，这里会显示逐单位的路径、时间或失败原因。
+        </div>
+        <div id="weapon-choices" class="weapon-choices" hidden></div>
+        <label id="partial-confirmation" class="partial-confirmation" hidden>
+          <input id="confirm-partial" type="checkbox">
+          我确认仅执行可执行单位，跳过其余单位
+        </label>
+        <div class="execute-row">
+          <button id="cancel-operation" type="button" class="secondary">取消</button>
+          <button id="execute-operation" type="button" class="primary" disabled>执行</button>
+        </div>
+      </section>
+
+      <details id="advanced-debug" class="advanced-debug">
+        <summary>高级调试</summary>
+        <dl>
+          <div><dt>会话</dt><dd id="debug-session">—</dd></div>
+          <div><dt>阵营</dt><dd id="debug-side">—</dd></div>
+          <div><dt>当前帧</dt><dd id="debug-frame">0</dd></div>
+          <div><dt>仿真时间</dt><dd id="debug-sim-time">0 ms</dd></div>
+          <div><dt>最近请求</dt><dd id="debug-request">—</dd></div>
+        </dl>
+      </details>
     </aside>
-    <section class="panel observation-panel">
-      <div class="section-title"><h2>当前方 Observation</h2></div>
-      <pre id="observation">正在加载…</pre>
-    </section>
   </main>
+
+  <footer id="status-bar" class="product-status-bar" aria-live="polite">
+    <strong id="status-label">正在连接</strong>
+    <span id="status-message">正在读取本方地图态势。</span>
+  </footer>
   <div id="error-banner" role="alert" hidden></div>
   <script src="/static/map_renderer.js"></script>
-  <script src="/static/live_actions.js"></script>
   <script src="/static/dual_control.js"></script>
 </body>
 </html>

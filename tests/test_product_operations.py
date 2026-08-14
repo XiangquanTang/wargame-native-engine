@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+from copy import deepcopy
+import json
 from pathlib import Path
 
 import pytest
 
-from wargame_native_engine.data import ScenarioBundle, ScenarioCatalog
+from wargame_native_engine.data import (
+    DataProvenance,
+    ScenarioBundle,
+    ScenarioCatalog,
+)
 from wargame_native_engine.gateway import CommandGatewayError
 from wargame_native_engine.operations import (
     ProductOperationService,
@@ -176,6 +182,29 @@ def test_preview_request_conflict_cross_side_and_expiration(product_match) -> No
         red.preview(preview.preview_token)
 
 
+def test_new_selection_replaces_older_unexecuted_actor_preview(
+    product_match,
+) -> None:
+    red = ProductOperationService(product_match.bind_controller(
+        "red", controller_id="product-red"
+    ))
+    first = red.preview_operation(
+        [1], "MOVE", request_id="first-choice", destination_hex=104
+    )
+    second = red.preview_operation(
+        [1], "MOVE", request_id="second-choice", destination_hex=105
+    )
+
+    with pytest.raises(CommandGatewayError, match="preview_not_found"):
+        red.execute_preview(first.preview_token, request_id="execute-old")
+    with pytest.raises(CommandGatewayError, match="preview_superseded"):
+        red.preview_operation(
+            [1], "MOVE", request_id="first-choice", destination_hex=104
+        )
+    result = red.execute_preview(second.preview_token, request_id="execute-new")
+    assert result.executed_count == 1
+
+
 def test_zero_executable_preview_cannot_execute(product_match) -> None:
     red = ProductOperationService(product_match.bind_controller(
         "red", controller_id="product-red"
@@ -234,3 +263,173 @@ def test_shoot_preview_uses_frozen_server_target_after_movement(product_match) -
         "summary": "武器36",
     },)
     assert "action_id" not in str(shoot.to_record()).lower()
+
+
+def test_five_unit_move_preview_keeps_independent_server_paths(
+    tmp_path: Path,
+) -> None:
+    record = json.loads(SCENARIO.read_text(encoding="utf-8"))
+    source = record["operators"][0]
+    for unit_id in (3, 4, 5, 6):
+        unit = deepcopy(source)
+        unit["operator_id"] = unit_id
+        unit["subtype"] = f"fixture-vehicle-{unit_id}"
+        record["operators"].append(unit)
+        record["deployment"]["positions"]["red"][str(unit_id)] = [1, 1]
+    record["scenario_id"] = "five-unit-product-preview"
+    bundle = ScenarioBundle.from_record(
+        record,
+        provenance=DataProvenance(
+            source_sha256="fixture-five-unit",
+            source_kind="test_fixture",
+        ),
+    )
+    app = WargameFacade(
+        ScenarioCatalog.from_bundles({
+            bundle.scenario_identity.scenario_id: bundle,
+        }),
+        storage_root=tmp_path / "sessions",
+    )
+    match = app.create_match(
+        scenario_id=bundle.scenario_identity.scenario_id,
+        red_controller_id="five-red",
+        blue_controller_id="five-blue",
+        seed=42,
+        decision_interval_ms=10_000,
+        frame_interval_ms=10_000,
+    )
+    try:
+        red = ProductOperationService(match.bind_controller(
+            "red", controller_id="five-red"
+        ))
+        blue = ProductOperationService(match.bind_controller(
+            "blue", controller_id="five-blue"
+        ))
+        unit_ids = [1, 3, 4, 5, 6]
+        preview = red.preview_operation(
+            unit_ids,
+            "MOVE",
+            request_id="five-preview",
+            destination_hex=105,
+        )
+        assert preview.selected_count == 5
+        assert preview.executable_count == 5
+        assert preview.rejected_count == 0
+        assert {
+            item.unit_id for item in preview.per_unit_results
+        } == set(unit_ids)
+        assert all(
+            item.path == (102, 103, 104, 105)
+            for item in preview.per_unit_results
+        )
+
+        public = preview.to_record()
+        public["per_unit_results"][0]["path"][:] = [999]
+        red.execute_preview(preview.preview_token, request_id="five-submit")
+        wait = blue.preview_operation(
+            [], "WAIT", request_id="five-blue-wait", whole_side_wait=True
+        )
+        result = blue.execute_preview(
+            wait.preview_token, request_id="five-blue-submit"
+        )
+        assert result.advanced is True
+        step = match.gateway.manager._managed(  # noqa: SLF001
+            match.session_id
+        ).environment.last_step_record
+        actions = step["ordered_actions"]
+        assert [item["actor_id"] for item in actions] == unit_ids
+        assert all(
+            item["parameters"]["path"] == [102, 103, 104, 105]
+            for item in actions
+        )
+    finally:
+        match.close()
+
+
+def test_two_unit_shoot_preview_matches_only_frozen_server_actions(
+    tmp_path: Path,
+) -> None:
+    record = json.loads(SCENARIO.read_text(encoding="utf-8"))
+    red_source = record["operators"][0]
+    red_source["current_hex"] = 105
+    red_source["x"] = 5
+    record["deployment"]["positions"]["red"]["1"] = [5, 1]
+    second = deepcopy(red_source)
+    second["operator_id"] = 3
+    second["subtype"] = "fixture-second-shooter"
+    record["operators"].append(second)
+    record["deployment"]["positions"]["red"]["3"] = [5, 1]
+    record["scenario_id"] = "two-unit-product-fire"
+    bundle = ScenarioBundle.from_record(
+        record,
+        provenance=DataProvenance(
+            source_sha256="fixture-two-shooters",
+            source_kind="test_fixture",
+        ),
+    )
+    app = WargameFacade(
+        ScenarioCatalog.from_bundles({
+            bundle.scenario_identity.scenario_id: bundle,
+        }),
+        storage_root=tmp_path / "sessions",
+    )
+    match = app.create_match(
+        scenario_id=bundle.scenario_identity.scenario_id,
+        red_controller_id="shoot-red",
+        blue_controller_id="shoot-blue",
+        seed=42,
+        decision_interval_ms=1_000,
+        frame_interval_ms=1_000,
+    )
+    try:
+        red = ProductOperationService(match.bind_controller(
+            "red", controller_id="shoot-red"
+        ))
+        blue = ProductOperationService(match.bind_controller(
+            "blue", controller_id="shoot-blue"
+        ))
+        if red.capabilities([1, 3])["operations"]["SHOOT"][
+            "applicable_count"
+        ] == 0:
+            red_wait = red.preview_operation(
+                [], "WAIT", request_id="visibility-red", whole_side_wait=True
+            )
+            blue_wait = blue.preview_operation(
+                [], "WAIT", request_id="visibility-blue", whole_side_wait=True
+            )
+            red.execute_preview(red_wait.preview_token, request_id="visibility-r")
+            blue.execute_preview(blue_wait.preview_token, request_id="visibility-b")
+
+        preview = red.preview_operation(
+            [1, 3], "SHOOT", request_id="two-shooters", target_id=2
+        )
+        assert preview.executable_count == 2
+        assert preview.rejected_count == 0
+        assert all(
+            item.weapon_options == ({
+                "weapon_id": 36,
+                "target_id": 2,
+                "summary": "武器36",
+            },)
+            for item in preview.per_unit_results
+        )
+        red.execute_preview(preview.preview_token, request_id="fire-red")
+        blue_wait = blue.preview_operation(
+            [], "WAIT", request_id="fire-blue-wait", whole_side_wait=True
+        )
+        result = blue.execute_preview(
+            blue_wait.preview_token, request_id="fire-blue"
+        )
+        assert result.advanced is True
+        step = match.gateway.manager._managed(  # noqa: SLF001
+            match.session_id
+        ).environment.last_step_record
+        assert [
+            item["action_type"] for item in step["ordered_actions"]
+        ] == ["SHOOT", "SHOOT"]
+        assert {
+            item["actor_id"] for item in step["ordered_actions"]
+        } == {1, 3}
+        assert all(item["target_id"] == 2 for item in step["ordered_actions"])
+    finally:
+        match.close()

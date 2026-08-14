@@ -286,7 +286,13 @@ class ProductOperationService:
                         "request_id_conflict",
                         "preview request_id was reused with another operation",
                     )
-                return deepcopy(self._previews[cached[1]].preview)
+                stored_cached = self._previews.get(cached[1])
+                if stored_cached is None:
+                    raise CommandGatewayError(
+                        "preview_superseded",
+                        "this operation was replaced by a newer selection",
+                    )
+                return deepcopy(stored_cached.preview)
 
             results: list[UnitOperationPreview] = []
             action_ids: list[str] = []
@@ -340,6 +346,7 @@ class ProductOperationService:
                 bool(rejected and executable),
                 whole_side_wait,
             )
+            self._replace_overlapping_previews(preview)
             self._previews[token] = _StoredPreview(preview, tuple(action_ids))
             self._preview_requests[request] = (signature, token)
             self.controller.record_operation_preview(
@@ -354,6 +361,23 @@ class ProductOperationService:
                 } for item in results if not item.accepted_for_preview),
             )
             return deepcopy(preview)
+
+    def _replace_overlapping_previews(
+        self, preview: GroupOperationPreview,
+    ) -> None:
+        incoming = {item.unit_id for item in preview.per_unit_results}
+        for token, stored in tuple(self._previews.items()):
+            if stored.execution_result is not None:
+                continue
+            existing = {
+                item.unit_id for item in stored.preview.per_unit_results
+            }
+            if (
+                preview.whole_side_wait
+                or stored.preview.whole_side_wait
+                or incoming.intersection(existing)
+            ):
+                del self._previews[token]
 
     def preview(self, preview_token: str) -> GroupOperationPreview:
         with self._lock:

@@ -208,6 +208,11 @@ class DualSideControlRequestHandler(BaseHTTPRequestHandler):
                     raise ValueError(
                         "operation preview contains missing or unsupported fields"
                     )
+                if (
+                    "whole_side_wait" in body
+                    and type(body["whole_side_wait"]) is not bool
+                ):
+                    raise ValueError("whole_side_wait must be bool")
                 side, _ = self._seat(body["token"])
                 preview = self.server.product_services[side].preview_operation(
                     body["actor_ids"],
@@ -491,7 +496,7 @@ class DualSideControlRequestHandler(BaseHTTPRequestHandler):
             "side_already_submitted", "decision_window_closed",
             "decision_window_expired", "session_terminal", "session_finalized",
             "preview_not_found", "preview_expired", "preview_already_executed",
-            "partial_confirmation_required", "side_already_submitted",
+            "preview_superseded", "partial_confirmation_required",
         }
         self._send_json(
             HTTPStatus.CONFLICT if exc.code in conflict else HTTPStatus.FORBIDDEN,
