@@ -138,7 +138,7 @@ def controller_view_record(view: ControllerView) -> dict[str, object]:
     return {
         **view.to_record(),
         "frame": {
-            "frame_index": view.step_index,
+            "frame_index": view.frame_index,
             "time": frame.get("time", {}),
             "actions": frame.get("actions", []),
             "judge_info": frame.get("judge_info", []),
