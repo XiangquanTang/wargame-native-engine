@@ -2,7 +2,11 @@
   "schema": "native-engine-runtime-contract-acceptance/1.0",
   "scope": "Native simplified rules; exact time, visibility prefilter, movement cost contract and 100-operator deterministic run",
   "baseline_head": "32444e461bee7ac59534a8a94ad81de2bd484f1a",
-  "verified_implementation_head": "ca46a00",
+  "verified_implementation_head": "10f59a8c0a7563180ef51dabd249d1a12cfe3e4e",
+  "visibility_rule_fix_commit": {
+    "sha": "10f59a8",
+    "subject": "fix(visibility): align endpoint and drone observation"
+  },
   "stage_commits": [
     {
       "sha": "a10dbaf",
@@ -39,7 +43,10 @@
     "full_los_still_required": true,
     "source_see_npz_integrated": false,
     "source_see_npz_sha256": "019bee4a66cbf8c21ea1c010bc9449706c38d1c1ce57c89e5d9ebc38a9c33bb0",
-    "source_see_npz_reason_not_integrated": "the meaning of the leading dimension is not proven by a Native contract",
+    "source_see_npz_compressed_size_bytes": 22335408,
+    "source_see_npz_expanded_data_bytes": 1000000000,
+    "source_see_npz_axes": ["mode", "point1_row", "point1_column", "point2_row", "point2_column"],
+    "source_see_npz_reason_not_integrated": "schema evidence exists, but Native has no provenance-backed shared read-only representation and eager per-Session expansion is about 953.7 MiB",
     "baseline_report_sha256": "e50a5a4e5f6180220a06a1edc930b09e573a4f5dd5bd5a1759f4277e5ec5c4af",
     "prefilter_report_sha256": "ac39de06edc83b1e3097096fa167e6cdcbb5487a6b60c2436d8e3f271cd5a614",
     "baseline_100_operator_ms": {
@@ -116,8 +123,8 @@
     ]
   },
   "formal_map_123_regression": {
-    "temporary_report": "/tmp/wargame_acceptance_2201010105_exact_visibility_final/real_scenario_runtime.json",
-    "temporary_report_sha256": "f7587963a2fd301e6b22446d80c5cd32eac9c019fe649ba280ac7edb7fc4be57",
+    "temporary_report": "/tmp/wargame_visibility_fix_2201010105/real_scenario_runtime.json",
+    "temporary_report_sha256": "5e32378807600809a63e20c97032691802d1ba45ee6fa7dd153e8c63bfa6c515",
     "scenario_id": "source-2201010105-native-v1",
     "operator_count": 49,
     "decision_windows": 15,
@@ -141,10 +148,16 @@
       "seconds": 169.20
     },
     "full": {
-      "passed": 1184,
+      "passed": 1188,
       "failed": 0,
       "skipped": 2,
-      "seconds": 234.19
+      "seconds": 248.13
+    },
+    "visibility_fix_targeted": {
+      "passed": 115,
+      "failed": 0,
+      "skipped": 0,
+      "seconds": 170.07
     },
     "skips": [
       "tests/test_live_action_interaction.py: Node.js is not installed",
@@ -153,7 +166,7 @@
   },
   "known_limits": [
     "the 100-operator managed frame remains slower than a claimed 1Hz target",
-    "historical see.npz semantics are not yet proven and are not used",
+    "historical see.npz schema is documented but no provenance-backed memory-safe Native adapter is implemented",
     "the long run is scheduling/evidence coverage rather than a combat-quality benchmark",
     "Node/browser interaction was not executed because Node.js is not installed",
     "no claim is made for all historical scenarios or 370000 replays"

@@ -58,12 +58,26 @@ observation distance. The exhaustive regression verifies that no pair judged
 observable by the full existing rule is rejected by the prefilter over all
 current observation domains and tested distances.
 
-The historical Map 123 `123see.npz` was not integrated. It is a boolean array
-with shape `(10, 100, 100, 100, 100)`, but the first-axis semantics are not
-defined by a current Native contract. Treating it as authoritative without
-that evidence would silently import an unknown old-platform visibility rule.
-Its read-only source SHA-256 is
+The historical Map 123 `123see.npz` is not integrated into Native adjudication.
+Read-only archived SDK documentation now establishes its five axes as
+`(mode, point1_row, point1_column, point2_row, point2_column)` and identifies
+the ten modes as ground/20m/200m/500m endpoint-height combinations. It is a
+static line-of-sight lookup, not a final unit-observation result.
+
+The compressed file is 22,335,408 bytes, but its boolean shape
+`(10, 100, 100, 100, 100)` expands to 1,000,000,000 data bytes (about 953.7
+MiB) before Python/NumPy overhead. Loading or copying it per Session is not an
+acceptable runtime contract. A future adapter needs one provenance-backed,
+read-only representation, explicit mode selection, shape/map-identity checks
+and algorithm/LUT cross-validation. Its read-only source SHA-256 is
 `019bee4a66cbf8c21ea1c010bc9449706c38d1c1ce57c89e5d9ebc38a9c33bb0`.
+
+The algorithmic Native LOS remains authoritative for now. It applies the
+knowledge-base high-endpoint bonus to whichever endpoint is higher, independent
+of query direction. Explicit canonical `DRONE` and `LOITERING_MUNITION`
+platforms use the drone/loitering observation-distance profile in both the
+cheap distance gate and the full observation/direct-fire query. Unknown AIR
+platforms are not guessed into that category.
 
 ## 3. Movement cost and arrival contract
 
