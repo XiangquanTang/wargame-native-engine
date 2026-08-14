@@ -2,8 +2,29 @@ from __future__ import annotations
 
 from wargame_native_engine.compat.source_frame.models import UnitDomain
 from wargame_native_engine.visibility.line_of_sight import HexMapProfile, evaluate_line_of_sight
+from wargame_native_engine.visibility.line_of_sight import hex_distance
 from wargame_native_engine.visibility.profiles import ObservationProfiles
 from wargame_native_engine.visibility.result import VisibilityResult
+
+
+def within_maximum_observation_distance(
+    *,
+    observer_hex: int,
+    target_hex: int,
+    observer_domain: UnitDomain,
+    target_domain: UnitDomain,
+    observation_profiles: ObservationProfiles | None = None,
+) -> bool:
+    """Cheap conservative gate before LOS evaluation.
+
+    Terrain and concealment can only reduce the profile limit, so a pair beyond
+    this unmodified maximum can never be observable. Returning ``True`` does
+    not establish visibility; callers must still run ``evaluate_visibility``.
+    """
+
+    profiles = observation_profiles or ObservationProfiles()
+    limit = profiles.limit(observer_domain, target_domain)
+    return limit > 0 and hex_distance(observer_hex, target_hex) <= limit
 
 
 def evaluate_visibility(profile: HexMapProfile, *, observer_hex: int,

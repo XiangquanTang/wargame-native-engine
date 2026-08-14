@@ -5,7 +5,7 @@ import pytest
 from wargame_native_engine.compat.source_frame.models import UnitDomain
 from wargame_native_engine.visibility import (
     HexCell, HexMapProfile, ObservationProfiles, evaluate_line_of_sight,
-    evaluate_visibility,
+    evaluate_visibility, within_maximum_observation_distance,
 )
 
 
@@ -68,3 +68,60 @@ def test_observation_profile_by_target_type() -> None:
     assert values.limit(UnitDomain.VEHICLE, UnitDomain.PERSONNEL) == 10
     assert values.limit(UnitDomain.PERSONNEL, UnitDomain.VEHICLE) == 25
     assert values.limit(UnitDomain.AIR, UnitDomain.AIR) == 25
+
+
+@pytest.mark.parametrize(
+    ("target_col", "expected"),
+    [(11, True), (12, False)],
+)
+def test_maximum_distance_gate_is_exact_at_personnel_boundary(
+    target_col: int,
+    expected: bool,
+) -> None:
+    assert within_maximum_observation_distance(
+        observer_hex=101,
+        target_hex=100 + target_col,
+        observer_domain=UnitDomain.PERSONNEL,
+        target_domain=UnitDomain.PERSONNEL,
+    ) is expected
+
+
+def test_maximum_distance_gate_never_rejects_an_observable_pair() -> None:
+    profile = line_profile(30)
+    profiles = ObservationProfiles()
+    for observer_domain in (UnitDomain.PERSONNEL, UnitDomain.VEHICLE):
+        for target_domain in (UnitDomain.PERSONNEL, UnitDomain.VEHICLE):
+            for target_col in range(2, 31):
+                gated = within_maximum_observation_distance(
+                    observer_hex=101,
+                    target_hex=100 + target_col,
+                    observer_domain=observer_domain,
+                    target_domain=target_domain,
+                    observation_profiles=profiles,
+                )
+                result = evaluate_visibility(
+                    profile,
+                    observer_hex=101,
+                    target_hex=100 + target_col,
+                    observer_domain=observer_domain,
+                    target_domain=target_domain,
+                    observation_profiles=profiles,
+                )
+                assert gated or not result.observable
+
+
+def test_maximum_distance_gate_does_not_replace_los_or_terrain_rules() -> None:
+    profile = line_profile(4, elevations={2: 9})
+    assert within_maximum_observation_distance(
+        observer_hex=101,
+        target_hex=104,
+        observer_domain=UnitDomain.VEHICLE,
+        target_domain=UnitDomain.VEHICLE,
+    )
+    assert not evaluate_visibility(
+        profile,
+        observer_hex=101,
+        target_hex=104,
+        observer_domain=UnitDomain.VEHICLE,
+        target_domain=UnitDomain.VEHICLE,
+    ).observable

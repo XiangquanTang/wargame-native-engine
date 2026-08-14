@@ -47,7 +47,8 @@ from wargame_native_engine.systems.movement import (
 from wargame_native_engine.systems.terminal import evaluate_terminal
 from wargame_native_engine.systems.visibility import can_see
 from wargame_native_engine.visibility import (
-    HexCell, HexMapProfile, evaluate_visibility,
+    HexCell, HexMapProfile, ObservationProfiles, evaluate_visibility,
+    within_maximum_observation_distance,
 )
 
 
@@ -80,6 +81,7 @@ class NativeEngine:
         self._source_policy: SourceMovementPolicy | None = None
         self._source_map: SourceHexMap | None = None
         self._source_visibility_map: HexMapProfile | None = None
+        self._source_observation_profiles = ObservationProfiles()
         self._source_valid_actions_cache: dict[
             str, tuple[Mapping[str, Any], ...]
         ] = {}
@@ -1109,17 +1111,27 @@ class NativeEngine:
                                key=lambda item: item.operator_id):
             visible: list[int] = []
             if observer.alive and observer.deployed and observer.current_hex is not None:
+                observer_domain = _unit_domain(observer.operator_type)
                 for target in sorted(world.operators.values(),
                                      key=lambda item: item.operator_id):
                     if (target.side == observer.side or not target.alive
                             or not target.deployed or target.current_hex is None):
                         continue
+                    target_domain = _unit_domain(target.operator_type)
+                    if not within_maximum_observation_distance(
+                        observer_hex=observer.current_hex,
+                        target_hex=target.current_hex,
+                        observer_domain=observer_domain,
+                        target_domain=target_domain,
+                        observation_profiles=self._source_observation_profiles,
+                    ):
+                        continue
                     result = evaluate_visibility(
                         self._source_visibility_map,
                         observer_hex=observer.current_hex,
                         target_hex=target.current_hex,
-                        observer_domain=_unit_domain(observer.operator_type),
-                        target_domain=_unit_domain(target.operator_type),
+                        observer_domain=observer_domain,
+                        target_domain=target_domain,
                         target_concealed=bool(
                             target.raw_attributes.get("concealed", False)),
                         target_terrain=self._source_map.terrain(
