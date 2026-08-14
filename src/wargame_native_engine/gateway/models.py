@@ -26,6 +26,7 @@ class SessionDescriptor:
     finalized: bool = False
     frame_index: int = 0
     sim_time_ms: int = 0
+    lifecycle_state: str = "Running"
 
     def to_record(self) -> dict[str, object]:
         return {
@@ -35,6 +36,7 @@ class SessionDescriptor:
             "finalized": self.finalized,
             "frame_index": self.frame_index,
             "sim_time_ms": self.sim_time_ms,
+            "lifecycle_state": self.lifecycle_state,
         }
 
 

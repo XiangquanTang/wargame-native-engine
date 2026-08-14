@@ -34,6 +34,7 @@ from wargame_native_engine.replay import SourceFrameRecorder
 from wargame_native_engine.session.source_environment import (
     SourceCompatibleEnvironment,
 )
+from wargame_native_engine.session.deployment import SessionLifecycleState
 from wargame_native_engine.version import ENGINE_VERSION
 
 
@@ -129,6 +130,7 @@ class SessionManager:
             finalized=False,
             frame_index=0,
             sim_time_ms=self.sim_time_ms(external_id),
+            lifecycle_state=_managed_lifecycle(managed).value,
         )
 
     def descriptor(self, session_id: str) -> SessionDescriptor:
@@ -142,6 +144,7 @@ class SessionManager:
                 finalized=managed.finalized,
                 frame_index=managed.step_index,
                 sim_time_ms=_managed_sim_time_ms(managed),
+                lifecycle_state=_managed_lifecycle(managed).value,
             )
 
     def controller_view(self, session_id: str, side: str) -> ControllerView:
@@ -275,6 +278,7 @@ class SessionManager:
                 finalized=False,
                 frame_index=managed.step_index,
                 sim_time_ms=_managed_sim_time_ms(managed),
+                lifecycle_state=_managed_lifecycle(managed).value,
             )
 
     def publish_session(
@@ -417,6 +421,16 @@ def _managed_sim_time_ms(managed: _ManagedSession) -> int:
     if type(value) is not int or value < 0:
         raise RuntimeError("invalid_authoritative_sim_time")
     return value
+
+
+def _managed_lifecycle(managed: _ManagedSession) -> SessionLifecycleState:
+    if managed.environment.session.closed:
+        return SessionLifecycleState.CLOSED
+    if managed.finalized:
+        return SessionLifecycleState.PUBLISHED
+    if managed.environment.session.is_terminal():
+        return SessionLifecycleState.TERMINATED
+    return SessionLifecycleState.RUNNING
 
 
 def _require_side(managed: _ManagedSession, side: str) -> None:
