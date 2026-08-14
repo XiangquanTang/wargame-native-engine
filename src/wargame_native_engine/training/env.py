@@ -16,6 +16,8 @@ from wargame_native_engine.gateway import (
     SessionPublication,
     SimulationAdvance,
 )
+from wargame_native_engine.operations.controller import SideController
+from wargame_native_engine.operations.proposals import ActionProposal
 from wargame_native_engine.training.action_encoder import NativeActionEncoder
 from wargame_native_engine.training.models import (
     EncodedActionSpace,
@@ -82,6 +84,7 @@ class NativeTrainingEnv:
             frame_interval_ms=frame_interval_ms,
         )
         self._session_id: str | None = None
+        self._controller: SideController | None = None
         self._controller_ids = {
             "red": "native-training-red",
             "blue": "native-training-blue",
@@ -99,6 +102,7 @@ class NativeTrainingEnv:
         if self._session_id is not None:
             self._gateway.close_session(self._session_id)
             self._session_id = None
+            self._controller = None
         descriptor = self._gateway.create_session(
             red_controller_id=self._controller_ids["red"],
             blue_controller_id=self._controller_ids["blue"],
@@ -106,6 +110,11 @@ class NativeTrainingEnv:
             record=True,
         )
         self._session_id = descriptor.session_id
+        self._controller = SideController(
+            self._gateway,
+            descriptor.session_id,
+            self._controller_ids[self.controlled_side],
+        )
         self._step_count = 0
         self._ended = descriptor.terminal
         self._failed = False
@@ -152,16 +161,29 @@ class NativeTrainingEnv:
         window_index = before.step_index
         try:
             for side in ("red", "blue"):
-                self._gateway.submit_batch(
-                    self._require_session_id(),
-                    self._controller_ids[side],
-                    request_id=(
-                        f"training:{self._episode_sequence}:"
-                        f"{window_index}:{side}"
-                    ),
-                    expected_window=window_index,
-                    ordered_action_ids=by_side[side],
+                request_id = (
+                    f"training:{self._episode_sequence}:"
+                    f"{window_index}:{side}"
                 )
+                if side == self.controlled_side:
+                    controller = self._require_controller()
+                    controller.clear_staged()
+                    for action_id in by_side[side]:
+                        controller.stage_action(
+                            action_id, expected_window=window_index
+                        )
+                    controller.submit_batch(
+                        request_id=request_id,
+                        expected_window=window_index,
+                    )
+                else:
+                    self._gateway.submit_batch(
+                        self._require_session_id(),
+                        self._controller_ids[side],
+                        request_id=request_id,
+                        expected_window=window_index,
+                        ordered_action_ids=by_side[side],
+                    )
         except BaseException:
             self._failed = True
             raise
@@ -195,6 +217,31 @@ class NativeTrainingEnv:
         self._require_active()
         return tuple(self._action_space(self._controlled_view()).mask)
 
+    @property
+    def current_action_space(self) -> EncodedActionSpace:
+        """Current frozen action IDs, including server route proposals."""
+
+        self._require_active()
+        return self._action_space(self._controlled_view())
+
+    def plan_move(
+        self,
+        unit_id: int,
+        destination_hex: int,
+        *,
+        request_id: str,
+        movement_mode: str = "NORMAL",
+    ) -> ActionProposal:
+        """Optional destination adapter using the same Operations planner."""
+
+        self._require_active()
+        return self._require_controller().plan_move(
+            unit_id,
+            destination_hex,
+            request_id=request_id,
+            movement_mode=movement_mode,
+        )
+
     def publish(
         self,
         output_dir: str | Path,
@@ -222,6 +269,7 @@ class NativeTrainingEnv:
             if self._session_id is not None:
                 self._gateway.close_session(self._session_id)
                 self._session_id = None
+                self._controller = None
         finally:
             try:
                 self.opponent.close()
@@ -267,10 +315,7 @@ class NativeTrainingEnv:
             ) from exc
 
     def _controlled_view(self) -> ControllerView:
-        return self._gateway.view(
-            self._require_session_id(),
-            self._controller_ids[self.controlled_side],
-        )
+        return self._require_controller().observe()
 
     def _action_space(self, view: ControllerView) -> EncodedActionSpace:
         return self.action_encoder.encode(view.valid_actions)
@@ -320,6 +365,11 @@ class NativeTrainingEnv:
         if self._session_id is None:
             raise NativeTrainingError("training_env_not_reset")
         return self._session_id
+
+    def _require_controller(self) -> SideController:
+        if self._controller is None:
+            raise NativeTrainingError("training_env_not_reset")
+        return self._controller
 
     def _require_initialized(self) -> None:
         self._require_open()

@@ -221,6 +221,36 @@ def test_each_training_step_calls_opponent_and_underlying_step_once(
         environment.close()
 
 
+def test_training_destination_adapter_reuses_server_proposal_and_side_controller(
+    tmp_path: Path,
+) -> None:
+    environment, factory, _ = _training_env(tmp_path)
+    try:
+        environment.reset(seed=42)
+        proposal = environment.plan_move(
+            1,
+            106,
+            request_id="training-route",
+        )
+        assert proposal.reachable is True
+        assert proposal.action_id is not None
+        assert len(proposal.ordered_path) >= 5
+        space = environment.current_action_space
+        encoded = space.action_ids.index(proposal.action_id)
+
+        result = environment.step(encoded)
+
+        assert result.info["decision_window_index"] == 1
+        assert factory.environments[0].session.step.call_count == 1  # type: ignore[attr-defined]
+        assert factory.environments[0].last_step_record[
+            "ordered_actions"
+        ][0]["parameters"]["path"] == list(proposal.ordered_path)
+        assert result.observation["side"] == "red"
+        assert "green" not in result.observation
+    finally:
+        environment.close()
+
+
 @pytest.mark.parametrize("invalid", [True, -1, 16, "0"])
 def test_invalid_action_index_is_rejected_before_opponent_or_environment(
     tmp_path: Path,
