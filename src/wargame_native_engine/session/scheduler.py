@@ -64,12 +64,11 @@ class SimulationScheduler:
         sim_before = before.sim_time_ms
         current = before
         generated = 0
-        seconds = self.schedule.frame_interval_ms / 1000
         for offset in range(self.schedule.frames_per_decision):
-            current = self.manager.advance(
+            current = self.manager.advance_ms(
                 session_id,
                 tuple(ordered_actions) if offset == 0 else (),
-                delta_time_seconds=seconds,
+                delta_time_ms=self.schedule.frame_interval_ms,
                 decision_window_index=decision_window_index,
                 frame_interval_offset=offset,
             )

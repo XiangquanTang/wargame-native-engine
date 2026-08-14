@@ -35,6 +35,10 @@ from wargame_native_engine.replay import SourceFrameRecorder
 from wargame_native_engine.session.source_environment import (
     SourceCompatibleEnvironment,
 )
+from wargame_native_engine.core.time import (
+    require_positive_milliseconds,
+    seconds_to_milliseconds,
+)
 from wargame_native_engine.session.deployment import SessionLifecycleState
 from wargame_native_engine.version import ENGINE_VERSION
 
@@ -254,6 +258,24 @@ class SessionManager:
         decision_window_index: int | None = None,
         frame_interval_offset: int | None = None,
     ) -> SessionDescriptor:
+        return self.advance_ms(
+            session_id,
+            actions,
+            delta_time_ms=seconds_to_milliseconds(delta_time_seconds),
+            decision_window_index=decision_window_index,
+            frame_interval_offset=frame_interval_offset,
+        )
+
+    def advance_ms(
+        self,
+        session_id: str,
+        actions: Sequence[EngineAction],
+        *,
+        delta_time_ms: int,
+        decision_window_index: int | None = None,
+        frame_interval_offset: int | None = None,
+    ) -> SessionDescriptor:
+        delta_time_ms = require_positive_milliseconds(delta_time_ms)
         managed = self._managed(session_id)
         with managed.lock:
             self._require_usable(managed)
@@ -269,8 +291,7 @@ class SessionManager:
                 )
             try:
                 update = managed.live.step(
-                    tuple(actions),
-                    delta_time_seconds=delta_time_seconds,
+                    tuple(actions), delta_time_ms=delta_time_ms
                 )
             except BaseException:
                 try:

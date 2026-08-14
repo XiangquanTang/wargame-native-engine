@@ -12,6 +12,10 @@ from wargame_native_engine.observations.perspective import (
 )
 from wargame_native_engine.core.world import WorldState
 from wargame_native_engine.session.game_session import GameSession
+from wargame_native_engine.core.time import (
+    require_positive_milliseconds,
+    resolve_delta_time_ms,
+)
 from wargame_native_engine.version import ENGINE_VERSION
 
 
@@ -56,19 +60,34 @@ class SourceCompatibleEnvironment:
         return bundle
 
     def step(self, actions: Sequence[EngineAction], *,
-             delta_time_seconds: int | float = 1
+             delta_time_seconds: int | float | None = None,
+             delta_time_ms: int | None = None,
              ) -> tuple[Mapping[str, Any], bool]:
-        bundle, done = self.step_views(actions,
-                                       delta_time_seconds=delta_time_seconds)
+        milliseconds = resolve_delta_time_ms(
+            delta_time_seconds=delta_time_seconds,
+            delta_time_ms=delta_time_ms,
+        )
+        bundle, done = self.step_views(actions, delta_time_ms=milliseconds)
         return bundle.green, done
 
+    def step_ms(self, actions: Sequence[EngineAction], *,
+                delta_time_ms: int) -> tuple[Mapping[str, Any], bool]:
+        return self.step(
+            actions,
+            delta_time_ms=require_positive_milliseconds(delta_time_ms),
+        )
+
     def step_views(self, actions: Sequence[EngineAction], *,
-                   delta_time_seconds: int | float = 1
+                   delta_time_seconds: int | float | None = None,
+                   delta_time_ms: int | None = None,
                    ) -> tuple[ObservationBundle, bool]:
+        milliseconds = resolve_delta_time_ms(
+            delta_time_seconds=delta_time_seconds,
+            delta_time_ms=delta_time_ms,
+        )
         if not self._setup:
             raise RuntimeError("environment_not_setup")
-        result = self.session.step(actions,
-                                   delta_time_seconds=delta_time_seconds)
+        result = self.session.step(actions, delta_time_ms=milliseconds)
         world = WorldState.from_dict(self.session.snapshot()["world"])
         judge = [item.to_dict() for item in result.events
                  if item.event_type.value.startswith("direct_fire_")
@@ -103,6 +122,13 @@ class SourceCompatibleEnvironment:
             "expected_state_hash": canonical_hash(world.to_dict()),
         }
         return bundle, world.done
+
+    def step_views_ms(self, actions: Sequence[EngineAction], *,
+                      delta_time_ms: int) -> tuple[ObservationBundle, bool]:
+        return self.step_views(
+            actions,
+            delta_time_ms=require_positive_milliseconds(delta_time_ms),
+        )
 
     @property
     def last_step_record(self) -> Mapping[str, Any] | None:

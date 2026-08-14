@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections import defaultdict
 from pathlib import Path
-from decimal import Decimal, InvalidOperation
 from typing import Any, Mapping, Sequence
 
 from wargame_native_engine.adjudication import (
@@ -35,6 +34,10 @@ from wargame_native_engine.movement.runtime import MovementRuntime
 from wargame_native_engine.movement.route_planner import DeterministicRoutePlanner
 from wargame_native_engine.rules.config import Ruleset, load_ruleset
 from wargame_native_engine.rules.terminal_rules import TerminalRules
+from wargame_native_engine.core.time import (
+    require_positive_milliseconds,
+    resolve_delta_time_ms,
+)
 from wargame_native_engine.systems.combat import validate_attack
 from wargame_native_engine.systems.damage import apply_damage
 from wargame_native_engine.systems.deployment import validate_deployment
@@ -274,12 +277,31 @@ class NativeEngine:
 
     def step(self, actions: Mapping[str, EngineAction | None]
              | Sequence[EngineAction], *,
-             delta_time_seconds: int | float = 1) -> StepResult:
+             delta_time_seconds: int | float | None = None,
+             delta_time_ms: int | None = None) -> StepResult:
+        return self._step_ms(
+            actions, delta_time_ms=resolve_delta_time_ms(
+                delta_time_seconds=delta_time_seconds,
+                delta_time_ms=delta_time_ms,
+            )
+        )
+
+    def step_ms(self, actions: Mapping[str, EngineAction | None]
+                | Sequence[EngineAction], *, delta_time_ms: int) -> StepResult:
+        """Advance once using the authoritative exact-millisecond contract."""
+
+        return self.step(
+            actions,
+            delta_time_ms=require_positive_milliseconds(delta_time_ms),
+        )
+
+    def _step_ms(self, actions: Mapping[str, EngineAction | None]
+                 | Sequence[EngineAction], *, delta_time_ms: int) -> StepResult:
+        milliseconds = require_positive_milliseconds(delta_time_ms)
         if self._source_policy is not None:
-            return self._step_source(actions,
-                                     delta_time_ms=_delta_time_ms(delta_time_seconds))
-        if delta_time_seconds != 1:
-            raise ValueError("legacy native-default step requires delta_time_seconds=1")
+            return self._step_source(actions, delta_time_ms=milliseconds)
+        if milliseconds != 1_000:
+            raise ValueError("legacy native-default step requires delta_time_ms=1000")
         if not isinstance(actions, Mapping):
             raise TypeError("legacy native-default actions must be a side mapping")
         return self._step_legacy(actions)
@@ -1137,16 +1159,6 @@ class NativeEngine:
     def _require_side(self, side: str) -> None:
         if side not in self.scenario.side_order:
             raise ValueError(f"unknown side: {side}")
-
-
-def _delta_time_ms(value: int | float) -> int:
-    try:
-        milliseconds = Decimal(str(value)) * Decimal(1000)
-    except (InvalidOperation, ValueError) as exc:
-        raise ValueError("delta_time_seconds must be numeric") from exc
-    if milliseconds != milliseconds.to_integral_value() or milliseconds <= 0:
-        raise ValueError("delta_time_seconds must resolve to positive integer milliseconds")
-    return int(milliseconds)
 
 
 def _unit_domain(value: str) -> UnitDomain:

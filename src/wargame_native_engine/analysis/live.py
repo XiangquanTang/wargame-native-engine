@@ -23,6 +23,10 @@ from wargame_native_engine.observations.perspective import ObservationBundle
 from wargame_native_engine.session.source_environment import (
     SourceCompatibleEnvironment,
 )
+from wargame_native_engine.core.time import (
+    require_positive_milliseconds,
+    resolve_delta_time_ms,
+)
 
 
 class LiveAnalysisDesynchronizedError(RuntimeError):
@@ -92,7 +96,8 @@ class LiveAnalyzedSession:
         self,
         actions: Sequence[EngineAction],
         *,
-        delta_time_seconds: int | float = 1,
+        delta_time_seconds: int | float | None = None,
+        delta_time_ms: int | None = None,
     ) -> LiveAnalysisUpdate:
         """Advance exactly once, then analyze the returned detached GREEN frame.
 
@@ -101,12 +106,36 @@ class LiveAnalyzedSession:
         rejects further steps until :meth:`setup` is called again.
         """
 
+        milliseconds = resolve_delta_time_ms(
+            delta_time_seconds=delta_time_seconds,
+            delta_time_ms=delta_time_ms,
+        )
+        return self._step_ms(actions, delta_time_ms=milliseconds)
+
+    def step_ms(
+        self,
+        actions: Sequence[EngineAction],
+        *,
+        delta_time_ms: int,
+    ) -> LiveAnalysisUpdate:
+        """Advance/analyze once using exact integer simulation milliseconds."""
+
+        return self.step(
+            actions,
+            delta_time_ms=require_positive_milliseconds(delta_time_ms),
+        )
+
+    def _step_ms(
+        self,
+        actions: Sequence[EngineAction],
+        *,
+        delta_time_ms: int,
+    ) -> LiveAnalysisUpdate:
         if not self._setup:
             raise RuntimeError("live_analysis_not_setup")
         self._require_synchronized()
         bundle, done = self.environment.step_views(
-            actions,
-            delta_time_seconds=delta_time_seconds,
+            actions, delta_time_ms=delta_time_ms
         )
         try:
             committed = self._analyze_and_commit(bundle)

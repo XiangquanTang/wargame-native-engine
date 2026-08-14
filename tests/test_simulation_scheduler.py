@@ -95,6 +95,10 @@ def test_ten_second_decision_generates_ten_one_second_fact_frames(
         session_id, "red-controller"
     ).decision_window_index == 1
     assert factory.environments[0].session.step.call_count == 10  # type: ignore[attr-defined]
+    assert all(
+        call.kwargs == {"delta_time_ms": 1_000}
+        for call in factory.environments[0].session.step.call_args_list  # type: ignore[attr-defined]
+    )
     blue = factory.environments[0].session.snapshot()["world"]["operators"]["2"]
     assert blue["move_path"] == [105]
     assert blue["segment_elapsed_ms"] == 10_000
@@ -139,12 +143,12 @@ def test_scheduler_stops_immediately_when_terminal_occurs_mid_window() -> None:
                 sim_time_ms=self.sim_time,
             )
 
-        def advance(
+        def advance_ms(
             self,
             session_id,
             actions,
             *,
-            delta_time_seconds,
+            delta_time_ms,
             decision_window_index,
             frame_interval_offset,
         ):
@@ -153,7 +157,7 @@ def test_scheduler_stops_immediately_when_terminal_occurs_mid_window() -> None:
                 tuple(actions), decision_window_index, frame_interval_offset,
             ))
             self.frame += 1
-            self.sim_time += int(delta_time_seconds * 1000)
+            self.sim_time += delta_time_ms
             return self.descriptor("session")
 
     manager = FakeManager()

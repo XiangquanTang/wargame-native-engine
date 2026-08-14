@@ -235,12 +235,14 @@ def replay_actions(scenario: NativeScenario, root: str | Path, *,
             _validate_classic_step_record(record, offset)
             ordered = [EngineAction.from_dict(item)
                        for item in record["ordered_actions"]]
-            delta_seconds = int(record["delta_time_ms"]) / 1000
+            delta_ms = int(record["delta_time_ms"])
             if record.get("ordered_action_input", bool(record.get("action_sequences"))):
-                result = engine.step(ordered, delta_time_seconds=delta_seconds)
+                result = engine.step_ms(ordered, delta_time_ms=delta_ms)
             else:
-                result = engine.step({item.side: item for item in ordered},
-                                     delta_time_seconds=delta_seconds)
+                result = engine.step_ms(
+                    {item.side: item for item in ordered},
+                    delta_time_ms=delta_ms,
+                )
             snapshot = engine.snapshot()
             if strict:
                 actual_step = {
@@ -354,11 +356,11 @@ def replay_source_archive(scenario: NativeScenario, source: str | Path, *,
         _validate_source_step_record(record, offset)
         ordered = [EngineAction.from_dict(value)
                    for value in record.get("ordered_actions", [])]
-        bundle, _ = environment.step_views(
+        bundle, _ = environment.step_views_ms(
             ordered,
-            delta_time_seconds=_exact_int(
+            delta_time_ms=_exact_int(
                 record.get("delta_time_ms"), "delta_time_ms", minimum=1
-            ) / 1000,
+            ),
         )
         actual_record = environment.last_step_record
         if actual_record is None:

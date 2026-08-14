@@ -44,8 +44,17 @@ class NativeEngineBackend:
         )
 
     def step(self, actions: Mapping[str, EngineAction | None] | Sequence[EngineAction],
-             *, delta_time_seconds: int | float = 1) -> StepResult:
-        return self.engine.step(actions, delta_time_seconds=delta_time_seconds)
+             *, delta_time_seconds: int | float | None = None,
+             delta_time_ms: int | None = None) -> StepResult:
+        return self.engine.step(
+            actions,
+            delta_time_seconds=delta_time_seconds,
+            delta_time_ms=delta_time_ms,
+        )
+
+    def step_ms(self, actions: Mapping[str, EngineAction | None]
+                | Sequence[EngineAction], *, delta_time_ms: int) -> StepResult:
+        return self.engine.step_ms(actions, delta_time_ms=delta_time_ms)
 
     def is_terminal(self) -> bool:
         return self.engine.is_terminal()
