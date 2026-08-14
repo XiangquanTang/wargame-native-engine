@@ -166,7 +166,7 @@
   },
   "tests": {
     "targeted": {"passed": 112, "failed": 0, "skipped": 0, "seconds": 18.84},
-    "full": {"passed": 1097, "failed": 0, "skipped": 2, "seconds": 40.74},
+    "full": {"passed": 1097, "failed": 0, "skipped": 2, "seconds": 40.01},
     "node_available": false,
     "node_skip_evidence": [
       "tests/test_live_action_interaction.py",
