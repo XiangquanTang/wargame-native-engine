@@ -1,18 +1,30 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import hashlib
+from http.client import HTTPConnection
+import json
 from pathlib import Path
+import threading
+from typing import Iterator
 
 import pytest
 
 from scripts.run_source_native_match import run_source_native_match
 from wargame_native_engine.data import (
     EXPLICIT_NATIVE_SUPPLEMENT,
+    ScenarioBundle,
+    ScenarioCatalog,
     convert_source_scenario,
     publish_source_scenario_conversion,
 )
 from wargame_native_engine.io.importers.source_replay_archive import (
     SourceReplayArchiveImporter,
+)
+from wargame_native_engine.operations import WargameFacade
+from wargame_native_engine.viewer.dual_control_server import (
+    DualSideControlHTTPServer,
+    create_dual_side_control_server,
 )
 
 
@@ -28,7 +40,8 @@ SUPPLEMENT = Path(
 )
 
 
-def test_real_source_scenario_move_shoot_replay_product_loop(tmp_path: Path) -> None:
+@pytest.fixture(scope="module")
+def real_bundle(tmp_path_factory: pytest.TempPathFactory):
     if not SOURCE_SCENARIO.is_file() or not SOURCE_MAP.is_file():
         pytest.skip("read-only Map 123 Source acceptance inputs are unavailable")
     hashes_before = (_sha256(SOURCE_SCENARIO), _sha256(SOURCE_MAP))
@@ -43,8 +56,82 @@ def test_real_source_scenario_move_shoot_replay_product_loop(tmp_path: Path) -> 
         supplement_path=SUPPLEMENT,
     )
     published = publish_source_scenario_conversion(
-        conversion, tmp_path / "canonical-bundle"
+        conversion, tmp_path_factory.mktemp("real-source") / "canonical-bundle"
     )
+    yield published, conversion, hashes_before
+    assert hashes_before == (_sha256(SOURCE_SCENARIO), _sha256(SOURCE_MAP))
+
+
+def test_real_source_scenario_dual_http_and_map_identity(real_bundle, tmp_path: Path) -> None:
+    published, conversion, _ = real_bundle
+    bundle = ScenarioBundle.from_path(published.scenario_path)
+    app = WargameFacade(
+        ScenarioCatalog.from_bundles({bundle.scenario_identity.scenario_id: bundle}),
+        storage_root=tmp_path / "http-managed",
+    )
+    match = app.create_match(
+        scenario_id=bundle.scenario_identity.scenario_id,
+        red_controller_id="http-real-red",
+        blue_controller_id="http-real-blue",
+        seed=42,
+        decision_interval_ms=60_000,
+        frame_interval_ms=60_000,
+        record=False,
+    )
+    server = create_dual_side_control_server(
+        match.gateway,
+        session_id=match.session_id,
+        red_controller_id="http-real-red",
+        blue_controller_id="http-real-blue",
+        red_token="real-red-token",
+        blue_token="real-blue-token",
+        map_data=match.map_record,
+        output_dir=tmp_path / "http-output",
+        port=0,
+    )
+    try:
+        with _running_server(server) as address:
+            red = _request_json(address, "GET", "/api/product/bootstrap?token=real-red-token")
+            blue = _request_json(address, "GET", "/api/product/bootstrap?token=real-blue-token")
+            red_control = _request_json(address, "GET", "/api/bootstrap?token=real-red-token")
+            blue_control = _request_json(address, "GET", "/api/bootstrap?token=real-blue-token")
+            assert "view" not in red
+            assert "view" not in blue
+            assert red["scene"]["map"]["map_identity"]["sha256"] == (
+                conversion.manifest["native_map"]["sha256"]
+            )
+            assert len(red["scene"]["map"]["cells"]) == 10_000
+            assert len(red_control["view"]["observation"]["friendly_operators"]) == 26
+            assert len(blue_control["view"]["observation"]["friendly_operators"]) == 23
+            assert red_control["view"]["valid_actions"]
+            assert blue_control["view"]["valid_actions"]
+            assert all(
+                item["operator_id"] != 75
+                for item in red_control["view"]["observation"]["visible_enemies"]
+            )
+            preview = _request_json(
+                address,
+                "POST",
+                "/api/product/preview",
+                {
+                    "token": "real-red-token",
+                    "request_id": "real-http-move-preview",
+                    "actor_ids": [27, 28, 29],
+                    "operation_type": "MOVE",
+                    "destination_hex": 2940,
+                },
+            )
+            assert preview["executable_count"] == 3
+            assert [len(item["path"]) for item in preview["per_unit_results"]] == [3, 4, 5]
+    finally:
+        server.server_close()
+        match.close()
+
+
+def test_real_source_scenario_move_shoot_replay_product_loop(
+    real_bundle, tmp_path: Path,
+) -> None:
+    published, conversion, hashes_before = real_bundle
     report = run_source_native_match(
         published.scenario_path,
         tmp_path / "match",
@@ -107,6 +194,34 @@ def test_real_source_scenario_move_shoot_replay_product_loop(tmp_path: Path) -> 
         for action in step["ordered_actions"]
     )
     assert hashes_before == (_sha256(SOURCE_SCENARIO), _sha256(SOURCE_MAP))
+
+
+@contextmanager
+def _running_server(
+    server: DualSideControlHTTPServer,
+) -> Iterator[tuple[str, int]]:
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        host, port = server.server_address[:2]
+        yield str(host), int(port)
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
+def _request_json(address, method: str, path: str, value=None):
+    body = None if value is None else json.dumps(value).encode("utf-8")
+    headers = {} if body is None else {"Content-Type": "application/json"}
+    connection = HTTPConnection(*address, timeout=30)
+    try:
+        connection.request(method, path, body=body, headers=headers)
+        response = connection.getresponse()
+        payload = response.read()
+        assert response.status == 200, payload.decode("utf-8", errors="replace")
+        return json.loads(payload.decode("utf-8"))
+    finally:
+        connection.close()
 
 
 def _sha256(path: Path) -> str:
