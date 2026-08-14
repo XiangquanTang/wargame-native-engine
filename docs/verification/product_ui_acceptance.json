@@ -1,0 +1,164 @@
+{
+  "schema": "product-ui-acceptance/1.0",
+  "baseline_head": "bd52889480bb506780078a382cf7cf35d203f759",
+  "verified_implementation_head": "ad87fb7d44450f215b45339a75dce999c99699c5",
+  "stage_commits": [
+    {
+      "sha": "6a0e90f",
+      "subject": "feat(operations): add grouped product previews"
+    },
+    {
+      "sha": "5482260",
+      "subject": "feat(api): add product operation endpoints"
+    },
+    {
+      "sha": "fb41e9f",
+      "subject": "feat(viewer): add simplified grouped controls"
+    },
+    {
+      "sha": "ad87fb7",
+      "subject": "test(viewer): verify simplified dual-side controls"
+    }
+  ],
+  "ordinary_page": {
+    "shared_renderer": "src/wargame_native_engine/viewer/static/map_renderer.js",
+    "selection": [
+      "single friendly unit",
+      "Ctrl/Cmd toggle",
+      "Shift add",
+      "empty-map clear",
+      "Escape cancel or clear"
+    ],
+    "toolbar": [
+      "MOVE",
+      "SHOOT",
+      "STOP_MOVE",
+      "WEAPON_UNFOLD",
+      "WEAPON_LOCK",
+      "WAIT",
+      "cancel",
+      "execute"
+    ],
+    "internal_action_id_displayed": false,
+    "internal_window_state_displayed": false,
+    "technical_command_panel_displayed": false,
+    "technical_batch_panel_displayed": false,
+    "advanced_debug_default_open": false,
+    "debug_contains_green": false
+  },
+  "product_contract": {
+    "entry": "ProductOperationService(SideController)",
+    "normal_http_endpoints": [
+      "/api/product/bootstrap",
+      "/api/product/status",
+      "/api/product/capabilities",
+      "/api/product/preview",
+      "/api/product/execute"
+    ],
+    "browser_calls_low_level_plan_stage_submit": false,
+    "preview_advances_environment": false,
+    "execute_composes_existing_gateway": true,
+    "partial_subset_requires_confirmation": true,
+    "same_execute_request_is_idempotent": true,
+    "new_actor_preview_supersedes_old_preview": true,
+    "client_supplied_path_accepted": false
+  },
+  "group_move_test": {
+    "selected_units": 5,
+    "executable_units": 5,
+    "destination_hex": 105,
+    "path_per_unit": [102, 103, 104, 105],
+    "server_result_mutation_changes_execution": false,
+    "ordered_engine_actions": 5,
+    "evidence": "tests/test_product_operations.py::test_five_unit_move_preview_keeps_independent_server_paths"
+  },
+  "partial_operation_test": {
+    "selected_units": 2,
+    "executable_units": 1,
+    "rejected_units": 1,
+    "execution_without_confirmation_rejected": true,
+    "only_legal_action_in_steps": true,
+    "rejection_in_control_audit": true,
+    "evidence": "tests/test_product_operations.py::test_partial_preview_requires_confirmation_and_only_valid_actor_executes"
+  },
+  "group_shoot_test": {
+    "selected_shooters": 2,
+    "executable_shooters": 2,
+    "visible_target_id": 2,
+    "weapon_id": 36,
+    "engine_shoot_actions": 2,
+    "server_frozen_actions_only": true,
+    "evidence": "tests/test_product_operations.py::test_two_unit_shoot_preview_matches_only_frozen_server_actions"
+  },
+  "real_http_smoke": {
+    "temporary_root": "/tmp/wargame_product_ui_acceptance",
+    "entry": "scripts.run_dual_side_control",
+    "host": "127.0.0.1",
+    "red_page_status": 200,
+    "blue_page_status": 200,
+    "red_perspective": "RED",
+    "blue_perspective": "BLUE",
+    "referee_data_exposed": false,
+    "page_contains_internal_panels": false,
+    "move_source_hex": 101,
+    "move_destination_hex": 105,
+    "move_path": [102, 103, 104, 105],
+    "estimated_duration_ms": 80000,
+    "red_after_execute": "WAITING_OPPONENT",
+    "blue_whole_side_wait_advanced": true,
+    "initial_frame_index": 0,
+    "final_frame_index": 10,
+    "final_sim_time_ms": 10000,
+    "published_frame_count": 11,
+    "published_step_count": 10,
+    "publication_truncated": true,
+    "online_offline_analysis_bytes_match": true,
+    "replay_sha256": "cf23afddde8fd0cce68e716f2b68d4ae08da4c8c835f4a1a6ab4f080f6cb8da2",
+    "analysis_sha256": "0e89182ac7e20e03b2633ca850ffff5c192a7d54477fe66991fe724b6bdfecc5",
+    "control_audit_sha256": "82b6144bbba9bc7764466556e0b30d3a04ec7c0486e7919167371af93ff03469",
+    "service_stopped_without_residual_process": true,
+    "strict_replay_note": "This manual smoke was intentionally published truncated; terminal strict replay is covered by test_product_loop.py."
+  },
+  "fact_and_evidence_boundary": {
+    "invalid_preview_advances_frame": false,
+    "rejected_units_in_steps": false,
+    "rejected_units_in_green_facts": false,
+    "rejected_preview_control_audit_recorded": true,
+    "terminal_product_loop_strict_replay_match": true,
+    "terminal_product_loop_online_offline_analysis_match": true,
+    "terminal_evidence": "tests/test_product_loop.py"
+  },
+  "tests": {
+    "comprehensive_targeted": {
+      "passed": 123,
+      "failed": 0,
+      "skipped": 2,
+      "seconds": 24.50
+    },
+    "full": {
+      "passed": 1141,
+      "failed": 0,
+      "skipped": 2,
+      "seconds": 57.96
+    },
+    "node_available": false,
+    "browser_available": false,
+    "skipped_reasons": [
+      "Node.js is not installed for live-action JavaScript execution",
+      "Node.js is not installed for map-renderer JavaScript execution"
+    ]
+  },
+  "source_integrity": {
+    "benchmark_head": "6288919fb8ff9f68e59f93117daab453e4ed5aba",
+    "benchmark_worktree_clean": true,
+    "benchmark_modified": false,
+    "generated_outputs_committed": false
+  },
+  "known_limits": [
+    "No Node or browser runtime was available, so runtime JavaScript interaction and screenshots were not executed.",
+    "The loopback seat-token service is not internet-grade authentication.",
+    "The page polls rather than using WebSocket push.",
+    "A synchronous second-side submission may finish scheduling before the other browser observes a persistent Advancing label.",
+    "The manual HTTP smoke is truncated; terminal strict replay remains proven by the product-loop integration test."
+  ]
+}

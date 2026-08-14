@@ -39,6 +39,32 @@ publication = match.publish("/tmp/wargame-match", truncated=False)
 match.close()
 ```
 
+For a human-facing integration, compose a side controller with the grouped
+product service:
+
+```python
+from wargame_native_engine.operations import ProductOperationService
+
+operations = ProductOperationService(red)
+capabilities = operations.capabilities([1, 3])
+preview = operations.preview_operation(
+    [1, 3],
+    "MOVE",
+    request_id="red-preview-1",
+    destination_hex=105,
+)
+result = operations.execute_preview(
+    preview.preview_token,
+    request_id="red-execute-1",
+    confirm_partial=preview.partial_confirmation_required,
+)
+```
+
+The public preview deliberately omits underlying action and route-proposal
+identities. Execute resolves the private, immutable actions and composes the
+existing stage/submit path. The browser uses this interface so operators never
+need to manage internal batches or lifecycle versions.
+
 `plan_move` accepts a destination as a planning request.  It returns a full,
 adjacent route and authoritative segment durations.  The browser or caller
 cannot submit or edit that path: `stage_action` resolves the action ID from the
