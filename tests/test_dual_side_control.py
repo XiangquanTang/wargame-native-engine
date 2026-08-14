@@ -478,6 +478,24 @@ def test_product_http_contract_hides_control_internals_and_executes_once(
             assert first["product_state"] == "WAITING_OPPONENT"
             assert fixture.manager.descriptor(fixture.session_id).frame_index == 0
 
+            red_status_response = request(
+                address,
+                "GET",
+                "/api/product/status?token=red-token-123",
+            )
+            red_status = decoded(red_status_response[1])
+            blue_status = decoded(request(
+                address,
+                "GET",
+                "/api/product/status?token=blue-token-456",
+            )[1])
+            assert red_status["product_state"] == "WAITING_OPPONENT"
+            assert red_status["can_operate"] is False
+            assert len(red_status_response[1]) < 2_048
+            assert b'"cells"' not in red_status_response[1]
+            assert blue_status["product_state"] == "WAITING_SELECTION"
+            assert blue_status["can_operate"] is True
+
             blue_preview = decoded(request(
                 address,
                 "POST",

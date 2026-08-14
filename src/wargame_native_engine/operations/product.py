@@ -15,6 +15,8 @@ from typing import Any, Mapping, Sequence
 from wargame_native_engine.gateway.models import (
     CommandGatewayError,
     CommandResult,
+    ControllerView,
+    DecisionWindowView,
 )
 from wargame_native_engine.io.serialization import canonical_hash, json_clone
 from wargame_native_engine.operations.controller import SideController
@@ -151,6 +153,15 @@ class ProductOperationService:
 
     def status(self) -> dict[str, object]:
         window, view = self.controller.state()
+        return self.status_from_snapshot(window, view)
+
+    def status_from_snapshot(
+        self,
+        window: DecisionWindowView,
+        view: ControllerView,
+    ) -> dict[str, object]:
+        """Map one already-consistent controller snapshot to product language."""
+
         with self._lock:
             self._sync_window(window.decision_window_index)
         if view.terminal:

@@ -105,6 +105,20 @@ def test_real_source_scenario_dual_http_and_map_identity(real_bundle, tmp_path: 
             assert len(blue_control["view"]["observation"]["friendly_operators"]) == 23
             assert red_control["view"]["valid_actions"]
             assert blue_control["view"]["valid_actions"]
+            blue_ids = [
+                item["operator_id"]
+                for item in blue["scene"]["frame"]["viewer_units"]
+                if item["side"] == "blue" and item["category"] == "operator"
+            ]
+            blue_capabilities = _request_json(
+                address,
+                "POST",
+                "/api/product/capabilities",
+                {"token": "real-blue-token", "actor_ids": blue_ids},
+            )
+            assert blue_capabilities["selected_count"] == 23
+            assert blue_capabilities["operations"]["MOVE"]["applicable_count"] > 0
+            assert blue_capabilities["operations"]["WAIT"]["applicable_count"] == 23
             assert all(
                 item["operator_id"] != 75
                 for item in red_control["view"]["observation"]["visible_enemies"]

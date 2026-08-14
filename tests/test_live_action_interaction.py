@@ -45,6 +45,9 @@ def test_dual_control_uses_shared_renderer_and_server_planning_only() -> None:
     assert '"/api/product/preview"' in source
     assert '"/api/product/execute"' in source
     assert '"/api/product/capabilities"' in source
+    assert "/api/product/status?token=" in source
+    assert "let isRefreshing = false" in source
+    assert "redrawMap: false" in source
     assert '"/api/plan-move"' not in source
     assert '"/api/batch/stage"' not in source
     assert '"/api/batch/submit"' not in source

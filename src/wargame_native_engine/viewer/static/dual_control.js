@@ -10,6 +10,7 @@ let targetUnitId = null;
 let operationPreview = null;
 let isPlanning = false;
 let isExecuting = false;
+let isRefreshing = false;
 let lastError = null;
 let lastFrameIndex = null;
 let lastRequestId = null;
@@ -257,7 +258,7 @@ function renderPreview() {
   renderWeaponChoices();
 }
 
-function render() {
+function render({ redrawMap = true } = {}) {
   if (!current) return;
   $("side-badge").textContent = current.side.toUpperCase();
   $("side-summary").textContent = `${current.side.toUpperCase()} 控制席位`;
@@ -272,7 +273,7 @@ function render() {
   renderSelection();
   renderPreview();
   renderToolbar();
-  renderMap();
+  if (redrawMap) renderMap();
   renderStatus();
 }
 
@@ -445,8 +446,22 @@ async function executeOperation() {
 }
 
 async function refresh() {
+  if (isRefreshing) return;
+  isRefreshing = true;
   try {
-    const next = await requestJson(
+    let next;
+    if (current) {
+      const productStatus = await requestJson(
+        `/api/product/status?token=${encodeURIComponent(token)}`,
+      );
+      if (productStatus.frame_index === lastFrameIndex) {
+        current.product_status = productStatus;
+        render({ redrawMap: false });
+        $("error-banner").hidden = true;
+        return;
+      }
+    }
+    next = await requestJson(
       `/api/product/bootstrap?token=${encodeURIComponent(token)}`,
     );
     const frameChanged = lastFrameIndex !== null
@@ -485,6 +500,8 @@ async function refresh() {
     $("error-banner").hidden = false;
     $("error-banner").textContent = `页面状态读取失败：${error.message}`;
     renderStatus();
+  } finally {
+    isRefreshing = false;
   }
 }
 

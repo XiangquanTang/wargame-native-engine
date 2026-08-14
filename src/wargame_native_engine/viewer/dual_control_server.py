@@ -418,7 +418,7 @@ class DualSideControlRequestHandler(BaseHTTPRequestHandler):
     def _product_bootstrap(
         self, side: str, controller: str,
     ) -> dict[str, object]:
-        _, view = self.server.gateway.controller_state(
+        window, view = self.server.gateway.controller_state(
             self.server.session_id, controller,
         )
         scene = self._scene(side, view)
@@ -439,7 +439,9 @@ class DualSideControlRequestHandler(BaseHTTPRequestHandler):
             "side": side,
             "referee_data_exposed": False,
             "scene": scene,
-            "product_status": self.server.product_services[side].status(),
+            "product_status": self.server.product_services[
+                side
+            ].status_from_snapshot(window, view),
         }
 
     def _scene(self, side: str, view) -> dict[str, object]:
