@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import tempfile
 from typing import Sequence
 
 from scripts.run_minimal_source_replay import DEFAULT_SCENARIO, _template
@@ -14,6 +15,8 @@ from wargame_native_engine.agents import (
     AgentResetContext,
     AgentStepContext,
     LocalAgentMatchRunner,
+    WaitSeatAgent,
+    run_local_agent_match as run_product_agent_match,
 )
 from wargame_native_engine.backends.native import NativeEngineBackend
 from wargame_native_engine.core.action import (
@@ -22,7 +25,9 @@ from wargame_native_engine.core.action import (
     valid_action_sort_key,
 )
 from wargame_native_engine.core.observation import SideObservation
+from wargame_native_engine.data import ScenarioBundle, ScenarioCatalog
 from wargame_native_engine.io.scenario import load_scenario
+from wargame_native_engine.operations import WargameFacade
 from wargame_native_engine.session.game_session import GameSession
 from wargame_native_engine.session.source_environment import (
     SourceCompatibleEnvironment,
@@ -112,13 +117,85 @@ def parser() -> argparse.ArgumentParser:
         description="Run one deterministic local RED/BLUE Agent match"
     )
     value.add_argument("--output-dir", required=True, type=Path)
+    value.add_argument("--scenario", type=Path, default=DEFAULT_SCENARIO)
+    value.add_argument(
+        "--scenario-bundle",
+        type=Path,
+        help="Canonical native_scenario.json; overrides --scenario.",
+    )
+    value.add_argument(
+        "--map-runtime-data",
+        type=Path,
+        help="Optional canonical map runtime directory for this map identity.",
+    )
     value.add_argument("--seed", type=int, default=42)
+    value.add_argument("--decision-interval-ms", type=int, default=10_000)
+    value.add_argument("--frame-interval-ms", type=int, default=1_000)
+    value.add_argument("--max-decision-windows", type=int, default=3)
+    value.add_argument("--red-agent", choices=("wait",), default="wait")
+    value.add_argument("--blue-agent", choices=("wait",), default="wait")
+    value.add_argument("--overwrite", action="store_true")
     return value
+
+
+def run_seat_match(args: argparse.Namespace) -> dict[str, object]:
+    scenario_path = args.scenario_bundle or args.scenario
+    bundle = ScenarioBundle.from_path(scenario_path)
+    if args.map_runtime_data is not None:
+        bundle = bundle.with_map_runtime_data(args.map_runtime_data)
+    catalog = ScenarioCatalog.from_bundles({
+        bundle.scenario_identity.scenario_id: bundle,
+    })
+    with tempfile.TemporaryDirectory(
+        prefix="wargame-local-seat-match."
+    ) as storage:
+        app = WargameFacade(catalog, storage_root=storage)
+        match = app.create_match(
+            scenario_id=bundle.scenario_identity.scenario_id,
+            red_controller_id="local-agent-red",
+            blue_controller_id="local-agent-blue",
+            seed=args.seed,
+            decision_interval_ms=args.decision_interval_ms,
+            frame_interval_ms=args.frame_interval_ms,
+        )
+        try:
+            result = run_product_agent_match(
+                match,
+                red_agent=WaitSeatAgent("local-red-wait"),
+                blue_agent=WaitSeatAgent("local-blue-wait"),
+                output_dir=args.output_dir,
+                max_decision_windows=args.max_decision_windows,
+                overwrite=args.overwrite,
+            )
+        finally:
+            match.close()
+    report = {
+        "status": "completed" if result.terminal else "truncated",
+        "scenario_id": bundle.scenario_identity.scenario_id,
+        "map_id": bundle.map_identity.map_id,
+        "red_agent": args.red_agent,
+        "blue_agent": args.blue_agent,
+        "decision_window_count": result.decision_window_count,
+        "fact_frame_count": result.fact_frame_count,
+        "terminal": result.terminal,
+        "truncated": result.truncated,
+        "winner": result.winner,
+        "outcome": result.outcome,
+        "strict_replay_match": result.strict_replay_match,
+        "online_offline_analysis_match": (
+            result.online_offline_analysis_match
+        ),
+        "replay": str(result.replay_path),
+        "analysis": str(result.analysis_path),
+        "summary": str(result.summary_path),
+    }
+    print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+    return report
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
-    run_demo(args.output_dir, seed=args.seed)
+    run_seat_match(args)
     return 0
 
 

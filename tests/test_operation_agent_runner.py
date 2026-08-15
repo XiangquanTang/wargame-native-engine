@@ -3,8 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from wargame_native_engine.agents import (
-    NoOpAgent,
     OperationAgentMatchRunner,
+    WaitSeatAgent,
 )
 from wargame_native_engine.data import ScenarioBundle, ScenarioCatalog
 from wargame_native_engine.io.importers.source_replay_archive import (
@@ -32,8 +32,8 @@ def test_operation_agent_runner_uses_facade_gateway_and_publishes_evidence(
     )
     result = OperationAgentMatchRunner(
         match,
-        red_agent=NoOpAgent("agent-red-policy"),
-        blue_agent=NoOpAgent("agent-blue-policy"),
+        red_agent=WaitSeatAgent("agent-red-policy"),
+        blue_agent=WaitSeatAgent("agent-blue-policy"),
     ).run(tmp_path / "published", max_decision_windows=2)
 
     archive = SourceReplayArchiveImporter().import_path(
@@ -44,6 +44,11 @@ def test_operation_agent_runner_uses_facade_gateway_and_publishes_evidence(
     assert result.frame_count == 21
     assert len(archive.frames) == 21
     assert len(archive.steps) == 20
-    assert result.strict_replay_match is None
+    assert result.strict_replay_match is True
     assert result.online_offline_analysis_match is True
+    assert result.replay_path == result.output_dir / "replay.zip"
+    assert result.analysis_path == (
+        result.output_dir / "frame_analysis.native.jsonl"
+    )
+    assert result.summary_path.is_file()
     assert (result.output_dir / "control_audit.native.jsonl").is_file()

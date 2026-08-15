@@ -7,6 +7,13 @@ from wargame_native_engine.agents.protocol import (
     AgentStepContext,
 )
 from wargame_native_engine.agents.random_legal import RandomLegalAgent
+from wargame_native_engine.agents.seat import (
+    AgentDecisionContext,
+    LocalSeatAgent,
+    ScriptedSeatAgent,
+    SeatOperation,
+    WaitSeatAgent,
+)
 
 
 _RUNNER_EXPORTS = frozenset({
@@ -16,8 +23,14 @@ _RUNNER_EXPORTS = frozenset({
     "LocalAgentMatchRunner",
 })
 _OPERATION_RUNNER_EXPORTS = frozenset({
+    "LocalSeatMatchError",
+    "LocalSeatMatchResult",
+    "LocalSeatMatchRunner",
     "OperationAgentMatchResult",
     "OperationAgentMatchRunner",
+    "SeatAgentExecutionError",
+    "SeatOperationError",
+    "run_local_agent_match",
 })
 
 
@@ -38,13 +51,24 @@ __all__ = [
     "AgentExecutionError",
     "AgentResetContext",
     "AgentStepContext",
+    "AgentDecisionContext",
     "FirstValidActionAgent",
     "LocalAgentMatchError",
     "LocalAgentMatchResult",
     "LocalAgentMatchRunner",
+    "LocalSeatAgent",
+    "LocalSeatMatchError",
+    "LocalSeatMatchResult",
+    "LocalSeatMatchRunner",
     "NoOpAgent",
     "OperationAgentMatchResult",
     "OperationAgentMatchRunner",
     "RandomLegalAgent",
     "ScriptedAgent",
+    "ScriptedSeatAgent",
+    "SeatAgentExecutionError",
+    "SeatOperation",
+    "SeatOperationError",
+    "WaitSeatAgent",
+    "run_local_agent_match",
 ]
