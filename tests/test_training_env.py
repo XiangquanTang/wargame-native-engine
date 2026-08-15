@@ -323,6 +323,80 @@ def test_max_steps_is_training_truncation_not_native_terminal_and_can_publish(
         environment.close()
 
 
+def test_native_max_ticks_is_truncated_not_terminated_and_reset_recovers(
+    tmp_path: Path,
+) -> None:
+    document = json.loads(SCENARIO_PATH.read_text(encoding="utf-8"))
+    document["scenario_id"] = "training-native-truncation"
+    document["terminal_rules"]["max_ticks"] = 1
+    factory = EnvironmentFactory(scenario_from_dict(document))
+    environment, _, _ = _training_env(tmp_path, factory=factory)
+    output = tmp_path / "native-truncated"
+    try:
+        environment.reset(seed=42)
+        result = environment.step(None)
+
+        assert result.terminated is False
+        assert result.truncated is True
+        assert result.reward == 0.0
+        assert result.info["outcome"] == "truncated"
+        assert result.info["truncation_source"] == "native"
+        native = factory.environments[0].session.result()
+        assert native.terminal is False
+        assert native.truncated is True
+        with pytest.raises(NativeTrainingError, match="ended_reset_required"):
+            environment.step(None)
+
+        publication = environment.publish(output)
+        assert publication.terminal is False
+        assert publication.truncated is True
+        archive = SourceReplayArchiveImporter().import_path(publication.replay_path)
+        assert archive.manifest["termination"] is False
+        assert archive.manifest["truncated"] is True
+
+        recovered = environment.reset(seed=43)
+        assert recovered.info["decision_window_index"] == 0
+        assert recovered.info["truncation_source"] is None
+        assert len(factory.environments) == 2
+    finally:
+        environment.close()
+
+
+@pytest.mark.parametrize("winning_side", ["red", "blue"])
+def test_native_terminal_wins_over_coincident_training_limit(
+    tmp_path: Path,
+    winning_side: str,
+) -> None:
+    document = json.loads(SCENARIO_PATH.read_text(encoding="utf-8"))
+    document["scenario_id"] = f"training-terminal-{winning_side}"
+    losing_side = "blue" if winning_side == "red" else "red"
+    loser = next(
+        item for item in document["operators"] if item["side"] == losing_side
+    )
+    loser.update({"health": 0, "blood": 0, "alive": False})
+    factory = EnvironmentFactory(scenario_from_dict(document))
+    environment, _, _ = _training_env(
+        tmp_path,
+        side=winning_side,
+        factory=factory,
+        max_steps=1,
+    )
+    try:
+        environment.reset(seed=42)
+        result = environment.step(None)
+
+        assert result.terminated is True
+        assert result.truncated is False
+        assert result.reward == 1.0
+        assert result.info["winner"] == winning_side
+        assert result.info["truncation_source"] is None
+        native = factory.environments[0].session.result()
+        assert native.terminal is True
+        assert native.truncated is False
+    finally:
+        environment.close()
+
+
 def test_terminal_sparse_reward_strict_replay_and_offline_analysis_match(
     tmp_path: Path,
 ) -> None:

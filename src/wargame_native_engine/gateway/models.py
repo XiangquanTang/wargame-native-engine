@@ -27,6 +27,8 @@ class SessionDescriptor:
     frame_index: int = 0
     sim_time_ms: int = 0
     lifecycle_state: str = "Running"
+    terminated: bool = False
+    truncated: bool = False
 
     def to_record(self) -> dict[str, object]:
         return {
@@ -37,6 +39,8 @@ class SessionDescriptor:
             "frame_index": self.frame_index,
             "sim_time_ms": self.sim_time_ms,
             "lifecycle_state": self.lifecycle_state,
+            "terminated": self.terminated,
+            "truncated": self.truncated,
         }
 
 
@@ -85,6 +89,8 @@ class ControllerView:
     outcome: str | None
     frame_index: int = 0
     sim_time_ms: int = 0
+    terminated: bool = False
+    truncated: bool = False
 
     def to_record(self) -> dict[str, object]:
         return {
@@ -99,6 +105,8 @@ class ControllerView:
             "outcome": self.outcome,
             "frame_index": self.frame_index,
             "sim_time_ms": self.sim_time_ms,
+            "terminated": self.terminated,
+            "truncated": self.truncated,
         }
 
 

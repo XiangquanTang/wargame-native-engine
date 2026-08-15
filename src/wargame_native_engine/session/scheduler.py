@@ -39,6 +39,8 @@ class SimulationAdvance:
     sim_time_before_ms: int
     sim_time_after_ms: int
     terminal: bool
+    terminated: bool = False
+    truncated: bool = False
 
 
 class SimulationScheduler:
@@ -83,4 +85,6 @@ class SimulationScheduler:
             sim_time_before_ms=sim_before,
             sim_time_after_ms=current.sim_time_ms,
             terminal=current.terminal,
+            terminated=current.terminated,
+            truncated=current.truncated,
         )

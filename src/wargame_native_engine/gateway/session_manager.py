@@ -128,6 +128,7 @@ class SessionManager:
         )
         with self._lock:
             self._sessions[external_id] = managed
+        native_result = environment.session.result()
         return SessionDescriptor(
             session_id=external_id,
             step_index=0,
@@ -136,12 +137,15 @@ class SessionManager:
             frame_index=0,
             sim_time_ms=self.sim_time_ms(external_id),
             lifecycle_state=_managed_lifecycle(managed).value,
+            terminated=native_result.terminal,
+            truncated=native_result.truncated,
         )
 
     def descriptor(self, session_id: str) -> SessionDescriptor:
         managed = self._managed(session_id)
         with managed.lock:
             self._require_usable(managed)
+            native_result = managed.environment.session.result()
             return SessionDescriptor(
                 session_id=managed.external_id,
                 step_index=managed.step_index,
@@ -150,6 +154,8 @@ class SessionManager:
                 frame_index=managed.step_index,
                 sim_time_ms=_managed_sim_time_ms(managed),
                 lifecycle_state=_managed_lifecycle(managed).value,
+                terminated=native_result.terminal,
+                truncated=native_result.truncated,
             )
 
     def controller_view(self, session_id: str, side: str) -> ControllerView:
@@ -318,6 +324,7 @@ class SessionManager:
                     managed.failed = "recorder_desynchronized"
                     raise
             managed.step_index = update.frame_index
+            native_result = managed.environment.session.result()
             return SessionDescriptor(
                 session_id=managed.external_id,
                 step_index=managed.step_index,
@@ -326,6 +333,8 @@ class SessionManager:
                 frame_index=managed.step_index,
                 sim_time_ms=_managed_sim_time_ms(managed),
                 lifecycle_state=_managed_lifecycle(managed).value,
+                terminated=native_result.terminal,
+                truncated=native_result.truncated,
             )
 
     def publish_session(
@@ -345,8 +354,8 @@ class SessionManager:
                 raise CommandGatewayError(
                     "recording_disabled", "session has no Recorder"
                 )
-            terminal = managed.environment.session.is_terminal()
-            if not terminal and not truncated:
+            done = managed.environment.session.is_terminal()
+            if not done and not truncated:
                 raise CommandGatewayError(
                     "session_active",
                     "active session publication requires truncated=True",
@@ -360,7 +369,7 @@ class SessionManager:
                 raise FileExistsError(f"session output already exists: {target}")
             target.parent.mkdir(parents=True, exist_ok=True)
             outcome = dict(managed.environment.session.result().to_dict())
-            if truncated and not terminal:
+            if truncated and not done:
                 outcome["truncated"] = True
             analysis_payload = managed.live.analysis_jsonl().encode("utf-8")
             manifest = managed.recorder.finalize(
@@ -391,7 +400,7 @@ class SessionManager:
                 analysis_path=target / "frame_analysis.native.jsonl",
                 frame_count=int(manifest["frame_count"]),
                 step_count=int(manifest["step_count"]),
-                terminal=terminal,
+                terminal=bool(outcome.get("terminal", False)),
                 truncated=bool(outcome.get("truncated", False)),
                 control_audit_path=(
                     None
@@ -446,7 +455,7 @@ class SessionManager:
             for item in session.valid_actions(side)
         )
         terminal = session.is_terminal()
-        result = session.result() if terminal else None
+        result = session.result()
         return ControllerView(
             session_id=managed.external_id,
             perspective=side.upper(),
@@ -455,10 +464,12 @@ class SessionManager:
             source_frame=json_clone(source_frame),
             valid_actions=valid_actions,
             terminal=terminal,
-            winner=None if result is None else result.winner,
-            outcome=None if result is None else result.outcome,
+            winner=None if not terminal else result.winner,
+            outcome=None if not terminal else result.outcome,
             frame_index=managed.step_index,
             sim_time_ms=_managed_sim_time_ms(managed),
+            terminated=result.terminal,
+            truncated=result.truncated,
         )
 
 

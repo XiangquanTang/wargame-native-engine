@@ -196,11 +196,15 @@ class NativeTrainingEnv:
         if advance is None or advance.decision_window_index != window_index:
             self._failed = True
             raise NativeTrainingError("training_window_advance_evidence_missing")
-        terminated = view.terminal
-        truncated = bool(
+        terminated = bool(view.terminated)
+        training_truncated = bool(
             not terminated
+            and not view.truncated
             and self.max_steps is not None
             and self._step_count >= self.max_steps
+        )
+        truncated = False if terminated else bool(
+            view.truncated or training_truncated
         )
         self._ended = terminated or truncated
         return TrainingStep(
@@ -208,7 +212,11 @@ class NativeTrainingEnv:
             self._reward(view),
             terminated,
             truncated,
-            self._info(view, truncated=truncated, advance=advance),
+            self._info(
+                view,
+                training_truncated=training_truncated,
+                advance=advance,
+            ),
             self._action_space(view),
         )
 
@@ -321,7 +329,7 @@ class NativeTrainingEnv:
         return self.action_encoder.encode(view.valid_actions)
 
     def _reward(self, view: ControllerView) -> float:
-        if not view.terminal or view.winner is None:
+        if not view.terminated or view.winner is None:
             return 0.0
         return 1.0 if view.winner == self.controlled_side else -1.0
 
@@ -329,7 +337,7 @@ class NativeTrainingEnv:
         self,
         view: ControllerView,
         *,
-        truncated: bool = False,
+        training_truncated: bool = False,
         advance: SimulationAdvance | None = None,
     ) -> Mapping[str, Any]:
         return {
@@ -357,7 +365,11 @@ class NativeTrainingEnv:
             "sim_time_ms": view.sim_time_ms,
             "winner": view.winner,
             "outcome": view.outcome,
-            "truncation_source": "training_max_steps" if truncated else None,
+            "truncation_source": (
+                "native"
+                if view.truncated
+                else "training_max_steps" if training_truncated else None
+            ),
             "referee_labels_exposed": False,
         }
 
