@@ -26,6 +26,14 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Canonical native_scenario.json emitted by convert_source_scenario.",
     )
+    parser.add_argument(
+        "--map-runtime-data",
+        type=Path,
+        help=(
+            "Canonical map runtime directory emitted by "
+            "convert_map_runtime_data; enables cost/visibility lookup data."
+        ),
+    )
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--host", default="127.0.0.1")
@@ -42,6 +50,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     scenario_path = args.scenario_bundle or args.scenario
     bundle = ScenarioBundle.from_path(scenario_path)
+    if args.map_runtime_data is not None:
+        bundle = bundle.with_map_runtime_data(args.map_runtime_data)
     catalog = ScenarioCatalog.from_bundles({
         bundle.scenario_identity.scenario_id: bundle,
     })
@@ -89,6 +99,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             flush=True,
         )
         print(f"CONVERSION_MODE: {conversion_mode or 'canonical-native'}", flush=True)
+        runtime = bundle.map_runtime_data
+        print(
+            "MAP_RUNTIME_DATA: "
+            + (
+                "disabled"
+                if runtime is None
+                else f"enabled manifest_sha256={runtime.manifest_sha256}"
+            ),
+            flush=True,
+        )
         print(f"RED:  http://{host}:{port}/red?token={args.red_token}", flush=True)
         print(f"BLUE: http://{host}:{port}/blue?token={args.blue_token}", flush=True)
         try:

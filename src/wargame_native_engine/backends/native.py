@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Mapping, Sequence
+from typing import TYPE_CHECKING, Mapping, Sequence
 from pathlib import Path
 
 from wargame_native_engine.core.action import EngineAction, ValidAction
@@ -12,6 +12,9 @@ from wargame_native_engine.io.scenario import NativeScenario
 from wargame_native_engine.movement.models import MovementMode, RoutePlan
 from wargame_native_engine.rules.config import Ruleset
 
+if TYPE_CHECKING:
+    from wargame_native_engine.data.map_runtime import MapRuntimeData
+
 
 class NativeEngineBackend:
     """Thin backend adapter; it contains no second rules implementation."""
@@ -20,12 +23,21 @@ class NativeEngineBackend:
 
     def __init__(self, scenario: NativeScenario, *,
                  max_ticks: int | None = None,
-                 ruleset: Ruleset | str | Path | None = None) -> None:
+                 ruleset: Ruleset | str | Path | None = None,
+                 map_runtime_data: "MapRuntimeData | None" = None) -> None:
         self.scenario = scenario
         self.engine = NativeEngine(scenario, max_ticks=max_ticks,
-                                   ruleset=ruleset)
+                                   ruleset=ruleset,
+                                   map_runtime_data=map_runtime_data)
         self.ruleset = self.engine.ruleset
         self.max_ticks = self.engine.terminal_rules.max_ticks
+
+    @property
+    def determinism_identity(self) -> Mapping[str, object]:
+        runtime = self.engine.map_runtime_data
+        return {} if runtime is None else {
+            "map_runtime_data": runtime.identity_record()
+        }
 
     def reset(self, seed: int = 42) -> WorldState:
         return self.engine.reset(seed)

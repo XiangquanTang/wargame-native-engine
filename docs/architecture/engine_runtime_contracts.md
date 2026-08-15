@@ -58,26 +58,33 @@ observation distance. The exhaustive regression verifies that no pair judged
 observable by the full existing rule is rejected by the prefilter over all
 current observation domains and tested distances.
 
-The historical Map 123 `123see.npz` is not integrated into Native adjudication.
-Read-only archived SDK documentation now establishes its five axes as
+The historical Map 123 `123see.npz` is supported through the explicit offline
+`scripts.convert_map_runtime_data` boundary. Read-only archived documentation
+establishes its five axes as
 `(mode, point1_row, point1_column, point2_row, point2_column)` and identifies
 the ten modes as ground/20m/200m/500m endpoint-height combinations. It is a
 static line-of-sight lookup, not a final unit-observation result.
 
 The compressed file is 22,335,408 bytes, but its boolean shape
 `(10, 100, 100, 100, 100)` expands to 1,000,000,000 data bytes (about 953.7
-MiB) before Python/NumPy overhead. Loading or copying it per Session is not an
-acceptable runtime contract. A future adapter needs one provenance-backed,
-read-only representation, explicit mode selection, shape/map-identity checks
-and algorithm/LUT cross-validation. Its read-only source SHA-256 is
+MiB). The converter therefore extracts a validated bool NPY once; runtime uses
+a shared read-only `mmap` plus a bounded result cache and never expands the
+matrix into Python objects or copies it per Session. The adapter validates the
+five-dimensional shape, map identity, source/payload hashes and explicit mode
+selection. Its read-only source SHA-256 is
 `019bee4a66cbf8c21ea1c010bc9449706c38d1c1ce57c89e5d9ebc38a9c33bb0`.
 
-The algorithmic Native LOS remains authoritative for now. It applies the
+When no canonical map-runtime directory is selected, the algorithmic Native
+LOS remains authoritative. It applies the
 knowledge-base high-endpoint bonus to whichever endpoint is higher, independent
 of query direction. Explicit canonical `DRONE` and `LOITERING_MUNITION`
 platforms use the drone/loitering observation-distance profile in both the
 cheap distance gate and the full observation/direct-fire query. Unknown AIR
-platforms are not guessed into that category.
+platforms are not guessed into that category. When matching runtime data is
+selected, the static matrix supplies LOS only; Native observation distance,
+forest/settlement and concealment modifiers still decide final observation.
+Every lookup used by direct-fire evidence records its mode and both source and
+canonical payload hashes.
 
 ## 3. Movement cost and arrival contract
 
@@ -85,6 +92,17 @@ Path planning and movement execution continue to use the same
 `MovementPlanner.segment_cost` result. No route inference was added: Engine
 actions still contain explicitly submitted adjacent cells, and execution
 revalidates every segment.
+
+The legacy `cost.pickle` is likewise accepted only by the explicit converter.
+A builtins-only unpickler rejects globals, reducers and persistent references;
+the decoded value must be exactly four rectangular mode matrices whose keys are
+real adjacent cells and whose finite positive factors have the documented
+`maximum_speed / actual_speed` meaning. Runtime reads deterministic canonical
+JSON, never pickle. When configured, this factor becomes the authoritative
+per-edge Native simplified movement input and is recorded in every segment's
+evidence. Without it, the existing policy formula below remains the fallback.
+The Map 123 source SHA-256 is
+`3a305afa0fc9a6cf49788453597bb02b556b987b5b67b63a13d2b9088b7abb6b`.
 
 `tests/test_source_movement.py` now locks the authoritative matrix for:
 

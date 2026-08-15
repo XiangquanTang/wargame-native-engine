@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Iterable
+from fractions import Fraction
+from typing import Iterable, Protocol
 
 from wargame_native_engine.core.operator import OperatorState
 from wargame_native_engine.core.world import WorldState
@@ -11,11 +12,21 @@ from wargame_native_engine.movement.models import (
 from wargame_native_engine.movement.policy import SourceMovementPolicy
 
 
+class MovementCostLookup(Protocol):
+    source_sha256: str
+
+    def factor(self, mode: int, from_hex: int, to_hex: int) -> Fraction | None: ...
+
+    def supports_mode(self, mode: int) -> bool: ...
+
+
 class MovementPlanner:
     def __init__(self, hex_map: SourceHexMap,
-                 policy: SourceMovementPolicy) -> None:
+                 policy: SourceMovementPolicy,
+                 movement_costs: MovementCostLookup | None = None) -> None:
         self.hex_map = hex_map
         self.policy = policy
+        self.movement_costs = movement_costs
         if hex_map.native_map.hex_size_m != policy.hex_size_m:
             raise ValueError("map hex_size_m does not match source movement policy")
 
@@ -84,8 +95,14 @@ class MovementPlanner:
             return _illegal("ARTILLERY_CANNOT_MOVE", evidence)
         domain = operator.operator_type.upper()
         if domain == "AIR":
-            return _illegal("AIR_MOVEMENT_UNSUPPORTED", evidence)
-        if domain not in {"PERSONNEL", "VEHICLE"}:
+            if (
+                self.movement_costs is None
+                or not self.movement_costs.supports_mode(3)
+            ):
+                return _illegal("AIR_MOVEMENT_UNSUPPORTED", evidence)
+            if mode is not MovementMode.NORMAL:
+                return _illegal("AIR_MOVEMENT_MODE_UNSUPPORTED", evidence)
+        elif domain not in {"PERSONNEL", "VEHICLE"}:
             return _illegal("UNKNOWN_UNIT_DOMAIN", evidence)
         if operator.basic_speed is None or operator.basic_speed <= 0:
             return _illegal("BASIC_SPEED_UNAVAILABLE", evidence)
@@ -132,7 +149,41 @@ class MovementPlanner:
         mode_multiplier = (1, 1)
         road_override = road is not None
         domain = operator.operator_type.upper()
-        if mode is MovementMode.MARCHING:
+        map_cost_mode: int | None = None
+        map_cost_factor: Fraction | None = None
+        if self.movement_costs is not None:
+            map_cost_mode = _movement_cost_mode(domain, mode)
+            if map_cost_mode is None:
+                return _illegal("MOVEMENT_MODE_COST_UNAVAILABLE", evidence), None
+            map_cost_factor = self.movement_costs.factor(
+                map_cost_mode,
+                from_hex,
+                to_hex,
+            )
+            if map_cost_factor is None:
+                reason = (
+                    "MARCHING_REQUIRES_CONTINUOUS_ROAD"
+                    if mode is MovementMode.MARCHING
+                    else "MAP_COST_EDGE_UNAVAILABLE"
+                )
+                return _illegal(reason, {
+                    **evidence,
+                    "map_cost_mode": map_cost_mode,
+                    "map_cost_source_sha256": self.movement_costs.source_sha256,
+                }), None
+            if mode is MovementMode.MARCHING and road is None:
+                return _illegal("MARCHING_REQUIRES_CONTINUOUS_ROAD", evidence), None
+            if domain == "PERSONNEL" and mode in {
+                MovementMode.CHARGE_1,
+                MovementMode.CHARGE_2,
+            }:
+                mode_multiplier = self.policy.mode_multiplier(mode)
+            effective_milli = self.policy.multiply_speed(
+                base_speed,
+                mode_multiplier,
+                (map_cost_factor.denominator, map_cost_factor.numerator),
+            )
+        elif mode is MovementMode.MARCHING:
             if road is None:
                 return _illegal("MARCHING_REQUIRES_CONTINUOUS_ROAD", evidence), None
             configured = self.policy.road(road.source_code)
@@ -180,6 +231,17 @@ class MovementPlanner:
                 self.policy.hex_rate_micro_per_second(effective_milli)),
             segment_distance_m=self.policy.hex_size_m,
             traversal_ms=traversal_ms,
+            map_cost_mode=map_cost_mode,
+            map_cost_factor=(
+                None
+                if map_cost_factor is None
+                else (map_cost_factor.numerator, map_cost_factor.denominator)
+            ),
+            map_cost_source_sha256=(
+                None
+                if self.movement_costs is None
+                else self.movement_costs.source_sha256
+            ),
         )
         return MovementLegalityResult(True, "LEGAL", plan.to_dict()), plan
 
@@ -196,3 +258,13 @@ class MovementPlanner:
 
 def _illegal(reason: str, evidence: dict[str, object]) -> MovementLegalityResult:
     return MovementLegalityResult(False, reason, evidence)
+
+
+def _movement_cost_mode(domain: str, mode: MovementMode) -> int | None:
+    if domain == "VEHICLE":
+        return 1 if mode is MovementMode.MARCHING else 0
+    if domain == "PERSONNEL":
+        return 2
+    if domain == "AIR" and mode is MovementMode.NORMAL:
+        return 3
+    return None

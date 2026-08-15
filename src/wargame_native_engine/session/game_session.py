@@ -31,10 +31,14 @@ class GameSession:
         if self._closed:
             raise RuntimeError("session_closed")
         self.seed = int(seed)
-        self.session_id = "session-" + canonical_hash({
+        identity = {
             "scenario_hash": self.scenario.scenario_hash,
             "seed": self.seed,
-        })[:24]
+        }
+        backend_identity = getattr(self.backend, "determinism_identity", {})
+        if backend_identity:
+            identity["backend_determinism_identity"] = backend_identity
+        self.session_id = "session-" + canonical_hash(identity)[:24]
         result = self.backend.reset(self.seed)
         self._reset = True
         return result
@@ -127,10 +131,14 @@ class GameSession:
             raise RuntimeError("session_closed")
         result = self.backend.restore(snapshot)
         self.seed = int(snapshot["seed"])
-        self.session_id = "session-" + canonical_hash({
+        identity = {
             "scenario_hash": self.scenario.scenario_hash,
             "seed": self.seed,
-        })[:24]
+        }
+        backend_identity = getattr(self.backend, "determinism_identity", {})
+        if backend_identity:
+            identity["backend_determinism_identity"] = backend_identity
+        self.session_id = "session-" + canonical_hash(identity)[:24]
         self._reset = True
         return result
 

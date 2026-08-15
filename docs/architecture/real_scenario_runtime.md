@@ -32,6 +32,18 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python -m scripts.run_dual_side_control
 
 启动日志会打印 Scenario identity/hash、Map identity/hash、转换模式以及 RED/BLUE 地址。服务仍只监听环回地址，不声明互联网认证能力。
 
+如果已按 `map_runtime_data.md` 将同一 Map 123 的 `cost.pickle` 和
+`123see.npz` 转换为 canonical runtime，可以显式增加：
+
+```text
+--map-runtime-data /tmp/wargame_map123_runtime
+```
+
+此时 Engine 与 Renderer 仍使用同一个 ScenarioBundle/Map identity；移动
+相邻边代价和静态 LOS 来自 hash 绑定的数据，Replay manifest 与 strict
+replay 也绑定该资源。未提供该参数时继续使用既有算法式 Native simplified
+移动和 LOS，不会在运行时访问旧 benchmark 工程。
+
 ## 可重复的产品闭环验收
 
 900 秒验收 Profile 的转换参数与正式 Profile 相同，只替换显式 Native 终止上限，用于较快的端到端回归。生成验收 Bundle 后执行：

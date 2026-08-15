@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from wargame_native_engine.compat.source_frame.models import UnitDomain
-from wargame_native_engine.visibility.line_of_sight import HexMapProfile, evaluate_line_of_sight
+from wargame_native_engine.visibility.line_of_sight import (
+    HexMapProfile,
+    LineOfSightEvidence,
+    evaluate_line_of_sight,
+)
 from wargame_native_engine.visibility.line_of_sight import hex_distance
 from wargame_native_engine.visibility.profiles import ObservationProfiles
 from wargame_native_engine.visibility.result import VisibilityResult
@@ -43,9 +47,15 @@ def evaluate_visibility(profile: HexMapProfile, *, observer_hex: int,
                         target_terrain: str | None = None,
                         observer_is_drone: bool = False,
                         target_is_drone: bool = False,
-                        observation_profiles: ObservationProfiles | None = None) -> VisibilityResult:
+                        observation_profiles: ObservationProfiles | None = None,
+                        line_of_sight_evidence: LineOfSightEvidence | None = None,
+                        ) -> VisibilityResult:
     profiles = observation_profiles or ObservationProfiles()
-    los = evaluate_line_of_sight(profile, observer_hex, target_hex)
+    los = (
+        evaluate_line_of_sight(profile, observer_hex, target_hex)
+        if line_of_sight_evidence is None
+        else line_of_sight_evidence
+    )
     limit = profiles.limit(observer_domain, target_domain,
                            observer_is_drone=observer_is_drone,
                            target_is_drone=target_is_drone)

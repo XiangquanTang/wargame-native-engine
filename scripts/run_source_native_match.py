@@ -30,6 +30,7 @@ from wargame_native_engine.operations import (
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scenario-bundle", type=Path, required=True)
+    parser.add_argument("--map-runtime-data", type=Path)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--decision-interval-ms", type=int, default=60_000)
@@ -48,6 +49,7 @@ def run_source_native_match(
     scenario_bundle: str | Path,
     output_dir: str | Path,
     *,
+    map_runtime_data: str | Path | None = None,
     seed: int = 42,
     decision_interval_ms: int = 60_000,
     frame_interval_ms: int = 60_000,
@@ -70,6 +72,8 @@ def run_source_native_match(
 
     bundle_started = perf_counter()
     bundle = ScenarioBundle.from_path(scenario_bundle)
+    if map_runtime_data is not None:
+        bundle = bundle.with_map_runtime_data(map_runtime_data)
     bundle_elapsed_ms = _elapsed_ms(bundle_started)
     catalog = ScenarioCatalog.from_bundles({
         bundle.scenario_identity.scenario_id: bundle,
@@ -196,13 +200,15 @@ def run_source_native_match(
             match.close()
 
     archive = SourceReplayArchiveImporter().import_path(publication.replay_path)
-    strict_match = None
-    if publication.terminal:
-        strict_match = replay_source_archive(
-            bundle.scenario,
-            publication.replay_path,
-            strict=True,
-        ).matches
+    # Strict replay also validates explicitly published non-terminal fact
+    # prefixes.  ``truncated`` is publication metadata in that case; every
+    # recorded step/frame/hash still has to match.
+    strict_match = replay_source_archive(
+        bundle.scenario,
+        publication.replay_path,
+        strict=True,
+        map_runtime_data=bundle.map_runtime_data,
+    ).matches
     offline_path = target / "frame_analysis.offline.jsonl"
     offline_started = perf_counter()
     analyze_replay_to_jsonl(publication.replay_path, offline_path)
@@ -225,6 +231,11 @@ def run_source_native_match(
             "operator_count": len(bundle.scenario.operators),
             "red_count": sum(item.side == "red" for item in bundle.scenario.operators),
             "blue_count": sum(item.side == "blue" for item in bundle.scenario.operators),
+            "map_runtime_data": (
+                None
+                if bundle.map_runtime_data is None
+                else bundle.map_runtime_data.identity_record()
+            ),
         },
         "timing": {
             "decision_interval_ms": decision_interval_ms,
@@ -473,6 +484,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     report = run_source_native_match(
         args.scenario_bundle,
         args.output_dir,
+        map_runtime_data=args.map_runtime_data,
         seed=args.seed,
         decision_interval_ms=args.decision_interval_ms,
         frame_interval_ms=args.frame_interval_ms,

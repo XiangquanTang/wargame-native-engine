@@ -155,23 +155,8 @@ def scenario_from_dict(value: Mapping[str, Any]) -> NativeScenario:
     if str(value.get("schema_version")) != SCENARIO_SCHEMA_VERSION:
         raise ValueError("unsupported native scenario schema")
     map_value = _mapping(value.get("map"), "map")
-    blocked = tuple(_position(item, "map.blocked_positions[]")
-                    for item in map_value.get("blocked_positions", []))
-    native_map = NativeMap(
-        map_id=str(map_value["map_id"]), width=float(map_value["width"]),
-        height=float(map_value["height"]),
-        distance_unit=str(map_value.get("distance_unit", "m")),
-        blocked_positions=blocked,
-        hexes=tuple(_hex(_mapping(item, "map.hexes[]"))
-                    for item in map_value.get("hexes", [])),
-        hex_size_m=(None if map_value.get("hex_size_m") is None
-                    else int(map_value["hex_size_m"])),
-        elevation_unit_m=(None if map_value.get("elevation_unit_m") is None
-                          else float(map_value["elevation_unit_m"])),
-        elevation_kind=(None if map_value.get("elevation_kind") is None
-                        else str(map_value["elevation_kind"]).upper()),
-        roadblocks=tuple(int(item) for item in map_value.get("roadblocks", [])),
-    )
+    native_map = native_map_from_dict(map_value)
+
     sides = tuple(str(item) for item in value.get("sides", []))
     operators = tuple(_operator(_mapping(item, "operators[]"))
                       for item in value.get("operators", []))
@@ -199,6 +184,36 @@ def scenario_from_dict(value: Mapping[str, Any]) -> NativeScenario:
         metadata=json_clone(value.get("metadata", {})),
         initial_stage=Stage(str(value.get("initial_stage", Stage.DEPLOYMENT.value))),
     )
+
+
+def native_map_from_dict(value: Mapping[str, Any]) -> NativeMap:
+    """Parse and normalize one canonical NativeMap record."""
+
+    map_value = _mapping(value, "map")
+    blocked = tuple(_position(item, "map.blocked_positions[]")
+                    for item in map_value.get("blocked_positions", []))
+    return NativeMap(
+        map_id=str(map_value["map_id"]), width=float(map_value["width"]),
+        height=float(map_value["height"]),
+        distance_unit=str(map_value.get("distance_unit", "m")),
+        blocked_positions=blocked,
+        hexes=tuple(_hex(_mapping(item, "map.hexes[]"))
+                    for item in map_value.get("hexes", [])),
+        hex_size_m=(None if map_value.get("hex_size_m") is None
+                    else int(map_value["hex_size_m"])),
+        elevation_unit_m=(None if map_value.get("elevation_unit_m") is None
+                          else float(map_value["elevation_unit_m"])),
+        elevation_kind=(None if map_value.get("elevation_kind") is None
+                        else str(map_value["elevation_kind"]).upper()),
+        roadblocks=tuple(int(item) for item in map_value.get("roadblocks", [])),
+    )
+
+
+def native_map_identity_hash(native_map: NativeMap) -> str:
+    """Hash the normalized map representation used after Scenario loading."""
+
+    normalized = native_map_from_dict(native_map.to_dict())
+    return canonical_hash(normalized.to_dict())
 
 
 _OPERATOR_FIELDS = {

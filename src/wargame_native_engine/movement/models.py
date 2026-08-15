@@ -64,6 +64,9 @@ class SegmentPlan:
     effective_speed_micro_hex_per_second: int
     segment_distance_m: int
     traversal_ms: int
+    map_cost_mode: int | None = None
+    map_cost_factor: tuple[int, int] | None = None
+    map_cost_source_sha256: str | None = None
 
     @property
     def effective_speed_kph(self) -> float:
@@ -93,6 +96,13 @@ class SegmentPlan:
             "effective_speed_hex_per_second": self.effective_speed_hex_per_second,
             "segment_distance_m": self.segment_distance_m,
             "traversal_seconds": self.traversal_ms / 1000.0,
+            "map_cost_mode": self.map_cost_mode,
+            "map_cost_factor": (
+                None
+                if self.map_cost_factor is None
+                else list(self.map_cost_factor)
+            ),
+            "map_cost_source_sha256": self.map_cost_source_sha256,
         }
 
 

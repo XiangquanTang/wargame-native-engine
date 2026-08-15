@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 import warnings
 
 from wargame_native_engine.core.action import EngineAction
@@ -17,6 +17,9 @@ from wargame_native_engine.io.serialization import (
 )
 from wargame_native_engine.rules.config import Ruleset, load_ruleset
 from wargame_native_engine.version import ENGINE_VERSION
+
+if TYPE_CHECKING:
+    from wargame_native_engine.data.map_runtime import MapRuntimeData
 
 
 REPLAY_SCHEMA_VERSION = "native-replay/2.0"
@@ -295,7 +298,9 @@ def replay_actions(scenario: NativeScenario, root: str | Path, *,
 
 def replay_source_archive(scenario: NativeScenario, source: str | Path, *,
                           ruleset: Ruleset | str | Path | None = None,
-                          strict: bool = True) -> ReplayVerification:
+                          strict: bool = True,
+                          map_runtime_data: "MapRuntimeData | None" = None,
+                          ) -> ReplayVerification:
     """Strictly replay Native steps embedded beside numbered GREEN frames."""
     from wargame_native_engine.io.importers.source_replay_archive import (
         SourceReplayArchiveImporter,
@@ -312,6 +317,13 @@ def replay_source_archive(scenario: NativeScenario, source: str | Path, *,
         "ruleset_hash": active_ruleset.content_hash,
         "perspective": "GREEN",
     }
+    runtime_identity = (
+        None
+        if map_runtime_data is None
+        else map_runtime_data.identity_record()
+    )
+    if manifest.get("map_runtime_data") != runtime_identity:
+        expected["map_runtime_data"] = runtime_identity
     mismatches = [name for name, value in expected.items()
                   if manifest.get(name) != value]
     if not archive.steps:
@@ -335,6 +347,7 @@ def replay_source_archive(scenario: NativeScenario, source: str | Path, *,
             max_ticks=int(manifest.get(
                 "max_ticks", scenario.terminal_rules.max_ticks)),
             ruleset=active_ruleset,
+            map_runtime_data=map_runtime_data,
         )),
         template=archive.frames[0],
     )

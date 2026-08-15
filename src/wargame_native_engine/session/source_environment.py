@@ -171,7 +171,7 @@ class SourceCompatibleEnvironment:
 
     def _public_metadata(self) -> Mapping[str, Any]:
         snapshot = self.session.snapshot()
-        return {
+        value = {
             "engine_version": ENGINE_VERSION,
             "ruleset_id": snapshot["ruleset_id"],
             "ruleset_version": snapshot["ruleset_version"],
@@ -182,3 +182,6 @@ class SourceCompatibleEnvironment:
             "episode_seed": int(snapshot["seed"]),
             "state_hash": canonical_hash(snapshot["world"]),
         }
+        if "map_runtime_data" in snapshot:
+            value["map_runtime_data"] = json_clone(snapshot["map_runtime_data"])
+        return value

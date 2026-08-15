@@ -378,7 +378,7 @@ class LocalAgentMatchRunner:
     ) -> Mapping[str, Any]:
         native = green_frame["extra"]["native"]
         scenario = self.environment.session.scenario
-        return {
+        value = {
             "scenario_id": scenario.scenario_id,
             "scenario_hash": scenario.scenario_hash,
             "terrain_id": green_frame["terrain_id"],
@@ -405,6 +405,9 @@ class LocalAgentMatchRunner:
             "red_agent_id": self.agents["red"].agent_id,
             "blue_agent_id": self.agents["blue"].agent_id,
         }
+        if "map_runtime_data" in native:
+            value["map_runtime_data"] = json_clone(native["map_runtime_data"])
+        return value
 
     def _close_agents(self) -> None:
         for side in self.environment.session.scenario.side_order:

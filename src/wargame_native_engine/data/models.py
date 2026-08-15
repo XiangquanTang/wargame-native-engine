@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import json
 from pathlib import Path
@@ -11,9 +11,11 @@ from typing import Any, Mapping
 
 from wargame_native_engine.io.scenario import (
     NativeScenario,
+    native_map_identity_hash,
     scenario_from_dict,
 )
 from wargame_native_engine.io.serialization import canonical_hash, canonical_json
+from wargame_native_engine.data.map_runtime import MapRuntimeData
 from wargame_native_engine.viewer.live_control import native_scenario_map_record
 
 
@@ -74,6 +76,7 @@ class ScenarioBundle:
     map_identity: MapIdentity
     provenance: DataProvenance
     _canonical_payload: bytes
+    _map_runtime_data: MapRuntimeData | None = None
 
     @classmethod
     def from_path(cls, path: str | Path) -> "ScenarioBundle":
@@ -125,7 +128,7 @@ class ScenarioBundle:
         canonical_record = scenario.to_dict()
         payload = (canonical_json(canonical_record) + "\n").encode("utf-8")
         scenario_sha = hashlib.sha256(payload).hexdigest()
-        map_sha = canonical_hash(scenario.map.to_dict())
+        map_sha = native_map_identity_hash(scenario.map)
         return cls(
             ScenarioIdentity(scenario.scenario_id, scenario_sha),
             MapIdentity(scenario.map.map_id, map_sha),
@@ -145,11 +148,37 @@ class ScenarioBundle:
     def validate(self) -> None:
         scenario = self.scenario
         actual_scenario = hashlib.sha256(self._canonical_payload).hexdigest()
-        actual_map = canonical_hash(scenario.map.to_dict())
+        actual_map = native_map_identity_hash(scenario.map)
         if actual_scenario != self.scenario_identity.sha256:
             raise DataLoadError("scenario_identity_mismatch", actual_scenario)
         if actual_map != self.map_identity.sha256:
             raise DataLoadError("map_identity_mismatch", actual_map)
+        if self._map_runtime_data is not None:
+            if (
+                self._map_runtime_data.map_id != self.map_identity.map_id
+                or self._map_runtime_data.map_sha256 != self.map_identity.sha256
+            ):
+                raise DataLoadError(
+                    "map_runtime_identity_mismatch",
+                    self._map_runtime_data.manifest_sha256,
+                )
+
+    @property
+    def map_runtime_data(self) -> MapRuntimeData | None:
+        return self._map_runtime_data
+
+    def with_map_runtime_data(
+        self,
+        source: str | Path | MapRuntimeData,
+    ) -> "ScenarioBundle":
+        runtime = (
+            source
+            if isinstance(source, MapRuntimeData)
+            else MapRuntimeData.load(source, self.scenario.map)
+        )
+        result = replace(self, _map_runtime_data=runtime)
+        result.validate()
+        return result
 
     def render_map_record(self) -> Mapping[str, object]:
         record = native_scenario_map_record(self.scenario)
@@ -165,7 +194,7 @@ class ScenarioBundle:
         return MappingProxyType(record)
 
     def public_record(self) -> Mapping[str, object]:
-        return MappingProxyType({
+        value: dict[str, object] = {
             "schema": SCENARIO_BUNDLE_SCHEMA,
             "scenario_identity": {
                 "scenario_id": self.scenario_identity.scenario_id,
@@ -176,4 +205,7 @@ class ScenarioBundle:
                 "sha256": self.map_identity.sha256,
             },
             "provenance": self.provenance.public_record(),
-        })
+        }
+        if self._map_runtime_data is not None:
+            value["map_runtime_data"] = self._map_runtime_data.identity_record()
+        return MappingProxyType(value)

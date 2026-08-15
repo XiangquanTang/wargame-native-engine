@@ -47,6 +47,21 @@ named terrain by the movement policy. Road use requires a reciprocal, equal,
 non-zero code on both ends of an edge; a destination-only marker is not a road
 edge. Unknown terrain, road types, or elevation units reject movement.
 
+An explicitly selected canonical map-runtime directory may additionally bind
+the map's four source cost-factor matrices. The offline converter validates
+that every table key is a configured adjacent cell and stores stable rational
+factors; runtime never unpickles legacy data. Modes are vehicle normal,
+vehicle marching, personnel and air. A missing edge is impassable for that
+mode. The factor has `maximum_speed / actual_speed` semantics, so segment speed
+is the unit's `basic_speed / factor` (plus an explicit personnel Charge
+multiplier). The table's source and payload hashes and exact rational factor
+are written into segment evidence.
+
+This lookup is optional. Without a matching resource the following
+terrain/slope formulas remain the Native simplified fallback. Selecting a
+lookup is a versioned Native input choice, not a claim of SDK-equivalent
+adjudication.
+
 `hex_size_m=200` is stored once in the policy with status
 `DERIVED_SOURCE_PARAMETER`, based on the supplied 4 km/20-hex and 10 km/50-hex
 relationships. It is not duplicated as a business-code constant.
@@ -72,6 +87,10 @@ a wholly road-connected submitted path. Absolute speeds are 40 km/h on rural
 roads, 60 km/h on general roads, and 90 km/h on graded roads. Marching cannot
 leave the road or shoot.
 
+With canonical map cost data selected, the explicit vehicle-marching matrix
+replaces these fallback absolute speeds and missing non-road edges enforce the
+same continuous-road requirement.
+
 ## Personnel movement
 
 Personnel ordinary speed ignores terrain. A real adjacent height difference
@@ -79,6 +98,11 @@ over 60 metres halves speed. `CHARGE_1` and `CHARGE_2` multiply speed by two and
 four; every completed charge hex adds one fatigue level. Fatigue level one
 blocks second-level charge and level two blocks movement. A fully stopped unit
 recovers one level per 75 seconds.
+
+With canonical map cost data selected, the personnel edge factor replaces the
+fallback terrain/height multiplier; Charge remains an explicit Native state
+multiplier. An explicit air matrix permits adjacent-path AIR movement for the
+covered map. Without that matrix Native AIR movement remains unsupported.
 
 Moving personnel that becomes suppressed completes the active center-to-center
 segment, retains the remaining path, and begins stopping. The unresolved Source
@@ -107,6 +131,8 @@ total duration in 1-, 5-, or 20-second calls produces the same WorldState and
 evidence.
 
 Snapshots contain active segments, timers, sequence counters and evidence.
+When map runtime data is active they also contain its map, manifest, source and
+payload hashes; restore rejects a different or missing resource.
 The existing Native Replay bundle adds `steps.jsonl`, preserving ordered action
 lists, empty-action time advances and `delta_time_ms`; no separate production
 movement Replay schema is introduced.
@@ -114,9 +140,10 @@ movement Replay schema is introduced.
 ## Observation, valid actions and Source frames
 
 After due arrivals and timers, LOS and `see_enemy_bop_ids` are recomputed, then
-valid actions are regenerated. Imported Source visibility and valid actions are
-never treated as rule truth. Moving, marching, stopping and transition states
-feed direct-fire legality.
+valid actions are regenerated. Raw replay visibility and valid actions are
+never treated as rule truth. A separately validated, identity-bound static map
+lookup may supply LOS, while Native observation modifiers remain authoritative.
+Moving, marching, stopping and transition states feed direct-fire legality.
 
 `SourceFrameExporter` writes immutable `basic_speed`, current segment `speed`
 in hexes/second, reached-center `cur_hex`, fractional `cur_pos`, remaining

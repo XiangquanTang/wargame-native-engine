@@ -119,7 +119,10 @@ class WargameFacade:
         def environment_factory() -> SourceCompatibleEnvironment:
             scenario = bundle.scenario
             return SourceCompatibleEnvironment(
-                GameSession(NativeEngineBackend(scenario)),
+                GameSession(NativeEngineBackend(
+                    scenario,
+                    map_runtime_data=bundle.map_runtime_data,
+                )),
                 template=source_frame_template_for_scenario(scenario),
             )
 

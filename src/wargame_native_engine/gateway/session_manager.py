@@ -494,7 +494,7 @@ def _recorder_metadata(
 ) -> Mapping[str, Any]:
     native = green_frame["extra"]["native"]
     scenario = environment.session.scenario
-    return {
+    value = {
         "scenario_id": scenario.scenario_id,
         "scenario_hash": scenario.scenario_hash,
         "terrain_id": green_frame["terrain_id"],
@@ -519,6 +519,9 @@ def _recorder_metadata(
         "episode_seed": seed,
         "max_ticks": environment.session.max_ticks,
     }
+    if "map_runtime_data" in native:
+        value["map_runtime_data"] = json_clone(native["map_runtime_data"])
+    return value
 
 
 def _write_bytes(path: Path, payload: bytes) -> None:

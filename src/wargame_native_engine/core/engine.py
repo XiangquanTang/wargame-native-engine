@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from wargame_native_engine.adjudication import (
     AdjudicationTableSet, DiceRoller, DirectFireAdjudicator,
@@ -22,7 +22,10 @@ from wargame_native_engine.core.observation import (
 from wargame_native_engine.core.result import GameResult, StepResult
 from wargame_native_engine.core.rng import NativeRNG
 from wargame_native_engine.core.world import Stage, WorldState
-from wargame_native_engine.io.scenario import NativeScenario
+from wargame_native_engine.io.scenario import (
+    NativeScenario,
+    native_map_identity_hash,
+)
 from wargame_native_engine.io.serialization import canonical_hash
 from wargame_native_engine.movement.map_adapter import SourceHexMap
 from wargame_native_engine.movement.models import MovementMode, RoutePlan
@@ -47,9 +50,13 @@ from wargame_native_engine.systems.movement import (
 from wargame_native_engine.systems.terminal import evaluate_terminal
 from wargame_native_engine.systems.visibility import can_see
 from wargame_native_engine.visibility import (
-    HexCell, HexMapProfile, ObservationProfiles, evaluate_visibility,
+    HexCell, HexMapProfile, LineOfSightEvidence, ObservationProfiles,
+    evaluate_visibility,
     within_maximum_observation_distance,
 )
+
+if TYPE_CHECKING:
+    from wargame_native_engine.data.map_runtime import MapRuntimeData
 
 
 class NativeEngine:
@@ -57,8 +64,19 @@ class NativeEngine:
 
     def __init__(self, scenario: NativeScenario, *,
                  max_ticks: int | None = None,
-                 ruleset: Ruleset | str | Path | None = None) -> None:
+                 ruleset: Ruleset | str | Path | None = None,
+                 map_runtime_data: "MapRuntimeData | None" = None) -> None:
         self.scenario = scenario
+        if (
+            map_runtime_data is not None
+            and (
+                map_runtime_data.map_id != scenario.map.map_id
+                or map_runtime_data.map_sha256
+                != native_map_identity_hash(scenario.map)
+            )
+        ):
+            raise ValueError("map runtime data does not match scenario map")
+        self.map_runtime_data = map_runtime_data
         self.ruleset = (ruleset if isinstance(ruleset, Ruleset)
                         else load_ruleset(ruleset))
         self.terminal_rules = TerminalRules(
@@ -94,7 +112,9 @@ class NativeEngine:
             self._source_policy = load_source_movement_policy()
             self._source_map = SourceHexMap(scenario.map, self._source_policy)
             movement_planner = MovementPlanner(
-                self._source_map, self._source_policy
+                self._source_map,
+                self._source_policy,
+                None if map_runtime_data is None else map_runtime_data.movement,
             )
             self._movement = MovementRuntime(
                 movement_planner,
@@ -732,7 +752,11 @@ class NativeEngine:
             observer_is_drone=_uses_drone_observation_profile(attacker),
             target_is_drone=_uses_drone_observation_profile(target),
             target_concealed=bool(target.raw_attributes.get("concealed", False)),
-            target_terrain=self._source_map.terrain(target.current_hex).value)
+            target_terrain=self._source_map.terrain(target.current_hex).value,
+            line_of_sight_evidence=self._runtime_line_of_sight(
+                attacker,
+                target,
+            ))
         left = self._source_map.cell(attacker.current_hex)
         right = self._source_map.cell(target.current_hex)
         ammunition = self._ammunition(attacker)
@@ -874,6 +898,8 @@ class NativeEngine:
                 "adjudication_table_set_hash": (
                     self._adjudication_tables.content_hash),
             }
+        if self.map_runtime_data is not None:
+            value["map_runtime_data"] = self.map_runtime_data.identity_record()
         return value
 
     def restore(self, snapshot: Mapping[str, Any]) -> WorldState:
@@ -908,6 +934,12 @@ class NativeEngine:
                 raise ValueError("snapshot adjudication table set mismatch")
         elif adjudication is not None:
             raise ValueError("snapshot requires source-compatible adjudication")
+        runtime_data = snapshot.get("map_runtime_data")
+        if self.map_runtime_data is not None:
+            if runtime_data != self.map_runtime_data.identity_record():
+                raise ValueError("snapshot map runtime data mismatch")
+        elif runtime_data is not None:
+            raise ValueError("snapshot requires map runtime data")
         self._seed = int(snapshot["seed"])
         self._rng = NativeRNG.restore(snapshot["rng"])
         self._world = WorldState.from_dict(snapshot["world"])
@@ -1143,7 +1175,11 @@ class NativeEngine:
                         target_concealed=bool(
                             target.raw_attributes.get("concealed", False)),
                         target_terrain=self._source_map.terrain(
-                            target.current_hex).value)
+                            target.current_hex).value,
+                        line_of_sight_evidence=self._runtime_line_of_sight(
+                            observer,
+                            target,
+                        ))
                     if result.observable:
                         visible.append(target.operator_id)
             observer.raw_attributes["see_enemy_bop_ids"] = visible
@@ -1180,6 +1216,31 @@ class NativeEngine:
         if side not in self.scenario.side_order:
             raise ValueError(f"unknown side: {side}")
 
+    def _runtime_line_of_sight(
+        self,
+        observer: Any,
+        target: Any,
+    ) -> LineOfSightEvidence | None:
+        """Return exact static lookup evidence when both heights are mapped.
+
+        Unsupported air-height categories deliberately fall back to the
+        documented Native algorithm rather than being guessed into a source
+        matrix mode.
+        """
+
+        if self.map_runtime_data is None:
+            return None
+        observer_height = _source_visibility_height_m(observer)
+        target_height = _source_visibility_height_m(target)
+        if observer_height is None or target_height is None:
+            return None
+        return self.map_runtime_data.visibility.line_of_sight(
+            int(observer.current_hex),
+            int(target.current_hex),
+            observer_height_m=observer_height,
+            target_height_m=target_height,
+        )
+
 
 def _unit_domain(value: str) -> UnitDomain:
     try:
@@ -1195,3 +1256,19 @@ def _uses_drone_observation_profile(operator: Any) -> bool:
         "DRONE",
         "LOITERING_MUNITION",
     }
+
+
+def _source_visibility_height_m(operator: Any) -> int | None:
+    explicit = operator.raw_attributes.get("visibility_height_m")
+    if type(explicit) is int and explicit in {0, 20, 200, 500}:
+        return explicit
+    domain = _unit_domain(operator.operator_type)
+    if domain in {UnitDomain.PERSONNEL, UnitDomain.VEHICLE}:
+        return 0
+    canonical = str(operator.raw_attributes.get("canonical_type", "")).upper()
+    if canonical in {"DRONE", "LOITERING_MUNITION"}:
+        return 200
+    altitude = float(operator.altitude)
+    if altitude in {0.0, 20.0, 200.0, 500.0} and altitude != 0.0:
+        return int(altitude)
+    return None
