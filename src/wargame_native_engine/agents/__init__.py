@@ -11,6 +11,8 @@ from wargame_native_engine.agents.seat import (
     AgentDecisionContext,
     LocalSeatAgent,
     ScriptedSeatAgent,
+    SeatActionCapabilities,
+    SeatDecision,
     SeatOperation,
     WaitSeatAgent,
 )
@@ -66,6 +68,8 @@ __all__ = [
     "RandomLegalAgent",
     "ScriptedAgent",
     "ScriptedSeatAgent",
+    "SeatActionCapabilities",
+    "SeatDecision",
     "SeatAgentExecutionError",
     "SeatOperation",
     "SeatOperationError",

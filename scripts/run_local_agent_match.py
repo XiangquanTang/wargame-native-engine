@@ -177,6 +177,7 @@ def run_seat_match(args: argparse.Namespace) -> dict[str, object]:
         "blue_agent": args.blue_agent,
         "decision_window_count": result.decision_window_count,
         "fact_frame_count": result.fact_frame_count,
+        "transition_count": result.transition_count,
         "terminal": result.terminal,
         "truncated": result.truncated,
         "winner": result.winner,
@@ -187,6 +188,7 @@ def run_seat_match(args: argparse.Namespace) -> dict[str, object]:
         ),
         "replay": str(result.replay_path),
         "analysis": str(result.analysis_path),
+        "transitions": str(result.transition_path),
         "summary": str(result.summary_path),
     }
     print(json.dumps(report, ensure_ascii=False, sort_keys=True))

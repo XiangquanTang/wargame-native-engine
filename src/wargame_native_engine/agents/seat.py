@@ -13,6 +13,60 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Protocol, Sequence
 
 from wargame_native_engine.agents.protocol import AgentResetContext
+from wargame_native_engine.io.serialization import json_clone
+
+
+@dataclass(frozen=True, slots=True)
+class SeatActionCapabilities:
+    """Detached, side-only capabilities for one decision window.
+
+    The dataclass fixes the public description, while nested JSON values are
+    detached copies rather than claims of recursive immutability.
+    """
+
+    side: str
+    decision_index: int
+    controllable_actor_ids: tuple[int, ...]
+    operation_types: tuple[str, ...]
+    frozen_actions: tuple[Mapping[str, Any], ...]
+    operation_summary: Mapping[str, Any]
+
+    def __post_init__(self) -> None:
+        side = _nonempty_text(self.side, "side").lower()
+        if side not in {"red", "blue"}:
+            raise ValueError("side must be RED or BLUE")
+        decision = _exact_nonnegative_int(
+            self.decision_index, "decision_index"
+        )
+        actors = _exact_nonnegative_ints(
+            self.controllable_actor_ids, "controllable_actor_ids"
+        )
+        operation_types = tuple(
+            _nonempty_text(value, "operation_type").upper()
+            for value in self.operation_types
+        )
+        if len(set(operation_types)) != len(operation_types):
+            raise ValueError("operation_types must not contain duplicates")
+        object.__setattr__(self, "side", side)
+        object.__setattr__(self, "decision_index", decision)
+        object.__setattr__(self, "controllable_actor_ids", actors)
+        object.__setattr__(self, "operation_types", operation_types)
+        object.__setattr__(
+            self, "frozen_actions", tuple(json_clone(self.frozen_actions))
+        )
+        object.__setattr__(
+            self, "operation_summary", json_clone(self.operation_summary)
+        )
+
+    def to_record(self) -> dict[str, object]:
+        return {
+            "side": self.side,
+            "decision_index": self.decision_index,
+            "controllable_actor_ids": list(self.controllable_actor_ids),
+            "operation_types": list(self.operation_types),
+            "frozen_actions": json_clone(self.frozen_actions),
+            "operation_summary": json_clone(self.operation_summary),
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,7 +78,7 @@ class AgentDecisionContext:
     frame_index: int
     sim_time_ms: int
     observation: Mapping[str, Any]
-    operation_capabilities: Mapping[str, Any]
+    operation_capabilities: SeatActionCapabilities
 
     @property
     def perspective(self) -> str:
@@ -52,6 +106,10 @@ class SeatOperation:
         operation = _nonempty_text(self.operation_type, "operation_type").upper()
         actors = _exact_nonnegative_ints(self.actor_ids, "actor_ids")
         choices = _weapon_choices(self.weapon_choices)
+        if choices and operation != "SHOOT":
+            raise ValueError("weapon_choices are valid only for SHOOT")
+        if any(unit_id not in actors for unit_id, _ in choices):
+            raise ValueError("weapon_choices must belong to selected actors")
         if self.destination_hex is not None:
             _exact_nonnegative_int(self.destination_hex, "destination_hex")
         if self.target_id is not None:
@@ -85,6 +143,48 @@ class SeatOperation:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class SeatDecision:
+    """One side's complete, ordered intent for one decision window."""
+
+    operations: tuple[SeatOperation, ...] = ()
+
+    def __post_init__(self) -> None:
+        if isinstance(self.operations, (str, bytes)) or not isinstance(
+            self.operations, Sequence
+        ):
+            raise TypeError("operations must be a sequence of SeatOperation values")
+        operations = tuple(self.operations)
+        if not all(isinstance(item, SeatOperation) for item in operations):
+            raise TypeError("operations must contain only SeatOperation values")
+        actors: set[int] = set()
+        for operation in operations:
+            if operation.whole_side_wait:
+                if len(operations) != 1:
+                    raise ValueError(
+                        "whole-side WAIT must be the only SeatDecision operation"
+                    )
+                continue
+            for actor_id in operation.actor_ids:
+                if actor_id in actors:
+                    raise ValueError(
+                        f"actor {actor_id} occurs in multiple SeatDecision operations"
+                    )
+                actors.add(actor_id)
+        object.__setattr__(self, "operations", operations)
+
+    @classmethod
+    def single(cls, operation: SeatOperation) -> "SeatDecision":
+        if not isinstance(operation, SeatOperation):
+            raise TypeError("operation must be a SeatOperation")
+        return cls((operation,))
+
+    def to_record(self) -> dict[str, object]:
+        return {
+            "operations": [item.preview_arguments() for item in self.operations],
+        }
+
+
 class LocalSeatAgent(Protocol):
     """A deterministic in-process controller for one incomplete-information seat."""
 
@@ -92,7 +192,7 @@ class LocalSeatAgent(Protocol):
 
     def reset(self, context: AgentResetContext) -> None: ...
 
-    def act(self, *, context: AgentDecisionContext) -> SeatOperation: ...
+    def act(self, *, context: AgentDecisionContext) -> SeatDecision: ...
 
     def close(self) -> None: ...
 
@@ -106,29 +206,29 @@ class WaitSeatAgent:
     def reset(self, context: AgentResetContext) -> None:
         del context
 
-    def act(self, *, context: AgentDecisionContext) -> SeatOperation:
+    def act(self, *, context: AgentDecisionContext) -> SeatDecision:
         del context
-        return SeatOperation.wait()
+        return SeatDecision()
 
     def close(self) -> None:
         return None
 
 
 class ScriptedSeatAgent:
-    """Return one immutable product operation per decision window."""
+    """Return one immutable seat decision per decision window."""
 
     def __init__(
         self,
         agent_id: str,
-        script: Sequence[SeatOperation],
+        script: Sequence[SeatDecision],
         *,
         wait_when_exhausted: bool = True,
     ) -> None:
         self.agent_id = _nonempty_text(agent_id, "agent_id")
         if isinstance(script, (str, bytes)) or not isinstance(script, Sequence):
-            raise TypeError("script must be a sequence of SeatOperation values")
-        if not all(isinstance(item, SeatOperation) for item in script):
-            raise TypeError("script must contain only SeatOperation values")
+            raise TypeError("script must be a sequence of SeatDecision values")
+        if not all(isinstance(item, SeatDecision) for item in script):
+            raise TypeError("script must contain only SeatDecision values")
         if type(wait_when_exhausted) is not bool:
             raise TypeError("wait_when_exhausted must be bool")
         self._script = tuple(deepcopy(item) for item in script)
@@ -139,11 +239,11 @@ class ScriptedSeatAgent:
         del context
         self._index = 0
 
-    def act(self, *, context: AgentDecisionContext) -> SeatOperation:
+    def act(self, *, context: AgentDecisionContext) -> SeatDecision:
         del context
         if self._index >= len(self._script):
             if self._wait_when_exhausted:
-                return SeatOperation.wait()
+                return SeatDecision()
             raise RuntimeError("scripted_seat_agent_exhausted")
         result = self._script[self._index]
         self._index += 1

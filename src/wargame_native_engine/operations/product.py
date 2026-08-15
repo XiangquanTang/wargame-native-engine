@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from threading import RLock
 from typing import Any, Mapping, Sequence
 
+from wargame_native_engine.agents.seat import SeatDecision
 from wargame_native_engine.gateway.models import (
     CommandGatewayError,
     CommandResult,
@@ -130,12 +131,85 @@ class ProductExecutionResult:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class SeatDecisionPreview:
+    """Opaque product preview for one complete side decision."""
+
+    preview_token: str
+    decision_window_index: int
+    operation_previews: tuple[GroupOperationPreview, ...]
+    operation_count: int
+    executable_count: int
+    skipped_count: int
+    can_execute: bool
+
+    def to_record(self) -> dict[str, object]:
+        return {
+            "preview_token": self.preview_token,
+            "decision_window_index": self.decision_window_index,
+            "operation_previews": [
+                item.to_record() for item in self.operation_previews
+            ],
+            "operation_count": self.operation_count,
+            "executable_count": self.executable_count,
+            "skipped_count": self.skipped_count,
+            "can_execute": self.can_execute,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class SeatDecisionExecutionResult:
+    preview_token: str
+    request_id: str
+    accepted: bool
+    submitted: bool
+    advanced: bool
+    product_state: str
+    operation_count: int
+    executed_count: int
+    skipped_count: int
+    frame_index: int
+    sim_time_ms: int
+    terminal: bool
+    winner: str | None
+    outcome: str | None
+    message: str
+
+    def to_record(self) -> dict[str, object]:
+        return {
+            "preview_token": self.preview_token,
+            "request_id": self.request_id,
+            "accepted": self.accepted,
+            "submitted": self.submitted,
+            "advanced": self.advanced,
+            "product_state": self.product_state,
+            "operation_count": self.operation_count,
+            "executed_count": self.executed_count,
+            "skipped_count": self.skipped_count,
+            "frame_index": self.frame_index,
+            "sim_time_ms": self.sim_time_ms,
+            "terminal": self.terminal,
+            "winner": self.winner,
+            "outcome": self.outcome,
+            "message": self.message,
+        }
+
+
 @dataclass(slots=True)
 class _StoredPreview:
     preview: GroupOperationPreview
     action_ids: tuple[str, ...]
     executed_request_id: str | None = None
     execution_result: ProductExecutionResult | None = None
+
+
+@dataclass(slots=True)
+class _StoredDecisionPreview:
+    preview: SeatDecisionPreview
+    component_tokens: tuple[str, ...]
+    action_ids: tuple[str, ...]
+    executed_request_id: str | None = None
+    execution_result: SeatDecisionExecutionResult | None = None
 
 
 class ProductOperationService:
@@ -147,6 +221,13 @@ class ProductOperationService:
         self._preview_requests: dict[str, tuple[tuple[object, ...], str]] = {}
         self._execute_requests: dict[
             str, tuple[str, ProductExecutionResult]
+        ] = {}
+        self._decision_previews: dict[str, _StoredDecisionPreview] = {}
+        self._decision_preview_requests: dict[
+            str, tuple[tuple[object, ...], str]
+        ] = {}
+        self._decision_execute_requests: dict[
+            str, tuple[str, SeatDecisionExecutionResult]
         ] = {}
         self._active_window: int | None = None
         self._lock = RLock()
@@ -373,6 +454,183 @@ class ProductOperationService:
             )
             return deepcopy(preview)
 
+    def preview_decision(
+        self,
+        decision: SeatDecision,
+        *,
+        request_id: str,
+    ) -> SeatDecisionPreview:
+        """Validate every operation before authorizing one atomic side batch."""
+
+        if not isinstance(decision, SeatDecision):
+            raise TypeError("decision must be a SeatDecision")
+        request = _nonempty(request_id, "request_id")
+        window = self.controller.window()
+        if window.submitted:
+            raise CommandGatewayError(
+                "side_already_submitted", "this side is already waiting"
+            )
+        signature = (
+            window.decision_window_index,
+            tuple(
+                canonical_hash(operation.preview_arguments())
+                for operation in decision.operations
+            ),
+        )
+        with self._lock:
+            self._sync_window(window.decision_window_index)
+            cached = self._decision_preview_requests.get(request)
+            if cached is not None:
+                if cached[0] != signature:
+                    raise CommandGatewayError(
+                        "request_id_conflict",
+                        "decision preview request_id was reused with another decision",
+                    )
+                stored = self._decision_previews.get(cached[1])
+                if stored is None:
+                    raise CommandGatewayError(
+                        "decision_preview_superseded",
+                        "this decision preview is no longer available",
+                    )
+                return deepcopy(stored.preview)
+
+            previews: list[GroupOperationPreview] = []
+            component_tokens: list[str] = []
+            action_ids: list[str] = []
+            try:
+                for index, operation in enumerate(decision.operations):
+                    preview = self.preview_operation(
+                        operation.actor_ids,
+                        operation.operation_type,
+                        request_id=f"{request}:operation:{index}",
+                        destination_hex=operation.destination_hex,
+                        target_id=operation.target_id,
+                        movement_mode=operation.movement_mode,
+                        weapon_choices=dict(operation.weapon_choices),
+                        whole_side_wait=operation.whole_side_wait,
+                    )
+                    previews.append(preview)
+                    component_tokens.append(preview.preview_token)
+                    if not preview.can_execute:
+                        raise CommandGatewayError(
+                            "preview_not_executable",
+                            "one decision operation has no executable actors",
+                        )
+                    if (
+                        preview.partial_confirmation_required
+                        and not operation.confirm_partial
+                    ):
+                        raise CommandGatewayError(
+                            "partial_confirmation_required",
+                            "confirm every partial operation before submission",
+                        )
+                    stored_operation = self._previews[preview.preview_token]
+                    action_ids.extend(stored_operation.action_ids)
+            except BaseException:
+                for token in component_tokens:
+                    self._previews.pop(token, None)
+                for index in range(len(decision.operations)):
+                    self._preview_requests.pop(
+                        f"{request}:operation:{index}", None
+                    )
+                raise
+
+            token = "seat-decision-" + canonical_hash({
+                "session_id": self.controller.session_id,
+                "controller_id": self.controller.controller_id,
+                "window": window.decision_window_index,
+                "request_id": request,
+                "signature": signature,
+                "component_tokens": component_tokens,
+            })[:32]
+            executable = sum(item.executable_count for item in previews)
+            skipped = sum(item.rejected_count for item in previews)
+            value = SeatDecisionPreview(
+                token,
+                window.decision_window_index,
+                tuple(previews),
+                len(decision.operations),
+                executable,
+                skipped,
+                True,
+            )
+            self._decision_previews[token] = _StoredDecisionPreview(
+                value,
+                tuple(component_tokens),
+                tuple(action_ids),
+            )
+            self._decision_preview_requests[request] = (signature, token)
+            return deepcopy(value)
+
+    def execute_decision(
+        self,
+        preview_token: str,
+        *,
+        request_id: str,
+    ) -> SeatDecisionExecutionResult:
+        """Stage a fully prevalidated decision and submit the side once."""
+
+        request = _nonempty(request_id, "request_id")
+        token = _nonempty(preview_token, "preview_token")
+        with self._lock:
+            cached = self._decision_execute_requests.get(request)
+            if cached is not None:
+                if cached[0] != token:
+                    raise CommandGatewayError(
+                        "request_id_conflict",
+                        "decision execute request_id was reused with another preview",
+                    )
+                return deepcopy(cached[1])
+            try:
+                stored = self._decision_previews[token]
+            except KeyError as exc:
+                raise CommandGatewayError(
+                    "decision_preview_not_found",
+                    "seat decision preview is unavailable or expired",
+                ) from exc
+            preview = stored.preview
+            window = self.controller.window()
+            if preview.decision_window_index != window.decision_window_index:
+                self._sync_window(window.decision_window_index)
+                raise CommandGatewayError(
+                    "decision_preview_expired",
+                    "seat decision belongs to an older cycle",
+                )
+            if stored.execution_result is not None:
+                if stored.executed_request_id == request:
+                    return deepcopy(stored.execution_result)
+                raise CommandGatewayError(
+                    "decision_preview_already_executed",
+                    "seat decision was already executed",
+                )
+            if any(token not in self._previews for token in stored.component_tokens):
+                raise CommandGatewayError(
+                    "decision_preview_superseded",
+                    "one component operation was replaced",
+                )
+            self.controller.clear_staged()
+            try:
+                for index, action_id in enumerate(stored.action_ids):
+                    self.controller.stage_action(
+                        action_id,
+                        request_id=f"{request}:stage:{index}",
+                        expected_window=preview.decision_window_index,
+                    )
+                command = self.controller.submit_batch(
+                    request_id=request,
+                    expected_window=preview.decision_window_index,
+                )
+            except BaseException:
+                self.controller.clear_staged()
+                raise
+            result = _decision_product_result(preview, request, command)
+            stored.executed_request_id = request
+            stored.execution_result = result
+            self._decision_execute_requests[request] = (token, result)
+            for component in stored.component_tokens:
+                self._previews.pop(component, None)
+            return deepcopy(result)
+
     def _replace_overlapping_previews(
         self, preview: GroupOperationPreview,
     ) -> None:
@@ -575,6 +833,8 @@ class ProductOperationService:
         if self._active_window != index:
             self._previews.clear()
             self._preview_requests.clear()
+            self._decision_previews.clear()
+            self._decision_preview_requests.clear()
             self._active_window = index
 
 
@@ -602,6 +862,40 @@ def _product_result(
         state,
         preview.executable_count,
         preview.rejected_count,
+        view.frame_index,
+        view.sim_time_ms,
+        view.terminal,
+        view.winner,
+        view.outcome,
+        message,
+    )
+
+
+def _decision_product_result(
+    preview: SeatDecisionPreview,
+    request_id: str,
+    command: CommandResult,
+) -> SeatDecisionExecutionResult:
+    view = command.view
+    if view.terminal:
+        state = "TERMINAL"
+        message = "对局已终局"
+    elif command.advanced:
+        state = "WAITING_SELECTION"
+        message = "双方操作已处理，请选择下一步"
+    else:
+        state = "WAITING_OPPONENT"
+        message = "本方操作已提交，等待对方"
+    return SeatDecisionExecutionResult(
+        preview.preview_token,
+        request_id,
+        command.accepted,
+        True,
+        command.advanced,
+        state,
+        preview.operation_count,
+        preview.executable_count,
+        preview.skipped_count,
         view.frame_index,
         view.sim_time_ms,
         view.terminal,

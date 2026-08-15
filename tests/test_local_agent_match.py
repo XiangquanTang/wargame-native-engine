@@ -15,6 +15,8 @@ from wargame_native_engine.agents import (
     LocalSeatMatchError,
     LocalSeatMatchRunner,
     ScriptedSeatAgent,
+    SeatActionCapabilities,
+    SeatDecision,
     SeatAgentExecutionError,
     SeatOperation,
     SeatOperationError,
@@ -67,7 +69,7 @@ class RecordingSeatAgent:
     def __init__(
         self,
         agent_id: str,
-        decision: SeatOperation | Callable[[AgentDecisionContext], SeatOperation],
+        decision: SeatDecision | Callable[[AgentDecisionContext], SeatDecision],
         call_log: list[str] | None = None,
     ) -> None:
         self.agent_id = agent_id
@@ -81,7 +83,7 @@ class RecordingSeatAgent:
         self.call_log.append(f"reset:{context.side}")
         self.reset_contexts.append(deepcopy(context))
 
-    def act(self, *, context: AgentDecisionContext) -> SeatOperation:
+    def act(self, *, context: AgentDecisionContext) -> SeatDecision:
         self.call_log.append(f"act:{context.side}:{context.decision_index}")
         self.contexts.append(deepcopy(context))
         if callable(self.decision):
@@ -94,10 +96,10 @@ class RecordingSeatAgent:
 
 class FailingSeatAgent(RecordingSeatAgent):
     def __init__(self, agent_id: str, message: str, call_log=None) -> None:
-        super().__init__(agent_id, SeatOperation.wait(), call_log)
+        super().__init__(agent_id, SeatDecision(), call_log)
         self.message = message
 
-    def act(self, *, context: AgentDecisionContext) -> SeatOperation:
+    def act(self, *, context: AgentDecisionContext) -> SeatDecision:
         self.call_log.append(f"act:{context.side}:{context.decision_index}")
         self.contexts.append(deepcopy(context))
         raise LookupError(self.message)
@@ -129,8 +131,8 @@ def _facade_match(
 
 def _run_wait_match(tmp_path: Path, name: str, windows: int = 2):
     match = _facade_match(tmp_path / name)
-    red = RecordingSeatAgent(f"{name}-red", SeatOperation.wait())
-    blue = RecordingSeatAgent(f"{name}-blue", SeatOperation.wait())
+    red = RecordingSeatAgent(f"{name}-red", SeatDecision())
+    blue = RecordingSeatAgent(f"{name}-blue", SeatDecision())
     try:
         result = LocalSeatMatchRunner(
             match,
@@ -151,10 +153,10 @@ def test_product_move_wait_chain_uses_one_agent_call_per_side_and_window(
     call_log: list[str] = []
     red = RecordingSeatAgent(
         "red-script",
-        SeatOperation("MOVE", (1,), destination_hex=105),
+        SeatDecision.single(SeatOperation("MOVE", (1,), destination_hex=105)),
         call_log,
     )
-    blue = RecordingSeatAgent("blue-wait", SeatOperation.wait(), call_log)
+    blue = RecordingSeatAgent("blue-wait", SeatDecision(), call_log)
     match = _facade_match(tmp_path)
     try:
         result = LocalSeatMatchRunner(
@@ -178,7 +180,7 @@ def test_product_move_wait_chain_uses_one_agent_call_per_side_and_window(
         item["operation_type"]
         for item in audit
         if item["event"] == "product_operation_previewed"
-    ] == ["MOVE", "WAIT"]
+    ] == ["MOVE"]
     archive = SourceReplayArchiveImporter().import_path(result.replay_path)
     assert archive.steps[0]["ordered_actions"][0]["parameters"]["path"] == [
         102, 103, 104, 105,
@@ -188,10 +190,19 @@ def test_product_move_wait_chain_uses_one_agent_call_per_side_and_window(
         result.fact_frame_count
     )
     assert result.summary_path.is_file()
+    assert result.transition_path.is_file()
+    transitions = [
+        json.loads(line)
+        for line in result.transition_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert [item["side"] for item in transitions] == ["red", "blue"]
+    assert all(item["truncated"] is True for item in transitions)
+    assert result.transition_count == 2
     summary = json.loads(result.summary_path.read_text(encoding="utf-8"))
     assert summary["decision_window_count"] == 1
     assert summary["fact_frame_count"] == 11
     assert summary["step_count"] == 10
+    assert summary["transition_count"] == 2
     assert summary["final_state_hash"] == result.final_state_hash
     with pytest.raises(FrozenInstanceError):
         result.fact_frame_count = 99  # type: ignore[misc]
@@ -202,17 +213,19 @@ def test_agent_context_is_side_only_detached_and_mutation_cannot_pollute_session
 ) -> None:
     observed_blue_ids: list[int] = []
 
-    def mutate_red(context: AgentDecisionContext) -> SeatOperation:
+    def mutate_red(context: AgentDecisionContext) -> SeatDecision:
         friendly = context.observation["friendly_operators"]
         friendly[0]["operator_id"] = 999999  # type: ignore[index]
-        context.operation_capabilities["selected_units"].clear()  # type: ignore[union-attr]
-        return SeatOperation.wait()
+        context.operation_capabilities.operation_summary[
+            "selected_units"
+        ].clear()  # type: ignore[union-attr]
+        return SeatDecision()
 
-    def observe_blue(context: AgentDecisionContext) -> SeatOperation:
+    def observe_blue(context: AgentDecisionContext) -> SeatDecision:
         observed_blue_ids.append(
             context.observation["friendly_operators"][0]["operator_id"]
         )
-        return SeatOperation.wait()
+        return SeatDecision()
 
     red = RecordingSeatAgent("mutating-red", mutate_red)
     blue = RecordingSeatAgent("observing-blue", observe_blue)
@@ -253,9 +266,9 @@ def test_invalid_product_operation_is_not_silently_waited_or_advanced(
     tmp_path: Path,
 ) -> None:
     red = RecordingSeatAgent(
-        "invalid-red", SeatOperation("STOP_MOVE", (1,))
+        "invalid-red", SeatDecision.single(SeatOperation("STOP_MOVE", (1,)))
     )
-    blue = RecordingSeatAgent("blue", SeatOperation.wait())
+    blue = RecordingSeatAgent("blue", SeatDecision())
     match = _facade_match(tmp_path)
     output = tmp_path / "output"
     try:
@@ -271,15 +284,15 @@ def test_invalid_product_operation_is_not_silently_waited_or_advanced(
         match.close()
     assert captured.value.operation_error_code == "preview_not_executable"
     assert len(red.contexts) == 1
-    assert blue.contexts == []
+    assert len(blue.contexts) == 1
     assert not output.exists()
 
 
-def test_blue_agent_failure_preserves_red_submission_without_advancing_or_retry(
+def test_blue_agent_failure_occurs_before_any_submission_or_advance(
     tmp_path: Path,
 ) -> None:
     call_log: list[str] = []
-    red = RecordingSeatAgent("red", SeatOperation.wait(), call_log)
+    red = RecordingSeatAgent("red", SeatDecision(), call_log)
     blue = FailingSeatAgent("blue", "blue failed", call_log)
     match = _facade_match(tmp_path)
     try:
@@ -293,9 +306,9 @@ def test_blue_agent_failure_preserves_red_submission_without_advancing_or_retry(
         match.close()
     assert captured.value.side == "blue"
     assert captured.value.cause_type == "LookupError"
-    assert captured.value.submitted_sides == ("red",)
-    assert window.submitted is True
-    assert window.pending_perspectives == ("BLUE",)
+    assert captured.value.submitted_sides == ()
+    assert window.submitted is False
+    assert window.pending_perspectives == ("RED", "BLUE")
     assert call_log.count("act:red:0") == 1
     assert call_log.count("act:blue:0") == 1
 
@@ -304,7 +317,7 @@ def test_red_agent_failure_calls_neither_blue_nor_environment_step(
     tmp_path: Path,
 ) -> None:
     red = FailingSeatAgent("red", "red failed")
-    blue = RecordingSeatAgent("blue", SeatOperation.wait())
+    blue = RecordingSeatAgent("blue", SeatDecision())
     match = _facade_match(tmp_path)
     try:
         with pytest.raises(SeatAgentExecutionError) as captured:
@@ -326,8 +339,8 @@ def test_agent_reset_failure_stops_before_any_decision_or_submission(
             del context
             raise ArithmeticError("reset failed")
 
-    red = ResetFailAgent("reset-red", SeatOperation.wait())
-    blue = RecordingSeatAgent("blue", SeatOperation.wait())
+    red = ResetFailAgent("reset-red", SeatDecision())
+    blue = RecordingSeatAgent("blue", SeatDecision())
     match = _facade_match(tmp_path)
     try:
         with pytest.raises(SeatAgentExecutionError) as captured:
@@ -348,13 +361,20 @@ def test_agent_reset_failure_stops_before_any_decision_or_submission(
 def test_scripted_seat_agent_returns_product_operations_then_explicit_wait() -> None:
     agent = ScriptedSeatAgent(
         "scripted",
-        [SeatOperation("MOVE", (1,), destination_hex=105)],
+        [SeatDecision.single(SeatOperation("MOVE", (1,), destination_hex=105))],
     )
-    context = AgentDecisionContext("red", 0, 0, 0, {}, {})
-    assert agent.act(context=context) == SeatOperation(
+    context = AgentDecisionContext(
+        "red",
+        0,
+        0,
+        0,
+        {},
+        SeatActionCapabilities("red", 0, (), (), (), {}),
+    )
+    assert agent.act(context=context) == SeatDecision.single(SeatOperation(
         "MOVE", (1,), destination_hex=105
-    )
-    assert agent.act(context=context) == SeatOperation.wait()
+    ))
+    assert agent.act(context=context) == SeatDecision()
 
 
 def test_analysis_failure_after_advance_reports_desynchronization(
@@ -399,8 +419,8 @@ def test_analysis_failure_after_advance_reports_desynchronization(
     match = MatchHandle(
         bundle, gateway, descriptor.session_id, "seat-red", "seat-blue"
     )
-    red = RecordingSeatAgent("red", SeatOperation.wait())
-    blue = RecordingSeatAgent("blue", SeatOperation.wait())
+    red = RecordingSeatAgent("red", SeatDecision())
+    blue = RecordingSeatAgent("blue", SeatDecision())
     with pytest.raises(LocalSeatMatchError) as captured:
         LocalSeatMatchRunner(
             match, red_agent=red, blue_agent=blue
@@ -425,6 +445,7 @@ def test_same_seed_wait_agents_produce_exact_same_replay_and_analysis(
     assert first.outcome == second.outcome
     assert first.replay_path.read_bytes() == second.replay_path.read_bytes()
     assert first.analysis_path.read_bytes() == second.analysis_path.read_bytes()
+    assert first.transition_path.read_bytes() == second.transition_path.read_bytes()
     first_archive = SourceReplayArchiveImporter().import_path(first.replay_path)
     second_archive = SourceReplayArchiveImporter().import_path(second.replay_path)
     assert first_archive.steps == second_archive.steps
@@ -479,7 +500,15 @@ def test_short_terminal_match_publishes_strict_replay_and_exact_analysis_hashes(
     assert result.fact_frame_count == 2
     assert result.winner == "red"
     assert result.outcome == "win"
+    assert result.transition_count == 2
     assert result.strict_replay_match is True
+    terminal_transitions = [
+        json.loads(line)
+        for line in result.transition_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert [item["reward"] for item in terminal_transitions] == [1.0, -1.0]
+    assert all(item["terminated"] is True for item in terminal_transitions)
+    assert all(item["truncated"] is False for item in terminal_transitions)
     analysis = [
         json.loads(line)
         for line in result.analysis_path.read_text(encoding="utf-8").splitlines()
@@ -514,8 +543,8 @@ def test_map123_two_window_real_agent_smoke(tmp_path: Path) -> None:
         conversion, tmp_path / "canonical-map123"
     )
     bundle = ScenarioBundle.from_path(published.scenario_path)
-    red = RecordingSeatAgent("map123-red", SeatOperation.wait())
-    blue = RecordingSeatAgent("map123-blue", SeatOperation.wait())
+    red = RecordingSeatAgent("map123-red", SeatDecision())
+    blue = RecordingSeatAgent("map123-blue", SeatDecision())
     match = _facade_match(
         tmp_path,
         bundle=bundle,
@@ -532,7 +561,18 @@ def test_map123_two_window_real_agent_smoke(tmp_path: Path) -> None:
     assert len(red.contexts[0].observation["friendly_operators"]) == 26
     assert len(blue.contexts[0].observation["friendly_operators"]) == 23
     assert result.decision_window_count == 2
+    assert result.transition_count == 4
     assert result.fact_frame_count == 5
     assert result.truncated is True
     assert result.strict_replay_match is True
     assert len(result.analysis_path.read_text(encoding="utf-8").splitlines()) == 5
+    map_transitions = [
+        json.loads(line)
+        for line in result.transition_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert [item["decision_index"] for item in map_transitions] == [0, 0, 1, 1]
+    assert [item["side"] for item in map_transitions] == [
+        "red", "blue", "red", "blue",
+    ]
+    assert all(item["truncated"] is False for item in map_transitions[:2])
+    assert all(item["truncated"] is True for item in map_transitions[2:])

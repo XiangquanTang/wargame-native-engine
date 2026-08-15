@@ -50,5 +50,10 @@ def test_operation_agent_runner_uses_facade_gateway_and_publishes_evidence(
     assert result.analysis_path == (
         result.output_dir / "frame_analysis.native.jsonl"
     )
+    assert result.transition_path == (
+        result.output_dir / "decision_transitions.native.jsonl"
+    )
+    assert result.transition_path.is_file()
+    assert result.transition_count == 4
     assert result.summary_path.is_file()
     assert (result.output_dir / "control_audit.native.jsonl").is_file()

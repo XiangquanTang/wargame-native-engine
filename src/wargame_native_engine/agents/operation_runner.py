@@ -12,7 +12,7 @@ from typing import Any, Mapping, Sequence
 from wargame_native_engine.agents.seat import (
     AgentDecisionContext,
     LocalSeatAgent,
-    SeatOperation,
+    SeatDecision,
 )
 from wargame_native_engine.analysis import EightFactorAnalyzer, analyze_replay_to_jsonl
 from wargame_native_engine.compat.source_frame.serialization import (
@@ -24,12 +24,21 @@ from wargame_native_engine.io.importers.source_replay_archive import (
 )
 from wargame_native_engine.io.replay import replay_source_archive
 from wargame_native_engine.io.serialization import file_sha256, json_clone
-from wargame_native_engine.operations import ProductOperationService
 from wargame_native_engine.operations.facade import MatchHandle
+from wargame_native_engine.training.models import DecisionTransition
+from wargame_native_engine.training.multi_seat import (
+    NativeDecisionSession,
+    NativeMultiSeatError,
+    mark_transition_pair_truncated,
+)
+from wargame_native_engine.training.transitions import (
+    DECISION_TRANSITIONS_NAME,
+    write_decision_transitions_jsonl,
+)
 
 
 MATCH_SUMMARY_NAME = "match_summary.native.json"
-MATCH_SUMMARY_SCHEMA = "native-local-seat-match-summary/1.0"
+MATCH_SUMMARY_SCHEMA = "native-local-seat-match-summary/1.1"
 
 
 class LocalSeatMatchError(RuntimeError):
@@ -112,12 +121,14 @@ class LocalSeatMatchResult:
     output_dir: Path
     replay_path: Path
     analysis_path: Path
+    transition_path: Path
     summary_path: Path
     terminal: bool
     truncated: bool
     decision_window_count: int
     fact_frame_count: int
     step_count: int
+    transition_count: int
     winner: str | None
     outcome: str | None
     final_state_hash: str
@@ -149,18 +160,17 @@ class LocalSeatMatchRunner:
             agent_id = getattr(agent, "agent_id", None)
             if not isinstance(agent_id, str) or not agent_id.strip():
                 raise ValueError(f"{side} agent_id must be a non-empty string")
-        self.controllers = {
-            "red": match.bind_controller(
-                "red", controller_id=match.red_controller_id
-            ),
-            "blue": match.bind_controller(
-                "blue", controller_id=match.blue_controller_id
-            ),
-        }
-        self.product_services = {
-            side: ProductOperationService(controller)
-            for side, controller in self.controllers.items()
-        }
+        seed = match.gateway.manager.agent_reset_context(
+            match.session_id, "red", red_agent.agent_id
+        ).seed
+        self.decision_session = NativeDecisionSession(
+            match,
+            episode_id=f"{match.session_id}-local-seat",
+            seed=seed,
+        )
+        self.controllers = self.decision_session.controllers
+        self.product_services = self.decision_session.product_services
+        self._transitions: list[DecisionTransition] = []
         self._ran = False
 
     def run(
@@ -189,6 +199,12 @@ class LocalSeatMatchRunner:
             processed = self._run_windows(max_decision_windows)
             final_view = self.controllers["red"].observe()
             truncated = not final_view.terminal
+            transitions = tuple(self._transitions)
+            if truncated and transitions:
+                transitions = (
+                    *transitions[:-2],
+                    *mark_transition_pair_truncated(transitions[-2:]),
+                )
             publication = self.match.publish(
                 target,
                 truncated=truncated,
@@ -220,6 +236,10 @@ class LocalSeatMatchRunner:
                 )
             if not online_offline:
                 raise RuntimeError("online and offline analysis JSONL differ")
+            transition_path = write_decision_transitions_jsonl(
+                publication.output_dir / DECISION_TRANSITIONS_NAME,
+                transitions,
+            )
             final_state_hash = _nonempty_manifest_text(
                 archive.manifest, "final_state_hash"
             )
@@ -239,6 +259,7 @@ class LocalSeatMatchRunner:
                 "decision_window_count": processed,
                 "fact_frame_count": publication.frame_count,
                 "step_count": publication.step_count,
+                "transition_count": len(transitions),
                 "terminal": native_terminal,
                 "truncated": native_truncated,
                 "winner": winner,
@@ -246,6 +267,7 @@ class LocalSeatMatchRunner:
                 "final_state_hash": final_state_hash,
                 "replay_sha256": file_sha256(publication.replay_path),
                 "analysis_sha256": file_sha256(publication.analysis_path),
+                "transitions_sha256": file_sha256(transition_path),
                 "strict_replay_match": True,
                 "online_offline_analysis_match": True,
                 "error": None,
@@ -259,12 +281,14 @@ class LocalSeatMatchRunner:
                 publication.output_dir,
                 publication.replay_path,
                 publication.analysis_path,
+                transition_path,
                 summary_path,
                 native_terminal,
                 native_truncated,
                 processed,
                 publication.frame_count,
                 publication.step_count,
+                len(transitions),
                 winner,
                 final_view.outcome,
                 final_state_hash,
@@ -305,17 +329,18 @@ class LocalSeatMatchRunner:
                 "red"
             ].window().decision_window_index
             called: list[str] = []
-            submitted: list[str] = []
+            decisions: dict[str, SeatDecision] = {}
             for side in ("red", "blue"):
                 agent = self.agents[side]
                 called.append(agent.agent_id)
                 context = self._decision_context(side, expected_window)
                 try:
-                    operation = agent.act(context=deepcopy(context))
-                    if not isinstance(operation, SeatOperation):
+                    decision = agent.act(context=deepcopy(context))
+                    if not isinstance(decision, SeatDecision):
                         raise TypeError(
-                            "LocalSeatAgent.act must return SeatOperation"
+                            "LocalSeatAgent.act must return SeatDecision"
                         )
+                    decisions[side] = decision
                 except BaseException as exc:
                     raise SeatAgentExecutionError(
                         agent_id=agent.agent_id,
@@ -324,54 +349,40 @@ class LocalSeatMatchRunner:
                         phase="act",
                         cause=exc,
                         called_agent_ids=called,
-                        submitted_sides=submitted,
+                        submitted_sides=(),
                     ) from exc
-                try:
-                    preview = self.product_services[side].preview_operation(
-                        operation.actor_ids,
-                        operation.operation_type,
-                        request_id=(
-                            f"local-seat:{expected_window}:{side}:preview"
-                        ),
-                        destination_hex=operation.destination_hex,
-                        target_id=operation.target_id,
-                        movement_mode=operation.movement_mode,
-                        weapon_choices=dict(operation.weapon_choices),
-                        whole_side_wait=operation.whole_side_wait,
-                    )
-                    execution = self.product_services[side].execute_preview(
-                        preview.preview_token,
-                        request_id=(
-                            f"local-seat:{expected_window}:{side}:execute"
-                        ),
-                        confirm_partial=operation.confirm_partial,
-                    )
-                except CommandGatewayError as exc:
+
+            try:
+                step_result = self.decision_session.step(
+                    decisions["red"], decisions["blue"]
+                )
+            except NativeMultiSeatError as exc:
+                cause = exc.__cause__
+                if (
+                    exc.code == "decision_preview_failed"
+                    and isinstance(cause, CommandGatewayError)
+                ):
+                    side = exc.side or "red"
                     raise SeatOperationError(
-                        agent_id=agent.agent_id,
+                        agent_id=self.agents[side].agent_id,
                         side=side,
                         decision_index=expected_window,
-                        cause=exc,
-                        submitted_sides=submitted,
+                        cause=cause,
+                        submitted_sides=(),
                     ) from exc
-                except BaseException as exc:
-                    if self._analysis_desynchronized():
-                        raise LocalSeatMatchError(
-                            "analysis_desynchronized",
-                            {
-                                "perspective": side.upper(),
-                                "decision_index": expected_window,
-                                "cause_type": type(exc).__name__,
-                                "cause_message": str(exc),
-                                "environment_already_advanced": side == "blue",
-                            },
-                        ) from exc
-                    raise
-                submitted.append(side)
-                if side == "red" and execution.advanced:
-                    raise RuntimeError("RED submission advanced without BLUE")
-                if side == "blue" and not execution.advanced:
-                    raise RuntimeError("complete Agent window did not advance")
+                if self._analysis_desynchronized():
+                    raise LocalSeatMatchError(
+                        "analysis_desynchronized",
+                        {
+                            "perspective": (exc.side or "blue").upper(),
+                            "decision_index": expected_window,
+                            "cause_type": type(cause or exc).__name__,
+                            "cause_message": str(cause or exc),
+                            "environment_already_advanced": True,
+                        },
+                    ) from exc
+                raise
+            self._transitions.extend(deepcopy(step_result.transitions))
             processed += 1
         return processed
 
@@ -380,19 +391,10 @@ class LocalSeatMatchRunner:
         side: str,
         expected_window: int,
     ) -> AgentDecisionContext:
-        view = self.controllers[side].observe()
-        if view.step_index != expected_window:
+        context = self.decision_session.decision_context(side)
+        if context.decision_index != expected_window:
             raise RuntimeError("controller observation/window mismatch")
-        actor_ids = _friendly_actor_ids(view.observation)
-        capabilities = self.product_services[side].capabilities(actor_ids)
-        return AgentDecisionContext(
-            side,
-            expected_window,
-            view.frame_index,
-            view.sim_time_ms,
-            json_clone(view.observation),
-            json_clone(capabilities),
-        )
+        return context
 
     def _analysis_desynchronized(self) -> bool:
         try:
@@ -436,21 +438,6 @@ def run_local_agent_match(
         max_decision_windows=max_decision_windows,
         overwrite=overwrite,
     )
-
-
-def _friendly_actor_ids(observation: Mapping[str, Any]) -> tuple[int, ...]:
-    values = observation.get("friendly_operators", ())
-    if not isinstance(values, Sequence) or isinstance(values, (str, bytes)):
-        raise RuntimeError("side observation friendly_operators is invalid")
-    result: list[int] = []
-    for value in values:
-        if not isinstance(value, Mapping):
-            raise RuntimeError("side observation friendly operator is invalid")
-        unit_id = value.get("operator_id")
-        if type(unit_id) is not int or unit_id < 0:
-            raise RuntimeError("side observation operator_id is invalid")
-        result.append(unit_id)
-    return tuple(sorted(result))
 
 
 def _nonempty_manifest_text(manifest: Mapping[str, Any], field: str) -> str:

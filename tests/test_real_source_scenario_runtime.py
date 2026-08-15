@@ -189,7 +189,8 @@ def test_real_source_scenario_move_shoot_replay_product_loop(
     )
     assert validated["data"]["legal"] is True
     assert validated["data"]["evidence"]["checks"]["target_observed"] is True
-    assert report["runtime"]["terminal"] is True
+    assert report["runtime"]["terminal"] is False
+    assert report["runtime"]["truncated"] is True
     assert report["runtime"]["termination_reason"] == "max_ticks"
     assert report["runtime"]["frame_count"] == 16
     assert report["runtime"]["step_count"] == 15
