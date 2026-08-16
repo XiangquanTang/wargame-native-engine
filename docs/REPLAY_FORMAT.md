@@ -17,16 +17,17 @@ An action line records submitted intent and acceptance. An event line records
 Native adjudication. The two collections have independent schema identifiers;
 acceptance is never represented as an adjudication event.
 
-The manifest records `engine_version`, `ruleset_id`, `ruleset_version`, the
-expanded `ruleset_hash`, scenario/map IDs, `scenario_hash`, seed, Agents,
-effective max ticks, project commit and collection hashes. Snapshot schema
-`native-snapshot/2.0` repeats scenario and ruleset identity/hash and refuses a
-mismatched restore.
+The manifest records `engine_version`, `adjudication_semantics_version`,
+`ruleset_id`, `ruleset_version`, the expanded `ruleset_hash`, scenario/map IDs,
+`scenario_hash`, seed, Agents, effective max ticks, project commit and
+collection hashes. Snapshot schema `native-snapshot/2.0` repeats scenario,
+ruleset and adjudication-semantics identity and refuses a mismatched restore.
 
 Strict replay is the default. Before replaying it checks:
 
 - scenario hash;
 - ruleset ID, semantic version and expanded-content hash;
+- adjudication semantics before constructing or stepping the replay engine;
 - manifest seed against the initial snapshot and an optional caller seed;
 - every replay collection checksum and summary hash.
 
@@ -34,6 +35,12 @@ Any mismatch raises `ValueError`. `strict=False` must be selected explicitly
 and emits `RuntimeWarning`; it never silently substitutes another ruleset.
 Accepted actions are grouped by tick and replayed through `NativeEngine`, then
 the final world hash is compared with the recorded result.
+
+`native-joint-prestate/1.0` identifies sealed-batch validation against one
+tick-start state plus deterministic aggregate-then-apply effects. A replay
+without that identity, or with the former ordered-sequential meaning, fails
+strict compatibility at step zero. This release does not provide a legacy
+semantics executor.
 
 ```text
 same NativeScenario + same expanded Ruleset + same action intents + same seed

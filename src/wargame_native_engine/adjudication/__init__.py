@@ -1,5 +1,8 @@
 from wargame_native_engine.adjudication.dice import DiceRoller, FixedDiceRoller
-from wargame_native_engine.adjudication.direct_fire import DirectFireAdjudicator
+from wargame_native_engine.adjudication.direct_fire import (
+    DirectFireAdjudicator,
+    DirectFireResolution,
+)
 from wargame_native_engine.adjudication.outcome import CombatOutcome
 from wargame_native_engine.adjudication.request import (
     ActionLegalityResult, DirectFireRequest, WeaponProfile,
@@ -9,5 +12,6 @@ from wargame_native_engine.adjudication.scheduler import ActionTimer, CommandSch
 
 __all__ = ["ActionLegalityResult", "ActionTimer", "AdjudicationTableSet",
            "CombatOutcome", "CommandScheduler", "DiceRoller",
-           "DirectFireAdjudicator", "DirectFireRequest", "EventQueue",
+           "DirectFireAdjudicator", "DirectFireRequest", "DirectFireResolution",
+           "EventQueue",
            "FixedDiceRoller", "WeaponProfile"]

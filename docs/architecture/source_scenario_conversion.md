@@ -47,8 +47,8 @@
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python -m scripts.convert_source_scenario \
-  --source-scenario /home/txq/wargame/wargame_benchmark_lab/local_data/sdk_data_snapshot/phase9a_multireplay_pilot/scenarios/2201010105.json \
-  --source-map /home/txq/wargame/wargame_benchmark_lab/local_data/sdk_data_snapshot/phase9a_multireplay_pilot/maps/123/basic.json \
+  --source-scenario /path/to/read-only-source/scenarios/2201010105.json \
+  --source-map /path/to/read-only-source/maps/123/basic.json \
   --source-scenario-identity scenarios/2201010105.json \
   --source-map-identity maps/123/basic.json \
   --scenario-id 2201010105 --map-id 123 \

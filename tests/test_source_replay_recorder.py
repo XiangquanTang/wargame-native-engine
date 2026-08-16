@@ -14,7 +14,10 @@ from wargame_native_engine.io.importers.historical_replay import (
 from wargame_native_engine.io.importers.source_replay_archive import (
     SourceReplayArchiveImporter,
 )
-from wargame_native_engine.io.replay import replay_source_archive
+from wargame_native_engine.io.replay import (
+    UnsupportedReplaySemanticsError,
+    replay_source_archive,
+)
 from wargame_native_engine.io.scenario import load_scenario
 from wargame_native_engine.io.serialization import canonical_hash
 from wargame_native_engine.compat.source_frame.serialization import (
@@ -83,6 +86,8 @@ def test_manifest_jsonl_contains_provenance_hashes_and_result(acceptance) -> Non
     assert manifest["frame_count"] == report["frame_count"]
     assert manifest["step_count"] == report["step_count"]
     assert manifest["winner"] == "red"
+    assert manifest["adjudication_semantics_version"] == (
+        "native-joint-prestate/1.0")
     for key in ("ruleset_hash", "adjudication_table_set_hash",
                 "movement_policy_hash", "perspective_policy_hash",
                 "steps_sha256", "frames_merkle_root",
@@ -149,6 +154,36 @@ def test_native_source_steps_strictly_replay_final_hash(acceptance) -> None:
     assert verification.matches
     assert verification.expected_world_hash == report["expected_final_hash"]
     assert verification.actual_world_hash == report["actual_final_hash"]
+
+
+def test_source_strict_replay_rejects_incompatible_semantics_before_step(
+    tmp_path: Path, acceptance, monkeypatch,
+) -> None:
+    root, _ = acceptance
+    output = tmp_path / "incompatible-semantics.zip"
+
+    def mutate(values):
+        manifest = _manifest(values)
+        manifest["adjudication_semantics_version"] = "ordered-sequential/0"
+        values["replay_manifest.native.jsonl"] = (
+            canonical_source_json(manifest) + "\n").encode()
+
+    _rewrite_native_zip(root / "replay.zip", output, mutate)
+
+    def stepped(*args, **kwargs):
+        raise AssertionError("source environment must not step")
+
+    monkeypatch.setattr(
+        "wargame_native_engine.session.source_environment."
+        "SourceCompatibleEnvironment.step_views_ms",
+        stepped,
+    )
+    with pytest.raises(UnsupportedReplaySemanticsError, match="ordered-sequential"):
+        replay_source_archive(
+            load_scenario("examples/source_movement_scenario.json"),
+            output,
+            strict=True,
+        )
 
 
 def test_strict_replay_rejects_self_consistent_tampered_intermediate_frame(

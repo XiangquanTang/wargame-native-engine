@@ -106,6 +106,20 @@ class DirectFireAdjudicator:
         return ActionLegalityResult(True, "LEGAL", evidence)
 
     def resolve(self, request: DirectFireRequest) -> DirectFireResolution:
+        """Resolve and immediately apply one isolated direct-fire request.
+
+        The source-compatible engine uses :meth:`stage` for a sealed joint
+        batch.  Keeping this method mutating preserves the public, single-shot
+        adjudicator contract used by focused rule tests and tools.
+        """
+        return self._resolve(request, apply_outcome=True)
+
+    def stage(self, request: DirectFireRequest) -> DirectFireResolution:
+        """Resolve against the request pre-state without mutating operators."""
+        return self._resolve(request, apply_outcome=False)
+
+    def _resolve(self, request: DirectFireRequest, *,
+                 apply_outcome: bool) -> DirectFireResolution:
         adjudication_id = "adjudication-" + canonical_hash({
             "tick": request.tick, "action_id": request.action_id,
             "attacker_id": request.attacker.operator_id,
@@ -145,9 +159,11 @@ class DirectFireAdjudicator:
                                         request.ammunition_before,
                                         request.weapon_cooldown_before, str(exc))
 
-        outcome, application_events = self._apply_outcome(request, outcome,
-                                                           adjudication_id)
-        events.extend(application_events)
+        outcome = self._normalize_outcome(request, outcome)
+        if apply_outcome:
+            outcome, application_events = self._apply_outcome(
+                request, outcome, adjudication_id)
+            events.extend(application_events)
         ammunition_after = request.ammunition_before - 1
         cooldown_after = (self.tables.timing("direct_fire_cooldown_seconds")
                           if request.weapon.cooldown_ticks is None
@@ -287,11 +303,6 @@ class DirectFireAdjudicator:
         before = int(request.target.blood)
         losses = outcome.vehicle_losses + outcome.squad_losses
         suppression = outcome.suppression_applied
-        if (request.target_domain is UnitDomain.PERSONNEL and suppression
-                and request.target.state == "SUPPRESSED"):
-            losses += 1
-            outcome = CombatOutcome(squad_losses=outcome.squad_losses + 1,
-                                    suppression_applied=True)
         after = max(0, before - losses)
         request.target.blood = after
         request.target.health = request.target.max_health * after / int(request.target.max_blood)
@@ -339,6 +350,27 @@ class DirectFireAdjudicator:
                      "adjudication_id": adjudication_id},
                 ))
         return outcome, events
+
+    @staticmethod
+    def _normalize_outcome(request: DirectFireRequest,
+                           outcome: CombatOutcome) -> CombatOutcome:
+        """Apply pre-state-dependent conventions without mutating the target."""
+        vehicle_losses = outcome.vehicle_losses
+        squad_losses = outcome.squad_losses
+        suppression = outcome.suppression_applied
+        if (request.target_domain is UnitDomain.PERSONNEL and suppression
+                and request.target.state == "SUPPRESSED"):
+            squad_losses += 1
+        destroyed = (
+            vehicle_losses + squad_losses >= int(request.target.blood)
+        )
+        return CombatOutcome(
+            vehicle_losses=vehicle_losses,
+            squad_losses=squad_losses,
+            suppression_applied=suppression,
+            destroyed=destroyed,
+            no_effect=outcome.no_effect,
+        )
 
     def _weapon_is_carried(self, request: DirectFireRequest) -> bool:
         expected = str(request.weapon.weapon_id)

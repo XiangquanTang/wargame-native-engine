@@ -16,13 +16,20 @@ from wargame_native_engine.io.serialization import (
     canonical_hash, file_sha256, json_clone,
 )
 from wargame_native_engine.rules.config import Ruleset, load_ruleset
-from wargame_native_engine.version import ENGINE_VERSION
+from wargame_native_engine.version import (
+    ADJUDICATION_SEMANTICS_VERSION,
+    ENGINE_VERSION,
+)
 
 if TYPE_CHECKING:
     from wargame_native_engine.data.map_runtime import MapRuntimeData
 
 
 REPLAY_SCHEMA_VERSION = "native-replay/2.0"
+
+
+class UnsupportedReplaySemanticsError(ValueError):
+    """The archive requires adjudication semantics this engine cannot run."""
 
 
 class ReplayWriter:
@@ -42,6 +49,8 @@ class ReplayWriter:
         self.manifest: dict[str, Any] = {
             "schema_version": REPLAY_SCHEMA_VERSION,
             "engine_version": ENGINE_VERSION,
+            "adjudication_semantics_version": (
+                ADJUDICATION_SEMANTICS_VERSION),
             "ruleset_id": ruleset.ruleset_id,
             "ruleset_version": ruleset.ruleset_version,
             "ruleset_hash": ruleset.content_hash,
@@ -188,6 +197,7 @@ def replay_actions(scenario: NativeScenario, root: str | Path, *,
     active_ruleset = (ruleset if isinstance(ruleset, Ruleset)
                       else load_ruleset(ruleset))
     manifest = bundle["manifest"]
+    _check_adjudication_semantics(manifest, strict=strict, kind="replay")
     mismatches: list[str] = []
     expected = {
         "scenario_hash": scenario.scenario_hash,
@@ -307,6 +317,8 @@ def replay_source_archive(scenario: NativeScenario, source: str | Path, *,
     )
     archive = SourceReplayArchiveImporter().import_path(source)
     manifest = archive.manifest
+    _check_adjudication_semantics(
+        manifest, strict=strict, kind="source replay")
     active_ruleset = (ruleset if isinstance(ruleset, Ruleset)
                       else load_ruleset(ruleset))
     expected = {
@@ -435,6 +447,22 @@ def _verify_green_frame_hash(
         raise ValueError(
             f"source replay GREEN frame hash mismatch at frame {frame_index}"
         )
+
+
+def _check_adjudication_semantics(
+    manifest: Mapping[str, Any], *, strict: bool, kind: str,
+) -> None:
+    actual = manifest.get("adjudication_semantics_version")
+    if actual == ADJUDICATION_SEMANTICS_VERSION:
+        return
+    message = (
+        f"unsupported {kind} adjudication semantics: "
+        f"expected {ADJUDICATION_SEMANTICS_VERSION!r}, got {actual!r}"
+    )
+    if strict:
+        raise UnsupportedReplaySemanticsError(message)
+    warnings.warn(message + "; continuing in non-strict mode", RuntimeWarning,
+                  stacklevel=3)
 
 
 def _validate_source_step_record(record: Mapping[str, Any], offset: int) -> None:

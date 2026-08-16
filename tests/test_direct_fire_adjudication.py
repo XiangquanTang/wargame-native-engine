@@ -113,6 +113,19 @@ def resolve(base, *, correction=0, req=None, dice=(3, 4, 3)):
     return current, result, tables
 
 
+def test_staged_resolution_calculates_without_mutating_target() -> None:
+    current = request(target_domain=UnitDomain.VEHICLE, target_blood=1)
+    before = current.target.to_dict()
+
+    result = DirectFireAdjudicator(
+        FakeTables(1), FixedDiceRoller((3, 4, 3, 4))).stage(current)
+
+    assert result.outcome is not None and result.outcome.destroyed
+    assert current.target.to_dict() == before
+    assert EventType.LOSSES_APPLIED not in {
+        item.event_type for item in result.events}
+
+
 def test_personnel_attack_level_lookup() -> None:
     assert TABLES.attack_level("direct_fire_personnel_attack_levels",
                                "LARGE_DIRECT_FIRE_CANNON", 1, 10).value == 2

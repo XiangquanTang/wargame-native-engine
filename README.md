@@ -5,6 +5,60 @@ experiment engine. All adjudication is explicitly **Native simplified rules**;
 it does not import or claim compatibility with an official SDK, authentication
 configuration, binary package, or hidden rules.
 
+## GitHub source release quick start
+
+This release is intended to run from a cloned source tree; it is not yet a
+PyPI-stable SDK distribution.
+
+```bash
+git clone <repository-url>
+cd wargame_native_engine
+python -m pip install -e .
+PYTHONDONTWRITEBYTECODE=1 python examples/run_source_release.py \
+  --output /tmp/wargame-native-source-example --seed 42
+```
+
+The example loads the committed synthetic Source-compatible scenario, obtains
+detached RED and BLUE observations, selects one legal command per side,
+advances one joint authoritative tick, writes a GREEN replay, and verifies it
+by strict rule re-execution. It needs no private map, old SDK, credentials, or
+external service.
+
+Recommended application entry points are `WargameFacade` for product control,
+`NativeMultiSeatEnv` for synchronous deterministic Agent training, and
+`RealtimeAgentSession` for fixed-tick asynchronous command collection.
+`GameSession.step` and `SessionManager.advance_ms` are trusted core boundaries,
+not the first integration tutorial for untrusted clients.
+
+## Engine semantic contract
+
+One authoritative `WorldState` advances as:
+
+```text
+Collect -> Seal -> same-pre-state adjudication -> joint effect resolution
+        -> working-state evolution -> atomic commit
+```
+
+All actions in one sealed batch are qualified against the same tick-start
+state. Direct-fire outcomes are staged, same-target losses are aggregated, and
+the working tick is committed only after action handling, ongoing movement,
+visibility, and termination all succeed. A core-tick exception preserves the
+prior World, NativeRNG state, logical time, and action/event sequences.
+
+Real time is scheduling, not a per-tick chess turn: once MOVE or another
+long-running action begins, the Engine advances its duration and interruption
+state on later ticks without requiring the controller to resend "continue".
+Manual and background clocks call the same simulation transition.
+
+RED and BLUE are detached limited-information projections of the single
+authoritative state. GREEN is the complete referee/recorder projection; it is
+not passed to side Agents. The renderer and analysis paths are observer-only.
+
+Native replay supports both recorded state frames and deterministic strict
+replay. Strict replay re-executes accepted actions through this repository's
+Native simplified adjudication and rejects a mismatched adjudication-semantics
+version before the first step.
+
 ## Run with a versioned ruleset
 
 The default JSON ruleset expands its operator, weapon and terrain profiles into

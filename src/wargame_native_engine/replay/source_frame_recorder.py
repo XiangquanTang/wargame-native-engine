@@ -19,6 +19,7 @@ from wargame_native_engine.compat.source_frame.serialization import (
     canonical_source_json,
 )
 from wargame_native_engine.io.serialization import canonical_hash, file_sha256, json_clone
+from wargame_native_engine.version import ADJUDICATION_SEMANTICS_VERSION
 
 
 ANALYSIS_SIDECAR_NAME = "frame_analysis.native.jsonl"
@@ -44,8 +45,16 @@ class SourceFrameRecorder:
             raise RuntimeError("recorder_already_started")
         if self.root.exists() and any(self.root.iterdir()):
             raise FileExistsError(f"refusing to overwrite recorder output: {self.root}")
+        normalized_metadata = json_clone(metadata)
+        declared_semantics = normalized_metadata.get(
+            "adjudication_semantics_version")
+        if (declared_semantics is not None
+                and declared_semantics != ADJUDICATION_SEMANTICS_VERSION):
+            raise ValueError("recorder adjudication semantics mismatch")
         self.root.mkdir(parents=True, exist_ok=True)
-        self._metadata = json_clone(metadata)
+        self._metadata = normalized_metadata
+        self._metadata["adjudication_semantics_version"] = (
+            ADJUDICATION_SEMANTICS_VERSION)
         self._metadata["started_at"] = started_at or datetime.now(
             timezone.utc).isoformat()
         self._atomic_write(self.root / "steps.jsonl", b"")

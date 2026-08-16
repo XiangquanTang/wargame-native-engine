@@ -16,7 +16,10 @@ from wargame_native_engine.core.time import (
     require_positive_milliseconds,
     resolve_delta_time_ms,
 )
-from wargame_native_engine.version import ENGINE_VERSION
+from wargame_native_engine.version import (
+    ADJUDICATION_SEMANTICS_VERSION,
+    ENGINE_VERSION,
+)
 
 
 class SourceCompatibleEnvironment:
@@ -173,6 +176,8 @@ class SourceCompatibleEnvironment:
         snapshot = self.session.snapshot()
         value = {
             "engine_version": ENGINE_VERSION,
+            "adjudication_semantics_version": (
+                ADJUDICATION_SEMANTICS_VERSION),
             "ruleset_id": snapshot["ruleset_id"],
             "ruleset_version": snapshot["ruleset_version"],
             "ruleset_hash": snapshot["ruleset_hash"],

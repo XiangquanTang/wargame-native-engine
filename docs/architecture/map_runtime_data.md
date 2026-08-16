@@ -100,9 +100,9 @@ hash。没有显式 AIR 矩阵时，原有 `AIR_MOVEMENT_UNSUPPORTED` 行为不�
 ```bash
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src \
 python -m scripts.convert_map_runtime_data \
-  --map-config /home/txq/wargame/wargame_benchmark_lab/local_data/sdk_data_snapshot/phase9a_multireplay_pilot/maps/123/basic.json \
-  --movement-cost /home/txq/wargame/wargame_benchmark_lab/local_data/sdk_data_snapshot/phase9a_multireplay_pilot/maps/123/cost.pickle \
-  --visibility-npz /home/txq/wargame/wargame_benchmark_lab/local_data/sdk_data_snapshot/phase9a_multireplay_pilot/maps/123/123see.npz \
+  --map-config /path/to/read-only-source/maps/123/basic.json \
+  --movement-cost /path/to/read-only-source/maps/123/cost.pickle \
+  --visibility-npz /path/to/read-only-source/maps/123/123see.npz \
   --coordinate-system odd-r \
   --output-dir /tmp/wargame_map123_runtime
 ```

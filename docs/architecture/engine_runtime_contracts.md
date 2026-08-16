@@ -21,6 +21,39 @@ CommandGateway / SimulationScheduler
 boundary. The `step_ms` helpers are exact-millisecond convenience adapters, not
 another adjudication implementation.
 
+## Joint tick and transaction boundary
+
+The source-compatible core implements the following fixed semantic contract:
+
+```text
+sealed ordered action batch
+-> common validation against immutable tick-start WorldState
+-> stage direct-fire intents/outcomes against that same pre-state
+-> aggregate same-target effects deterministically
+-> apply effects and advance ongoing runtime on a detached working WorldState
+-> refresh visibility and evaluate termination
+-> atomically commit the complete working runtime
+```
+
+Canonical ordering remains evidence ordering and deterministic RNG ordering; it
+does not give the first actor a chance to invalidate another actor's already
+submitted same-tick fire. The configured `simultaneous_damage`,
+`destroyed_actor_executes_submitted_action`, and `aggregate_then_apply`
+contracts are therefore effective runtime semantics.
+
+`NativeEngine._step_ms` clones WorldState and NativeRNG plus action/error
+counters, event state and valid-action cache before dispatch. Success commits
+the complete working runtime. Any exception in action staging, movement,
+visibility, objective or termination processing restores the exact tick-start
+runtime. Recorder and analysis remain downstream observers and cannot create a
+partially committed simulation tick.
+
+Replay manifests and snapshots record
+`adjudication_semantics_version=native-joint-prestate/1.0`. Strict replay checks
+that field before constructing or stepping the replay engine; legacy ordered
+sequential archives require an explicit compatible executor and are not
+silently interpreted under the joint semantics.
+
 ## 1. Exact simulation-time contract
 
 `core/time.py` defines the shared validation and conversion contract:

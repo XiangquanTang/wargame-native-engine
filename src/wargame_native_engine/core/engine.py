@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from wargame_native_engine.adjudication import (
     AdjudicationTableSet, DiceRoller, DirectFireAdjudicator,
-    DirectFireRequest, WeaponProfile,
+    DirectFireRequest, DirectFireResolution, WeaponProfile,
 )
 from wargame_native_engine.compat.source_frame.models import ArmorClass, UnitDomain
 
@@ -54,9 +55,17 @@ from wargame_native_engine.visibility import (
     evaluate_visibility,
     within_maximum_observation_distance,
 )
+from wargame_native_engine.version import ADJUDICATION_SEMANTICS_VERSION
 
 if TYPE_CHECKING:
     from wargame_native_engine.data.map_runtime import MapRuntimeData
+
+
+@dataclass(frozen=True, slots=True)
+class _SourceFireIntent:
+    routed: RoutedAction
+    request: DirectFireRequest
+    resolution: DirectFireResolution
 
 
 class NativeEngine:
@@ -147,7 +156,9 @@ class NativeEngine:
                   "seed": self._seed,
                   "ruleset_id": self.ruleset.ruleset_id,
                   "ruleset_version": self.ruleset.ruleset_version,
-                  "ruleset_hash": self.ruleset.content_hash},
+                  "ruleset_hash": self.ruleset.content_hash,
+                  "adjudication_semantics_version": (
+                      ADJUDICATION_SEMANTICS_VERSION)},
         ),)
         self._source_valid_actions_cache.clear()
         self._source_valid_actions_state_hash = None
@@ -320,13 +331,92 @@ class NativeEngine:
     def _step_ms(self, actions: Mapping[str, EngineAction | None]
                  | Sequence[EngineAction], *, delta_time_ms: int) -> StepResult:
         milliseconds = require_positive_milliseconds(delta_time_ms)
-        if self._source_policy is not None:
-            return self._step_source(actions, delta_time_ms=milliseconds)
-        if milliseconds != 1_000:
-            raise ValueError("legacy native-default step requires delta_time_ms=1000")
-        if not isinstance(actions, Mapping):
-            raise TypeError("legacy native-default actions must be a side mapping")
-        return self._step_legacy(actions)
+        if self._source_policy is None:
+            if milliseconds != 1_000:
+                raise ValueError(
+                    "legacy native-default step requires delta_time_ms=1000")
+            if not isinstance(actions, Mapping):
+                raise TypeError(
+                    "legacy native-default actions must be a side mapping")
+
+        authoritative_world = self._require_world()
+        if self._rng is None:
+            raise RuntimeError("engine_not_reset")
+        authoritative_rng = self._rng
+        authoritative_action_counts = self._action_counts
+        authoritative_error_counts = self._error_counts
+        authoritative_last_events = self._last_events
+        authoritative_cache = self._source_valid_actions_cache
+        authoritative_cache_hash = self._source_valid_actions_state_hash
+
+        # A tick evolves a detached working runtime.  Replacing these private
+        # references is the commit point; an exception restores the exact
+        # authoritative runtime, including RNG and monotonic sequences stored
+        # in WorldState.
+        self._world = WorldState.from_dict(authoritative_world.to_dict())
+        self._rng = NativeRNG.restore(authoritative_rng.snapshot())
+        self._action_counts = dict(authoritative_action_counts)
+        self._error_counts = dict(authoritative_error_counts)
+        self._last_events = tuple(authoritative_last_events)
+        self._source_valid_actions_cache = dict(authoritative_cache)
+        self._source_valid_actions_state_hash = authoritative_cache_hash
+        try:
+            if self._source_policy is not None:
+                result = self._step_source(actions, delta_time_ms=milliseconds)
+            else:
+                result = self._step_legacy(actions)
+        except BaseException:
+            self._world = authoritative_world
+            self._rng = authoritative_rng
+            self._action_counts = authoritative_action_counts
+            self._error_counts = authoritative_error_counts
+            self._last_events = authoritative_last_events
+            self._source_valid_actions_cache = authoritative_cache
+            self._source_valid_actions_state_hash = authoritative_cache_hash
+            raise
+        working_world = self._require_world()
+        try:
+            self._commit_world(authoritative_world, working_world)
+        except BaseException:
+            self._world = authoritative_world
+            self._rng = authoritative_rng
+            self._action_counts = authoritative_action_counts
+            self._error_counts = authoritative_error_counts
+            self._last_events = authoritative_last_events
+            self._source_valid_actions_cache = authoritative_cache
+            self._source_valid_actions_state_hash = authoritative_cache_hash
+            raise
+        self._world = authoritative_world
+        return result
+
+    @staticmethod
+    def _commit_world(authoritative: WorldState, working: WorldState) -> None:
+        """Commit a successful detached tick while preserving trusted refs."""
+        # Complete every allocating/validating operation before touching the
+        # authoritative object.  The remaining assignments cannot invoke rule
+        # code or user data hooks.
+        committed = WorldState.from_dict(working.to_dict())
+        for name in (
+            "tick", "stage", "terminal", "winner", "terminal_reason",
+            "truncated", "elapsed_time_ms", "next_action_sequence",
+            "next_event_sequence", "movement_evidence", "last_actions",
+            "last_judge_info",
+        ):
+            setattr(authoritative, name, getattr(committed, name))
+        for collection_name in ("operators", "sides", "objectives"):
+            destination = getattr(authoritative, collection_name)
+            source = getattr(committed, collection_name)
+            for key in tuple(destination):
+                if key not in source:
+                    del destination[key]
+            for key, source_item in source.items():
+                destination_item = destination.get(key)
+                if destination_item is None:
+                    destination[key] = source_item
+                    continue
+                for field in fields(source_item):
+                    setattr(destination_item, field.name,
+                            getattr(source_item, field.name))
 
     def _step_legacy(self, actions: Mapping[str, EngineAction | None]) -> StepResult:
         world = self._require_world()
@@ -480,6 +570,7 @@ class NativeEngine:
         if self._action_router is None or self._movement is None:
             raise RuntimeError("source-compatible runtime is unavailable")
         tick_before, stage_before = world.tick, world.stage
+        pre_state = WorldState.from_dict(world.to_dict())
         routed = self._action_router.normalize(
             actions, side_order=self.scenario.side_order,
             start_sequence=world.next_action_sequence)
@@ -488,7 +579,7 @@ class NativeEngine:
         seen_actors: set[int] = set()
         for item in routed:
             error = self._action_router.common_error(
-                item, world, self.scenario.side_order)
+                item, pre_state, self.scenario.side_order)
             actor_id = item.action.actor_id
             if error is None and actor_id is not None:
                 if actor_id in seen_actors:
@@ -499,11 +590,17 @@ class NativeEngine:
         accepted: list[RoutedAction] = []
         decisions: list[ActionDecision] = []
         events: list[EngineEvent] = []
+        fire_intents: list[_SourceFireIntent] = []
         for item in routed:
             action = item.action
             error = common_errors[item.action_sequence]
             if error is None:
-                error = self._dispatch_source_action(item, events)
+                if action.action_type is ActionType.SHOOT:
+                    error, intent = self._stage_source_shoot(item, pre_state, events)
+                    if intent is not None:
+                        fire_intents.append(intent)
+                else:
+                    error = self._dispatch_source_action(item, events)
             if error is None:
                 accepted.append(item)
                 self._action_counts[action.side] += 1
@@ -521,6 +618,7 @@ class NativeEngine:
                     action.target_id, item.action_sequence,
                     {"action_id": action.action_id, "code": error}))
 
+        self._apply_source_fire_intents(fire_intents, events)
         self._movement.advance(world, delta_time_ms, events)
         self._refresh_source_observation()
         world.last_actions = [item.action.to_dict() for item in routed]
@@ -597,7 +695,7 @@ class NativeEngine:
                 action_sequence=sequence, events=events)
             return None
         if action.action_type is ActionType.SHOOT:
-            return self._resolve_source_shoot(routed, events)
+            raise RuntimeError("SHOOT must be resolved through joint staging")
         if action.action_type is ActionType.WEAPON_LOCK:
             return self._start_source_transition(
                 operator, "WEAPON_LOCK", sequence, action.action_id, events)
@@ -690,39 +788,177 @@ class NativeEngine:
             return None
         return "UNSUPPORTED_STATE_CHANGE"
 
-    def _resolve_source_shoot(self, routed: RoutedAction,
-                              events: list[EngineEvent]) -> str | None:
-        world = self._require_world()
+    def _stage_source_shoot(
+        self,
+        routed: RoutedAction,
+        pre_state: WorldState,
+        events: list[EngineEvent],
+    ) -> tuple[str | None, _SourceFireIntent | None]:
         action, sequence = routed.action, routed.action_sequence
-        if action.target_id is None or action.target_id not in world.operators:
-            return "TARGET_NOT_FOUND"
-        attacker = world.operators[int(action.actor_id)]
-        target = world.operators[int(action.target_id)]
+        if action.target_id is None or action.target_id not in pre_state.operators:
+            return "TARGET_NOT_FOUND", None
+        attacker = pre_state.operators[int(action.actor_id)]
+        target = pre_state.operators[int(action.target_id)]
         try:
-            request = self._direct_fire_request(action, attacker, target)
+            request = self._direct_fire_request(
+                action, attacker, target, world=pre_state)
         except ValueError as exc:
-            return str(exc)
+            return str(exc), None
         if self._rng is None or self._adjudication_tables is None:
             raise RuntimeError("source direct-fire runtime is unavailable")
         resolution = DirectFireAdjudicator(
-            self._adjudication_tables, DiceRoller(self._rng)).resolve(request)
+            self._adjudication_tables, DiceRoller(self._rng)).stage(request)
         for source_event in resolution.events:
             events.append(self._annotate_source_event(source_event, sequence))
         if resolution.outcome is None:
-            return resolution.error or resolution.legality.reason_code
-        ammo = self._ammunition(attacker)
-        ammo[request.weapon.ammunition_key] = resolution.ammunition_after
-        attacker.raw_attributes["ammunition"] = ammo
-        source = attacker.raw_attributes.get("source_frame")
-        if isinstance(source, dict):
-            source["remain_bullet_nums"] = dict(ammo)
-        attacker.weapon_cooldown_remaining_ms = resolution.cooldown_after * 1000
-        if target.state == "SUPPRESSED":
-            target.suppression_remaining_ms = self._source_policy.suppression_ms
-        return None
+            return (resolution.error or resolution.legality.reason_code), None
+        return None, _SourceFireIntent(routed, request, resolution)
+
+    def _apply_source_fire_intents(
+        self,
+        intents: Sequence[_SourceFireIntent],
+        events: list[EngineEvent],
+    ) -> None:
+        """Apply a sealed batch using the configured aggregate policy."""
+        if not intents:
+            return
+        if (self._adjudication_tables is None or self._source_policy is None
+                or self._rng is None):
+            raise RuntimeError("source direct-fire runtime is unavailable")
+        world = self._require_world()
+
+        # Every accepted shooter was eligible in the same pre-state.  Its
+        # submitted shot therefore consumes ammunition and starts cooldown
+        # even if another simultaneous effect destroys it in this batch.
+        for intent in intents:
+            attacker = world.operators[int(intent.routed.action.actor_id)]
+            ammo = self._ammunition(attacker)
+            ammo[intent.request.weapon.ammunition_key] = (
+                intent.resolution.ammunition_after)
+            attacker.raw_attributes["ammunition"] = ammo
+            source = attacker.raw_attributes.get("source_frame")
+            if isinstance(source, dict):
+                source["remain_bullet_nums"] = dict(ammo)
+            attacker.weapon_cooldown_remaining_ms = (
+                intent.resolution.cooldown_after * 1000)
+
+        by_target: dict[int, list[_SourceFireIntent]] = defaultdict(list)
+        for intent in intents:
+            by_target[int(intent.routed.action.target_id)].append(intent)
+
+        adjudicator = DirectFireAdjudicator(
+            self._adjudication_tables, DiceRoller(self._rng))
+        for target_id in sorted(by_target):
+            target_intents = sorted(
+                by_target[target_id],
+                key=lambda item: item.routed.action_sequence,
+            )
+            target = world.operators[target_id]
+            before = int(target.blood)
+            requested_losses = sum(
+                int(intent.resolution.outcome.vehicle_losses)
+                + int(intent.resolution.outcome.squad_losses)
+                for intent in target_intents
+                if intent.resolution.outcome is not None
+            )
+            losses = min(before, requested_losses)
+            after = max(0, before - losses)
+            suppression = any(
+                bool(intent.resolution.outcome.suppression_applied)
+                for intent in target_intents
+                if intent.resolution.outcome is not None
+            )
+            target.blood = after
+            target.health = target.max_health * after / int(target.max_blood)
+            adjudication_ids = [
+                intent.resolution.adjudication_id for intent in target_intents
+            ]
+            primary = target_intents[0]
+            if losses:
+                effect = adjudicator._event(
+                    primary.request, EventType.LOSSES_APPLIED, {
+                        "target_blood_before": before,
+                        "target_blood_after": after,
+                        "losses": losses,
+                        "aggregate_requested_losses": requested_losses,
+                        "adjudication_id": primary.resolution.adjudication_id,
+                        "aggregate_adjudication_ids": adjudication_ids,
+                        "resolution_policy": "aggregate_then_apply",
+                    })
+                events.append(self._annotate_source_event(
+                    effect, primary.routed.action_sequence))
+            if suppression and after > 0:
+                target.state = "SUPPRESSED"
+                duration = self._adjudication_tables.document[
+                    "runtime_rules"]["suppression"][
+                        "effective_duration_seconds"]
+                target.raw_attributes["suppression_remaining_seconds"] = int(
+                    duration)
+                effect = adjudicator._event(
+                    primary.request, EventType.SUPPRESSION_APPLIED, {
+                        "target_blood_after": after,
+                        "duration_seconds": int(duration),
+                        "timer_policy": "RESET_TO_FULL_DURATION",
+                        "adjudication_id": primary.resolution.adjudication_id,
+                        "aggregate_adjudication_ids": adjudication_ids,
+                        "resolution_policy": "aggregate_then_apply",
+                    })
+                events.append(self._annotate_source_event(
+                    effect, primary.routed.action_sequence))
+            if after == 0:
+                target.alive = False
+                target.state = "destroyed"
+                effect = adjudicator._event(
+                    primary.request, EventType.UNIT_DESTROYED, {
+                        "target_blood_after": 0,
+                        "adjudication_id": primary.resolution.adjudication_id,
+                        "aggregate_adjudication_ids": adjudication_ids,
+                        "resolution_policy": "aggregate_then_apply",
+                    })
+                events.append(self._annotate_source_event(
+                    effect, primary.routed.action_sequence))
+            elif target.state == "SUPPRESSED":
+                # Preserve the established runtime rule: any accepted direct
+                # fire against an already suppressed target resets its timer,
+                # including a table outcome with no additional effect.
+                target.suppression_remaining_ms = self._source_policy.suppression_ms
+
+            passenger_ids = sorted({
+                passenger.operator_id
+                for intent in target_intents
+                for passenger in intent.request.carried_passengers
+            })
+            if requested_losses and passenger_ids:
+                for passenger_id in passenger_ids:
+                    passenger = world.operators[passenger_id]
+                    passenger_before = int(passenger.blood)
+                    passenger_after = max(
+                        0, passenger_before - requested_losses)
+                    passenger.blood = passenger_after
+                    passenger.health = (
+                        passenger.max_health * passenger_after
+                        / int(passenger.max_blood))
+                    if passenger_after == 0:
+                        passenger.alive = False
+                        passenger.state = "destroyed"
+                    effect = EngineEvent(
+                        world.tick, EventType.LOSSES_APPLIED, passenger.side,
+                        primary.request.attacker.operator_id, passenger_id,
+                        {"associated_vehicle_id": target_id,
+                         "target_blood_before": passenger_before,
+                         "target_blood_after": passenger_after,
+                         "losses": passenger_before - passenger_after,
+                         "adjudication_id": primary.resolution.adjudication_id,
+                         "aggregate_adjudication_ids": adjudication_ids,
+                         "resolution_policy": "aggregate_then_apply"},
+                    )
+                    events.append(self._annotate_source_event(
+                        effect, primary.routed.action_sequence))
 
     def _direct_fire_request(self, action: EngineAction, attacker: Any,
-                             target: Any) -> DirectFireRequest:
+                             target: Any, *,
+                             world: WorldState | None = None) -> DirectFireRequest:
+        state = self._require_world() if world is None else world
         if (self._source_map is None or self._source_visibility_map is None
                 or self._source_policy is None):
             raise ValueError("SOURCE_MAP_UNAVAILABLE")
@@ -761,11 +997,11 @@ class NativeEngine:
         right = self._source_map.cell(target.current_hex)
         ammunition = self._ammunition(attacker)
         passengers = tuple(
-            self._require_world().operators[int(item)]
+            state.operators[int(item)]
             for item in target.raw_attributes.get("passenger_ids", [])
-            if int(item) in self._require_world().operators)
+            if int(item) in state.operators)
         return DirectFireRequest(
-            tick=self._require_world().tick, episode_seed=self._seed,
+            tick=state.tick, episode_seed=self._seed,
             action_id=action.action_id, attacker=attacker, target=target,
             weapon=profile, visibility=visibility, distance=visibility.distance,
             target_domain=target_domain, target_armor=armor,
@@ -781,7 +1017,7 @@ class NativeEngine:
             target_concealed=bool(target.raw_attributes.get("concealed", False)),
             target_moving=not target.stopped,
             target_stacked=sum(
-                1 for item in self._require_world().operators.values()
+                1 for item in state.operators.values()
                 if item.alive and item.current_hex == target.current_hex) > 1,
             target_marching=target.movement_mode == MovementMode.MARCHING.value,
             attacker_transitioning=(attacker.transition_kind is not None
@@ -879,6 +1115,8 @@ class NativeEngine:
             "ruleset_id": self.ruleset.ruleset_id,
             "ruleset_version": self.ruleset.ruleset_version,
             "ruleset_hash": self.ruleset.content_hash,
+            "adjudication_semantics_version": (
+                ADJUDICATION_SEMANTICS_VERSION),
             "seed": self._seed, "rng": self._rng.snapshot(),
             "world": world.to_dict(),
             "action_counts": dict(self._action_counts),
@@ -913,6 +1151,9 @@ class NativeEngine:
                 or snapshot.get("ruleset_version") != self.ruleset.ruleset_version
                 or snapshot.get("ruleset_hash") != self.ruleset.content_hash):
             raise ValueError("snapshot ruleset mismatch")
+        if snapshot.get("adjudication_semantics_version") != (
+                ADJUDICATION_SEMANTICS_VERSION):
+            raise ValueError("snapshot adjudication semantics mismatch")
         movement = snapshot.get("movement_policy")
         if self._source_policy is not None:
             expected = {"movement_policy_id": self._source_policy.policy_id,
