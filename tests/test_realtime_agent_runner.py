@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 from pathlib import Path
-from threading import enumerate as active_threads
+from threading import Event, Thread, enumerate as active_threads
+from time import monotonic, sleep
+
+import pytest
 
 from scripts.run_realtime_agent_match import parser, run_smoke
 
 from wargame_native_engine.agents import (
     AgentDecisionContext,
     RealtimeAgentSession,
+    RealtimeExecutionMode,
     RealtimeLocalAgentRunner,
+    RealtimeShutdownTimeoutError,
     SeatDecision,
     WaitSeatAgent,
 )
@@ -53,11 +58,25 @@ class ExplodingAgent(WaitSeatAgent):
         raise RuntimeError("agent-inference-failed")
 
 
+class BlockingAgent(WaitSeatAgent):
+    def __init__(self, entered: Event, release: Event) -> None:
+        super().__init__("blocking-realtime-agent")
+        self.entered = entered
+        self.release = release
+
+    def act(self, *, context: AgentDecisionContext) -> SeatDecision:
+        del context
+        self.entered.set()
+        assert self.release.wait(3)
+        return SeatDecision()
+
+
 def test_realtime_local_agents_run_independently_and_publish(tmp_path: Path) -> None:
     session = RealtimeAgentSession(
         MatchFactory(tmp_path / "factory"),
         run_namespace="runner-worker-000",
         tick_interval_ms=20,
+        execution_mode=RealtimeExecutionMode.BACKGROUND,
     )
     runner = RealtimeLocalAgentRunner(
         session,
@@ -85,6 +104,111 @@ def test_realtime_local_agents_run_independently_and_publish(tmp_path: Path) -> 
         session.close()
 
 
+def test_late_agent_result_is_dropped_before_publication_snapshot(
+    tmp_path: Path,
+) -> None:
+    entered = Event()
+    release = Event()
+    session = RealtimeAgentSession(
+        MatchFactory(tmp_path / "factory", tick_interval_ms=20),
+        run_namespace="runner-late-worker-000",
+        tick_interval_ms=20,
+        execution_mode=RealtimeExecutionMode.BACKGROUND,
+    )
+    runner = RealtimeLocalAgentRunner(
+        session,
+        red_agent=BlockingAgent(entered, release),
+        blue_agent=WaitSeatAgent("late-test-blue"),
+    )
+    results = []
+    failures = []
+
+    def run() -> None:
+        try:
+            results.append(runner.run(
+                tmp_path / "episode",
+                seed=42,
+                max_ticks=1,
+                timeout_seconds=3,
+                shutdown_timeout_seconds=2,
+            ))
+        except BaseException as exc:  # pragma: no cover - asserted below
+            failures.append(exc)
+
+    thread = Thread(target=run)
+    try:
+        thread.start()
+        assert entered.wait(1)
+        deadline = monotonic() + 2
+        while session.current_tick < 1 and monotonic() < deadline:
+            sleep(0.005)
+        assert session.current_tick == 1
+        release.set()
+        thread.join(5)
+        assert not thread.is_alive()
+        assert failures == []
+        assert len(results) == 1
+        assert not any(event.seat == "red" for event in session.command_events)
+        assert all(
+            event.status.name != "PENDING" for event in session.command_events
+        )
+        assert not any(
+            value.name.startswith("wargame-agent-")
+            or value.name.startswith("wargame-realtime-")
+            for value in active_threads()
+        )
+    finally:
+        release.set()
+        thread.join(5)
+        session.close(timeout_seconds=2)
+
+
+def test_runner_reports_agent_worker_shutdown_timeout_without_publishing(
+    tmp_path: Path,
+) -> None:
+    entered = Event()
+    release = Event()
+    session = RealtimeAgentSession(
+        MatchFactory(tmp_path / "factory", tick_interval_ms=20),
+        run_namespace="runner-timeout-worker-000",
+        tick_interval_ms=20,
+        execution_mode=RealtimeExecutionMode.BACKGROUND,
+    )
+    runner = RealtimeLocalAgentRunner(
+        session,
+        red_agent=BlockingAgent(entered, release),
+        blue_agent=WaitSeatAgent("timeout-test-blue"),
+    )
+    output = tmp_path / "episode"
+    try:
+        assert entered.is_set() is False
+        with pytest.raises(RealtimeShutdownTimeoutError) as captured:
+            runner.run(
+                output,
+                seed=42,
+                max_ticks=1,
+                timeout_seconds=3,
+                shutdown_timeout_seconds=0.02,
+            )
+        assert entered.is_set()
+        assert captured.value.phase == "agent_worker"
+        assert not output.exists()
+        release.set()
+        deadline = monotonic() + 2
+        while any(
+            value.name.startswith("wargame-agent-")
+            for value in active_threads()
+        ) and monotonic() < deadline:
+            sleep(0.01)
+        assert not any(
+            value.name.startswith("wargame-agent-")
+            for value in active_threads()
+        )
+    finally:
+        release.set()
+        session.close(timeout_seconds=2)
+
+
 def test_one_agent_exception_does_not_stop_other_seat_or_ticks(
     tmp_path: Path,
 ) -> None:
@@ -93,6 +217,7 @@ def test_one_agent_exception_does_not_stop_other_seat_or_ticks(
         MatchFactory(tmp_path / "factory"),
         run_namespace="runner-failure-worker-000",
         tick_interval_ms=20,
+        execution_mode=RealtimeExecutionMode.BACKGROUND,
     )
     runner = RealtimeLocalAgentRunner(
         session,

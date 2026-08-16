@@ -38,7 +38,7 @@ from wargame_native_engine.training.publication import (
 SEAT_COMMANDS_NAME = "seat_commands.native.jsonl"
 REALTIME_TICKS_NAME = "realtime_ticks.native.jsonl"
 REALTIME_SUMMARY_NAME = "match_summary.native.json"
-REALTIME_SUMMARY_SCHEMA = "native-realtime-match-summary/1.0"
+REALTIME_SUMMARY_SCHEMA = "native-realtime-match-summary/1.1"
 
 
 class RealtimeEpisodePublicationError(RuntimeError):
@@ -68,6 +68,11 @@ class RealtimeEpisodePublication:
     applied_command_count: int
     superseded_command_count: int
     rejected_command_count: int
+    cancelled_terminal_command_count: int
+    cancelled_truncation_command_count: int
+    cancelled_runner_limit_command_count: int
+    cancelled_user_stop_command_count: int
+    cancelled_failure_command_count: int
     terminal: bool
     truncated: bool
     winner: str | None
@@ -229,6 +234,11 @@ def publish_realtime_episode(
             counts["applied_command_count"],
             counts["superseded_command_count"],
             counts["rejected_command_count"],
+            counts["cancelled_terminal_command_count"],
+            counts["cancelled_truncation_command_count"],
+            counts["cancelled_runner_limit_command_count"],
+            counts["cancelled_user_stop_command_count"],
+            counts["cancelled_failure_command_count"],
             terminal,
             published_truncated,
             winner,
@@ -327,6 +337,26 @@ def _command_counts(values: Sequence[SeatCommandEvent]) -> dict[str, int]:
                 CommandStatus.REJECTED_AT_SUBMIT,
                 CommandStatus.REJECTED_AT_APPLY,
             }
+            for value in values
+        ),
+        "cancelled_terminal_command_count": sum(
+            value.status is CommandStatus.CANCELLED_ON_TERMINAL
+            for value in values
+        ),
+        "cancelled_truncation_command_count": sum(
+            value.status is CommandStatus.CANCELLED_ON_TRUNCATION
+            for value in values
+        ),
+        "cancelled_runner_limit_command_count": sum(
+            value.status is CommandStatus.CANCELLED_ON_RUNNER_LIMIT
+            for value in values
+        ),
+        "cancelled_user_stop_command_count": sum(
+            value.status is CommandStatus.CANCELLED_ON_USER_STOP
+            for value in values
+        ),
+        "cancelled_failure_command_count": sum(
+            value.status is CommandStatus.CANCELLED_ON_FAILURE
             for value in values
         ),
     }

@@ -13,8 +13,8 @@ from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from enum import Enum
-from threading import Event, RLock, Thread, current_thread, get_ident
-from time import monotonic_ns
+from threading import Condition, Event, RLock, Thread, current_thread, get_ident
+from time import monotonic, monotonic_ns, sleep
 from typing import Any, Protocol
 
 from wargame_native_engine.agents.protocol import AgentResetContext
@@ -39,6 +39,33 @@ class CommandStatus(str, Enum):
     REJECTED_AT_SUBMIT = "REJECTED_AT_SUBMIT"
     REJECTED_AT_APPLY = "REJECTED_AT_APPLY"
     CANCELLED_ON_TERMINAL = "CANCELLED_ON_TERMINAL"
+    CANCELLED_ON_TRUNCATION = "CANCELLED_ON_TRUNCATION"
+    CANCELLED_ON_RUNNER_LIMIT = "CANCELLED_ON_RUNNER_LIMIT"
+    CANCELLED_ON_USER_STOP = "CANCELLED_ON_USER_STOP"
+    CANCELLED_ON_FAILURE = "CANCELLED_ON_FAILURE"
+
+
+class RealtimeExecutionMode(str, Enum):
+    MANUAL = "manual"
+    BACKGROUND = "background"
+
+
+class RealtimeLifecycleState(str, Enum):
+    NEW = "NEW"
+    ACCEPTING = "ACCEPTING"
+    STOPPING = "STOPPING"
+    PUBLISHING = "PUBLISHING"
+    PUBLISHED = "PUBLISHED"
+    FAILED = "FAILED"
+    CLOSED = "CLOSED"
+
+
+class RealtimeCancellationReason(str, Enum):
+    TERMINAL = "terminal"
+    TRUNCATION = "truncation"
+    RUNNER_LIMIT = "runner_limit"
+    USER_STOP = "user_stop"
+    FAILURE = "failure"
 
 
 class RealtimeClock(Protocol):
@@ -77,6 +104,16 @@ class RealtimeAgentSessionError(RuntimeError):
         self.code = str(code)
         self.message = str(message)
         super().__init__(f"{self.code}:{self.message}")
+
+
+class RealtimeShutdownTimeoutError(RealtimeAgentSessionError):
+    def __init__(self, phase: str, timeout_seconds: float | None) -> None:
+        self.phase = str(phase)
+        self.timeout_seconds = timeout_seconds
+        super().__init__(
+            "realtime_shutdown_timeout",
+            f"phase={self.phase};timeout_seconds={timeout_seconds}",
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,7 +216,7 @@ class SeatCommandEvent:
 
     def to_record(self) -> dict[str, object]:
         return {
-            "record_schema": "native-seat-command/1.0",
+            "record_schema": "native-seat-command/1.1",
             "episode_id": self.episode_id,
             "command_sequence": self.command_sequence,
             "seat": self.seat,
@@ -304,6 +341,8 @@ class RealtimeAgentSession:
         tick_interval_ms: int,
         clock: RealtimeClock | None = None,
         observation_history_size: int = 64,
+        execution_mode: RealtimeExecutionMode = RealtimeExecutionMode.MANUAL,
+        max_catch_up_ticks_per_batch: int = 4,
     ) -> None:
         if not callable(match_factory):
             raise TypeError("match_factory must be callable")
@@ -315,6 +354,12 @@ class RealtimeAgentSession:
         )
         self._match_factory = match_factory
         self.clock = clock or SystemMonotonicClock()
+        if not isinstance(execution_mode, RealtimeExecutionMode):
+            execution_mode = RealtimeExecutionMode(execution_mode)
+        self.execution_mode = execution_mode
+        self.max_catch_up_ticks_per_batch = _positive_int(
+            max_catch_up_ticks_per_batch, "max_catch_up_ticks_per_batch"
+        )
         self._match: MatchHandle | None = None
         self._services: dict[str, ProductOperationService] = {}
         self._bindings: dict[str, RealtimeSeatBinding] = {}
@@ -336,6 +381,8 @@ class RealtimeAgentSession:
         self._anchor_ns: int | None = None
         self._processing = False
         self._processing_thread: int | None = None
+        self._processing_phase: str | None = None
+        self._publication_processing = False
         self._ended = False
         self._failed = False
         self._published = False
@@ -345,6 +392,10 @@ class RealtimeAgentSession:
         self._stop = Event()
         self._thread: Thread | None = None
         self._lock = RLock()
+        self._condition = Condition(self._lock)
+        self._lifecycle = RealtimeLifecycleState.NEW
+        self._stop_reason: RealtimeCancellationReason | None = None
+        self._catch_up_yield_count = 0
 
     def reset(self, *, seed: int = 42) -> RealtimeResetResult:
         if type(seed) is not int:
@@ -409,11 +460,16 @@ class RealtimeAgentSession:
                 self._anchor_ns = anchor
                 self._processing = False
                 self._processing_thread = None
+                self._processing_phase = None
+                self._publication_processing = False
                 self._ended = match.status.terminal
                 self._failed = False
                 self._published = False
+                self._lifecycle = RealtimeLifecycleState.ACCEPTING
+                self._stop_reason = None
                 self._background_error = None
                 self._background_tick_limit = None
+                self._catch_up_yield_count = 0
                 self._stop.clear()
                 self._issue_views_locked()
                 return RealtimeResetResult(
@@ -449,20 +505,36 @@ class RealtimeAgentSession:
             raise TypeError("decision must be a SeatDecision")
         version = _nonnegative_int(observation_version, "observation_version")
         detached = deepcopy(decision)
-        now = self._clock_now()
         with self._lock:
-            self._require_active()
             authoritative = self._binding_by_id.get(binding.binding_id)
             if authoritative is None:
                 raise RealtimeAgentSessionError(
                     "realtime_binding_unknown", "seat binding is not active"
                 )
             side = authoritative.seat
+            if self._lifecycle is not RealtimeLifecycleState.ACCEPTING or self._ended:
+                return SeatCommandReceipt(
+                    None,
+                    side,
+                    False,
+                    None,
+                    CommandStatus.REJECTED_AT_SUBMIT,
+                    self._submission_closed_code_locked(),
+                )
+            # This clock read is intentionally inside the same critical section
+            # as target selection, sequence allocation, supersession and queue
+            # insertion.  It is the live-command linearization point.
+            now = self._clock_now()
             sequence = self._allocate_sequence_locked()
             target = self._target_tick_locked(now)
             if binding != authoritative:
                 return self._reject_at_submit_locked(
-                    sequence, side, version, detached, now, target,
+                    sequence,
+                    side,
+                    version,
+                    detached,
+                    now,
+                    target,
                     "realtime_binding_side_mismatch",
                 )
             owner = self._version_owner.get(version)
@@ -524,7 +596,7 @@ class RealtimeAgentSession:
             received_monotonic_ns, "received_monotonic_ns"
         )
         with self._lock:
-            self._require_active()
+            self._require_accepting()
             authoritative = self._resolve_binding_locked(binding)
             if sequence != self._next_command_sequence:
                 raise RealtimeAgentSessionError(
@@ -572,14 +644,36 @@ class RealtimeAgentSession:
             )
 
     def advance_tick(self) -> RealtimeTickResult:
-        start_ns = self._clock_now()
+        if self.execution_mode is not RealtimeExecutionMode.MANUAL:
+            raise RealtimeAgentSessionError(
+                "realtime_manual_advance_forbidden_while_background_active",
+                "background sessions are advanced only by their realtime loop",
+            )
+        return self._advance_tick(authority="manual")
+
+    def _advance_tick_from_background(self) -> RealtimeTickResult:
+        if self.execution_mode is not RealtimeExecutionMode.BACKGROUND:
+            raise RealtimeAgentSessionError(
+                "realtime_background_advance_forbidden_in_manual_mode",
+                "manual sessions are advanced only by advance_tick",
+            )
+        if self._thread is not current_thread():
+            raise RealtimeAgentSessionError(
+                "realtime_background_advance_wrong_thread",
+                "only the registered realtime loop may advance a background session",
+            )
+        return self._advance_tick(authority="background")
+
+    def _advance_tick(self, *, authority: str) -> RealtimeTickResult:
+        frozen: dict[str, int | None] = {"red": None, "blue": None}
         with self._lock:
-            self._require_active()
+            self._require_accepting()
             if self._processing:
                 raise RealtimeAgentSessionError(
                     "realtime_tick_already_processing",
                     "only one authoritative tick may advance at a time",
                 )
+            start_ns = self._clock_now()
             tick = self._current_tick
             match = self._require_match()
             window = match.gateway.window(
@@ -587,6 +681,8 @@ class RealtimeAgentSession:
             )
             if window.decision_window_index != tick:
                 self._failed = True
+                self._lifecycle = RealtimeLifecycleState.FAILED
+                self._stop_reason = RealtimeCancellationReason.FAILURE
                 raise RealtimeAgentSessionError(
                     "realtime_decision_window_mismatch_reset_required",
                     f"expected={tick};actual={window.decision_window_index}",
@@ -597,6 +693,7 @@ class RealtimeAgentSession:
             }
             self._processing = True
             self._processing_thread = get_ident()
+            self._processing_phase = "product_preview"
             anchor = self._anchor()
         rejected: dict[str, tuple[int, str]] = {}
         applied: dict[str, int] = {}
@@ -631,6 +728,8 @@ class RealtimeAgentSession:
                         ),
                     )
             executions = {}
+            with self._lock:
+                self._processing_phase = "game_session_step"
             for side in ("red", "blue"):
                 executions[side] = self._services[side].execute_decision(
                     previews[side].preview_token,
@@ -701,16 +800,34 @@ class RealtimeAgentSession:
                 )
                 self._ticks.append(result)
                 if self._ended:
-                    self._cancel_pending_locked()
+                    reason = (
+                        RealtimeCancellationReason.TERMINAL
+                        if descriptor.terminated
+                        else RealtimeCancellationReason.TRUNCATION
+                    )
+                    self._begin_stopping_locked(reason)
                 return deepcopy(result)
         except BaseException:
             with self._lock:
                 self._failed = True
+                self._lifecycle = RealtimeLifecycleState.FAILED
+                self._stop_reason = RealtimeCancellationReason.FAILURE
+                self._cancel_sequences_locked(
+                    tuple(value for value in frozen.values() if value is not None),
+                    RealtimeCancellationReason.FAILURE,
+                )
+                self._cancel_pending_locked(RealtimeCancellationReason.FAILURE)
             raise
         finally:
             with self._lock:
                 self._processing = False
                 self._processing_thread = None
+                self._processing_phase = None
+                if self._lifecycle is RealtimeLifecycleState.STOPPING:
+                    self._cancel_pending_locked(
+                        self._stop_reason or RealtimeCancellationReason.USER_STOP
+                    )
+                self._condition.notify_all()
 
     def latest_view(self, binding: RealtimeSeatBinding) -> RealtimeSeatView:
         with self._lock:
@@ -751,7 +868,12 @@ class RealtimeAgentSession:
         if max_ticks is not None:
             _positive_int(max_ticks, "max_ticks")
         with self._lock:
-            self._require_active()
+            if self.execution_mode is not RealtimeExecutionMode.BACKGROUND:
+                raise RealtimeAgentSessionError(
+                    "realtime_background_start_forbidden_after_manual_advance",
+                    "session execution mode is manual",
+                )
+            self._require_accepting()
             if self._thread is not None and self._thread.is_alive():
                 raise RealtimeAgentSessionError(
                     "realtime_loop_already_running", "realtime loop is active"
@@ -765,28 +887,77 @@ class RealtimeAgentSession:
             )
             self._thread.start()
 
-    def stop_realtime(self, *, timeout_seconds: float = 5.0) -> None:
-        self._stop.set()
-        thread = self._thread
+    def stop_accepting(
+        self,
+        reason: RealtimeCancellationReason = RealtimeCancellationReason.USER_STOP,
+    ) -> None:
+        if not isinstance(reason, RealtimeCancellationReason):
+            reason = RealtimeCancellationReason(reason)
+        with self._lock:
+            if self._lifecycle in {
+                RealtimeLifecycleState.NEW,
+                RealtimeLifecycleState.PUBLISHING,
+                RealtimeLifecycleState.PUBLISHED,
+                RealtimeLifecycleState.FAILED,
+                RealtimeLifecycleState.CLOSED,
+            }:
+                self._stop.set()
+                return
+            self._begin_stopping_locked(reason)
+
+    def stop_realtime(
+        self,
+        *,
+        timeout_seconds: float | None = None,
+        cancellation_reason: RealtimeCancellationReason = (
+            RealtimeCancellationReason.USER_STOP
+        ),
+    ) -> None:
+        if timeout_seconds is not None:
+            if isinstance(timeout_seconds, bool) or timeout_seconds <= 0:
+                raise ValueError("timeout_seconds must be positive or None")
+        self.stop_accepting(cancellation_reason)
+        started = monotonic()
+        with self._lock:
+            thread = self._thread
         if thread is None or thread is current_thread():
-            return
-        thread.join(timeout_seconds)
-        if thread.is_alive():
-            raise RealtimeAgentSessionError(
-                "realtime_loop_stop_timeout", "realtime loop did not stop"
-            )
-        self._thread = None
+            thread = None
+        if thread is not None:
+            thread.join(timeout_seconds)
+            if thread.is_alive():
+                with self._lock:
+                    phase = self._shutdown_phase_locked()
+                raise RealtimeShutdownTimeoutError(phase, timeout_seconds)
+        with self._condition:
+            remaining = _remaining_timeout(started, timeout_seconds)
+            while self._processing or self._publication_processing:
+                if remaining is not None and remaining <= 0:
+                    raise RealtimeShutdownTimeoutError(
+                        self._shutdown_phase_locked(), timeout_seconds
+                    )
+                self._condition.wait(remaining)
+                remaining = _remaining_timeout(started, timeout_seconds)
+            if self._thread is thread:
+                self._thread = None
+            if self._lifecycle is RealtimeLifecycleState.STOPPING:
+                self._cancel_pending_locked(
+                    self._stop_reason or RealtimeCancellationReason.USER_STOP
+                )
 
     def _run_loop(self) -> None:
+        catch_up_count = 0
         try:
             while not self._stop.is_set():
                 with self._lock:
-                    if self._ended or self._failed or self._closed:
+                    if self._lifecycle is not RealtimeLifecycleState.ACCEPTING:
                         return
                     if (
                         self._background_tick_limit is not None
                         and self._current_tick >= self._background_tick_limit
                     ):
+                        self._begin_stopping_locked(
+                            RealtimeCancellationReason.RUNNER_LIMIT
+                        )
                         return
                     deadline = (
                         self._anchor()
@@ -795,13 +966,26 @@ class RealtimeAgentSession:
                 remaining = deadline - self._clock_now()
                 if remaining > 0:
                     self._stop.wait(remaining / 1_000_000_000)
+                    catch_up_count = 0
                     continue
-                self.advance_tick()
+                self._advance_tick_from_background()
+                catch_up_count += 1
+                if catch_up_count >= self.max_catch_up_ticks_per_batch:
+                    with self._lock:
+                        self._catch_up_yield_count += 1
+                    sleep(0)
+                    catch_up_count = 0
         except BaseException as exc:
             with self._lock:
                 self._background_error = exc
                 self._failed = True
+                self._lifecycle = RealtimeLifecycleState.FAILED
+                self._stop_reason = RealtimeCancellationReason.FAILURE
+                self._cancel_pending_locked(RealtimeCancellationReason.FAILURE)
             self._stop.set()
+        finally:
+            with self._condition:
+                self._condition.notify_all()
 
     def publish(
         self,
@@ -809,8 +993,27 @@ class RealtimeAgentSession:
         *,
         truncated: bool | None = None,
         overwrite: bool = False,
+        shutdown_timeout_seconds: float | None = None,
+        cancellation_reason: RealtimeCancellationReason | None = None,
     ):
-        self.stop_realtime()
+        if truncated is not None:
+            _exact_bool(truncated, "truncated")
+        with self._lock:
+            self._require_reset()
+            match = self._require_match()
+            if cancellation_reason is None:
+                if match.status.terminated:
+                    cancellation_reason = RealtimeCancellationReason.TERMINAL
+                elif match.status.truncated:
+                    cancellation_reason = RealtimeCancellationReason.TRUNCATION
+                elif truncated is not False:
+                    cancellation_reason = RealtimeCancellationReason.TRUNCATION
+                else:
+                    cancellation_reason = RealtimeCancellationReason.USER_STOP
+        self.stop_realtime(
+            timeout_seconds=shutdown_timeout_seconds,
+            cancellation_reason=cancellation_reason,
+        )
         with self._lock:
             self._require_reset()
             if self._processing:
@@ -818,15 +1021,32 @@ class RealtimeAgentSession:
                     "realtime_tick_processing", "cannot publish during a tick"
                 )
             match = self._require_match()
-            native_truncated = match.status.truncated
-            requested = (not self._ended) if truncated is None else truncated
-            _exact_bool(requested, "truncated")
+            descriptor = match.status
+            native_truncated = descriptor.truncated
+            requested = (
+                not descriptor.terminated and not descriptor.truncated
+                if truncated is None else truncated
+            )
             value = native_truncated or requested
             _exact_bool(value, "truncated")
-            if value or self._ended:
-                self._cancel_pending_locked()
-            events = self.command_events
-            ticks = self.tick_results
+            if descriptor.terminated:
+                cancellation_reason = RealtimeCancellationReason.TERMINAL
+            elif descriptor.truncated:
+                cancellation_reason = RealtimeCancellationReason.TRUNCATION
+            if self._lifecycle is not RealtimeLifecycleState.STOPPING:
+                raise RealtimeAgentSessionError(
+                    "realtime_publication_invalid_lifecycle",
+                    f"lifecycle={self._lifecycle.value}",
+                )
+            self._cancel_pending_locked(cancellation_reason)
+            # Closing admission and taking the immutable evidence snapshot are
+            # one lock transaction.  No accepted command can fall between them.
+            self._lifecycle = RealtimeLifecycleState.PUBLISHING
+            self._publication_processing = True
+            events = deepcopy(
+                tuple(self._events[key] for key in sorted(self._events))
+            )
+            ticks = deepcopy(tuple(self._ticks))
         from wargame_native_engine.agents.realtime_publication import (
             publish_realtime_episode,
         )
@@ -848,9 +1068,16 @@ class RealtimeAgentSession:
             # safely resume command admission; only reset may recover it.
             with self._lock:
                 self._failed = True
+                self._lifecycle = RealtimeLifecycleState.FAILED
+                self._stop_reason = RealtimeCancellationReason.FAILURE
+                self._publication_processing = False
+                self._condition.notify_all()
             raise
         with self._lock:
             self._published = True
+            self._lifecycle = RealtimeLifecycleState.PUBLISHED
+            self._publication_processing = False
+            self._condition.notify_all()
         return publication
 
     @property
@@ -897,10 +1124,21 @@ class RealtimeAgentSession:
         with self._lock:
             return self._background_error
 
-    def close(self) -> None:
-        if self._closed:
-            return
-        self.stop_realtime()
+    @property
+    def lifecycle(self) -> RealtimeLifecycleState:
+        with self._lock:
+            return self._lifecycle
+
+    @property
+    def catch_up_yield_count(self) -> int:
+        with self._lock:
+            return self._catch_up_yield_count
+
+    def close(self, *, timeout_seconds: float | None = None) -> None:
+        with self._lock:
+            if self._lifecycle is RealtimeLifecycleState.CLOSED:
+                return
+        self.stop_realtime(timeout_seconds=timeout_seconds)
         with self._lock:
             if self._processing:
                 raise RealtimeAgentSessionError(
@@ -909,6 +1147,7 @@ class RealtimeAgentSession:
             match = self._match
             self._match = None
             self._closed = True
+            self._lifecycle = RealtimeLifecycleState.CLOSED
         if match is not None:
             match.close()
 
@@ -1012,16 +1251,65 @@ class RealtimeAgentSession:
         self._next_command_sequence += 1
         return value
 
-    def _cancel_pending_locked(self) -> None:
+    def _begin_stopping_locked(self, reason: RealtimeCancellationReason) -> None:
+        if not isinstance(reason, RealtimeCancellationReason):
+            reason = RealtimeCancellationReason(reason)
+        if self._lifecycle is RealtimeLifecycleState.ACCEPTING:
+            self._lifecycle = RealtimeLifecycleState.STOPPING
+            self._stop_reason = reason
+        elif self._lifecycle is RealtimeLifecycleState.STOPPING:
+            # Native terminal/truncation is more authoritative than an earlier
+            # generic user/runner stop request.
+            if reason in {
+                RealtimeCancellationReason.TERMINAL,
+                RealtimeCancellationReason.TRUNCATION,
+                RealtimeCancellationReason.FAILURE,
+            }:
+                self._stop_reason = reason
+        self._stop.set()
+        if not self._processing:
+            self._cancel_pending_locked(self._stop_reason or reason)
+
+    def _cancel_sequences_locked(
+        self,
+        sequences: Sequence[int],
+        reason: RealtimeCancellationReason,
+    ) -> None:
+        status, code = _cancellation_status(reason)
+        for sequence in sequences:
+            event = self._events.get(sequence)
+            if event is not None and event.status is CommandStatus.PENDING:
+                self._events[sequence] = replace(
+                    event, status=status, error_code=code
+                )
+
+    def _cancel_pending_locked(
+        self, reason: RealtimeCancellationReason
+    ) -> None:
+        status, code = _cancellation_status(reason)
         for sequence in tuple(self._pending.values()):
             event = self._events[sequence]
             if event.status is CommandStatus.PENDING:
                 self._events[sequence] = replace(
                     event,
-                    status=CommandStatus.CANCELLED_ON_TERMINAL,
-                    error_code="session_ended_before_target_tick",
+                    status=status,
+                    error_code=code,
                 )
         self._pending.clear()
+
+    def _submission_closed_code_locked(self) -> str:
+        if self._ended:
+            return "realtime_session_ended"
+        return f"realtime_session_{self._lifecycle.value.lower()}"
+
+    def _shutdown_phase_locked(self) -> str:
+        if self._publication_processing:
+            return "publication"
+        if self._processing:
+            return self._processing_phase or "game_session_step"
+        if self._thread is not None and self._thread.is_alive():
+            return "realtime_loop"
+        return "shutdown"
 
     def _resolve_binding_locked(
         self, binding: RealtimeSeatBinding,
@@ -1065,20 +1353,23 @@ class RealtimeAgentSession:
         self._episode()
 
     def _require_open(self) -> None:
-        if self._closed:
+        if self._lifecycle is RealtimeLifecycleState.CLOSED or self._closed:
             raise RealtimeAgentSessionError(
                 "realtime_session_closed", "session is closed"
             )
 
-    def _require_active(self) -> None:
+    def _require_accepting(self) -> None:
         self._require_open()
         self._require_reset()
-        if self._failed:
+        if self._lifecycle is RealtimeLifecycleState.FAILED or self._failed:
             raise RealtimeAgentSessionError(
                 "realtime_session_failed_reset_required",
                 "reset is required after a coordinator failure",
             )
-        if self._published:
+        if self._lifecycle in {
+            RealtimeLifecycleState.PUBLISHING,
+            RealtimeLifecycleState.PUBLISHED,
+        } or self._published:
             raise RealtimeAgentSessionError(
                 "realtime_session_published",
                 "published session cannot accept or advance",
@@ -1086,6 +1377,16 @@ class RealtimeAgentSession:
         if self._ended:
             raise RealtimeAgentSessionError(
                 "realtime_session_ended", "terminal session cannot accept or advance",
+            )
+        if self._lifecycle is RealtimeLifecycleState.STOPPING:
+            raise RealtimeAgentSessionError(
+                "realtime_session_stopping",
+                "stopping session cannot accept or advance",
+            )
+        if self._lifecycle is not RealtimeLifecycleState.ACCEPTING:
+            raise RealtimeAgentSessionError(
+                "realtime_session_not_accepting",
+                f"lifecycle={self._lifecycle.value}",
             )
 
 
@@ -1127,6 +1428,42 @@ def _empty_capability_summary() -> dict[str, object]:
         "operations": {},
         "shoot_target_ids": [],
     }
+
+
+def _cancellation_status(
+    reason: RealtimeCancellationReason,
+) -> tuple[CommandStatus, str]:
+    values = {
+        RealtimeCancellationReason.TERMINAL: (
+            CommandStatus.CANCELLED_ON_TERMINAL,
+            "session_terminal_before_target_tick",
+        ),
+        RealtimeCancellationReason.TRUNCATION: (
+            CommandStatus.CANCELLED_ON_TRUNCATION,
+            "session_truncated_before_target_tick",
+        ),
+        RealtimeCancellationReason.RUNNER_LIMIT: (
+            CommandStatus.CANCELLED_ON_RUNNER_LIMIT,
+            "runner_limit_before_target_tick",
+        ),
+        RealtimeCancellationReason.USER_STOP: (
+            CommandStatus.CANCELLED_ON_USER_STOP,
+            "user_stop_before_target_tick",
+        ),
+        RealtimeCancellationReason.FAILURE: (
+            CommandStatus.CANCELLED_ON_FAILURE,
+            "coordinator_failure_before_target_tick",
+        ),
+    }
+    return values[RealtimeCancellationReason(reason)]
+
+
+def _remaining_timeout(
+    started: float, timeout_seconds: float | None
+) -> float | None:
+    if timeout_seconds is None:
+        return None
+    return max(0.0, timeout_seconds - (monotonic() - started))
 
 
 def _side(value: object) -> str:

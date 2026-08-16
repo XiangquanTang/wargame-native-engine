@@ -10,6 +10,7 @@ import tempfile
 
 from wargame_native_engine.agents import (
     RealtimeAgentSession,
+    RealtimeExecutionMode,
     RealtimeLocalAgentRunner,
     WaitSeatAgent,
 )
@@ -61,6 +62,8 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--tick-interval-ms", type=int, default=100)
     value.add_argument("--max-ticks", type=int, default=5)
     value.add_argument("--timeout-seconds", type=float, default=60.0)
+    value.add_argument("--shutdown-timeout-seconds", type=float, default=120.0)
+    value.add_argument("--max-catch-up-ticks-per-batch", type=int, default=4)
     value.add_argument("--red-agent", choices=("wait",), default="wait")
     value.add_argument("--blue-agent", choices=("wait",), default="wait")
     value.add_argument("--overwrite", action="store_true")
@@ -82,6 +85,8 @@ def run_smoke(args: argparse.Namespace) -> dict[str, object]:
             ),
             run_namespace=args.run_namespace,
             tick_interval_ms=args.tick_interval_ms,
+            execution_mode=RealtimeExecutionMode.BACKGROUND,
+            max_catch_up_ticks_per_batch=args.max_catch_up_ticks_per_batch,
         )
         runner = RealtimeLocalAgentRunner(
             session,
@@ -94,6 +99,7 @@ def run_smoke(args: argparse.Namespace) -> dict[str, object]:
                 seed=args.seed,
                 max_ticks=args.max_ticks,
                 timeout_seconds=args.timeout_seconds,
+                shutdown_timeout_seconds=args.shutdown_timeout_seconds,
                 overwrite=args.overwrite,
             )
             publication = result.publication
@@ -109,11 +115,29 @@ def run_smoke(args: argparse.Namespace) -> dict[str, object]:
                 "applied_command_count": publication.applied_command_count,
                 "superseded_command_count": publication.superseded_command_count,
                 "rejected_command_count": publication.rejected_command_count,
+                "cancelled_command_counts": {
+                    "terminal": publication.cancelled_terminal_command_count,
+                    "truncation": publication.cancelled_truncation_command_count,
+                    "runner_limit": publication.cancelled_runner_limit_command_count,
+                    "user_stop": publication.cancelled_user_stop_command_count,
+                    "failure": publication.cancelled_failure_command_count,
+                },
                 "terminal": publication.terminal,
                 "truncated": publication.truncated,
                 "winner": publication.winner,
                 "outcome": publication.outcome,
                 "agent_failure_count": len(result.agent_failures),
+                "agent_inference_duration_ns": {
+                    side: list(values)
+                    for side, values in result.agent_inference_duration_ns.items()
+                },
+                "agent_submit_duration_ns": {
+                    side: list(values)
+                    for side, values in result.agent_submit_duration_ns.items()
+                },
+                "reset_duration_ns": result.reset_duration_ns,
+                "shutdown_duration_ns": result.shutdown_duration_ns,
+                "publication_duration_ns": result.publication_duration_ns,
                 "sample_package": str(publication.output_dir),
                 "replay": str(publication.replay_path),
                 "analysis": str(publication.analysis_path),

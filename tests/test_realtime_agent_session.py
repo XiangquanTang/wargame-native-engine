@@ -5,6 +5,7 @@ from copy import deepcopy
 import json
 from pathlib import Path
 from threading import Event, Thread
+from time import monotonic, sleep
 from unittest.mock import Mock
 
 import pytest
@@ -14,7 +15,11 @@ from wargame_native_engine.agents import (
     ManualRealtimeClock,
     RealtimeAgentSession,
     RealtimeAgentSessionError,
+    RealtimeCancellationReason,
+    RealtimeExecutionMode,
+    RealtimeLifecycleState,
     RealtimeSeatBinding,
+    RealtimeShutdownTimeoutError,
     SeatDecision,
     SeatOperation,
 )
@@ -86,6 +91,190 @@ def _environment(
         observation_history_size=observation_history_size,
     )
     return value, clock
+
+
+def test_submit_clock_target_sequence_queue_and_event_linearize_under_one_lock(
+    tmp_path: Path,
+) -> None:
+    environment, clock = _environment(tmp_path)
+    threads: list[Thread] = []
+    receipts = []
+    ready = Event()
+    try:
+        reset = environment.reset(seed=42)
+        clock.advance_ms(49)
+
+        def submit_one() -> None:
+            ready.set()
+            receipts.append(environment.submit(
+                reset.red_binding,
+                observation_version=reset.red.observation_version,
+                decision=SeatDecision(),
+            ))
+
+        # All one hundred submitters begin before the boundary but are blocked
+        # on the authoritative Session lock until the clock has crossed it.
+        with environment._lock:  # noqa: SLF001 - intentional linearization probe
+            for _ in range(100):
+                thread = Thread(target=submit_one)
+                threads.append(thread)
+                thread.start()
+            assert ready.wait(1)
+            clock.advance_ms(2)
+        for thread in threads:
+            thread.join(2)
+            assert not thread.is_alive()
+
+        assert len(receipts) == 100
+        assert {value.target_tick for value in receipts} == {1}
+        events = environment.command_events
+        assert [value.command_sequence for value in events] == list(range(100))
+        assert sum(value.status is CommandStatus.PENDING for value in events) == 1
+        assert environment.pending_command_count == 1
+    finally:
+        environment.close()
+
+
+def test_background_and_manual_advancement_are_mutually_exclusive(
+    tmp_path: Path,
+) -> None:
+    background = RealtimeAgentSession(
+        MatchFactory(tmp_path / "background", tick_interval_ms=1_000),
+        run_namespace="background-mode-worker-000",
+        tick_interval_ms=1_000,
+        execution_mode=RealtimeExecutionMode.BACKGROUND,
+    )
+    try:
+        background.reset(seed=42)
+        background.start_realtime(max_ticks=1)
+        with pytest.raises(
+            RealtimeAgentSessionError,
+            match="manual_advance_forbidden",
+        ):
+            background.advance_tick()
+        assert background.current_tick == 0
+        deadline = monotonic() + 2.0
+        while background.current_tick == 0 and monotonic() < deadline:
+            sleep(0.01)
+        assert background.current_tick == 1
+    finally:
+        background.stop_realtime(
+            timeout_seconds=2,
+            cancellation_reason=RealtimeCancellationReason.RUNNER_LIMIT,
+        )
+        background.close(timeout_seconds=2)
+
+    manual, _ = _environment(tmp_path / "manual")
+    try:
+        manual.reset(seed=42)
+        manual.advance_tick()
+        with pytest.raises(
+            RealtimeAgentSessionError,
+            match="background_start_forbidden",
+        ):
+            manual.start_realtime(max_ticks=1)
+    finally:
+        manual.close()
+
+
+def test_shutdown_timeout_reports_processing_phase_and_never_claims_stopped(
+    tmp_path: Path,
+) -> None:
+    environment, _ = _environment(tmp_path)
+    entered = Event()
+    release = Event()
+    try:
+        environment.reset(seed=42)
+        original = environment._services["red"].preview_decision  # noqa: SLF001
+
+        def blocked_preview(*args, **kwargs):
+            entered.set()
+            assert release.wait(2)
+            return original(*args, **kwargs)
+
+        environment._services["red"].preview_decision = blocked_preview  # type: ignore[method-assign]  # noqa: SLF001
+        worker = Thread(target=environment.advance_tick)
+        worker.start()
+        assert entered.wait(1)
+        with pytest.raises(RealtimeShutdownTimeoutError) as captured:
+            environment.stop_realtime(timeout_seconds=0.01)
+        assert captured.value.phase == "product_preview"
+        assert environment.lifecycle is RealtimeLifecycleState.STOPPING
+        release.set()
+        worker.join(2)
+        assert not worker.is_alive()
+        environment.stop_realtime(timeout_seconds=1)
+    finally:
+        release.set()
+        environment.close(timeout_seconds=2)
+
+
+def test_background_catch_up_is_bounded_and_does_not_skip_ticks(
+    tmp_path: Path,
+) -> None:
+    environment = RealtimeAgentSession(
+        MatchFactory(tmp_path, tick_interval_ms=1),
+        run_namespace="catch-up-worker-000",
+        tick_interval_ms=1,
+        execution_mode=RealtimeExecutionMode.BACKGROUND,
+        max_catch_up_ticks_per_batch=2,
+    )
+    try:
+        environment.reset(seed=42)
+        environment.start_realtime(max_ticks=6)
+        deadline = monotonic() + 3
+        while environment.current_tick < 6 and monotonic() < deadline:
+            sleep(0.005)
+        environment.stop_realtime(
+            timeout_seconds=2,
+            cancellation_reason=RealtimeCancellationReason.RUNNER_LIMIT,
+        )
+        assert environment.current_tick == 6
+        assert [value.tick_index for value in environment.tick_results] == list(range(6))
+        assert environment.catch_up_yield_count >= 2
+    finally:
+        environment.close(timeout_seconds=2)
+
+
+@pytest.mark.parametrize(
+    ("reason", "status"),
+    [
+        (
+            RealtimeCancellationReason.RUNNER_LIMIT,
+            CommandStatus.CANCELLED_ON_RUNNER_LIMIT,
+        ),
+        (
+            RealtimeCancellationReason.USER_STOP,
+            CommandStatus.CANCELLED_ON_USER_STOP,
+        ),
+        (
+            RealtimeCancellationReason.FAILURE,
+            CommandStatus.CANCELLED_ON_FAILURE,
+        ),
+    ],
+)
+def test_pending_command_cancellation_records_exact_stop_reason(
+    tmp_path: Path,
+    reason: RealtimeCancellationReason,
+    status: CommandStatus,
+) -> None:
+    environment, clock = _environment(tmp_path)
+    try:
+        reset = environment.reset(seed=42)
+        clock.advance_ms(51)
+        receipt = environment.submit(
+            reset.red_binding,
+            observation_version=reset.red.observation_version,
+            decision=SeatDecision(),
+        )
+        assert receipt.target_tick == 1
+        environment.stop_realtime(cancellation_reason=reason)
+        event = environment.command_events[receipt.command_sequence]
+        assert event.status is status
+        assert event.error_code is not None
+        assert environment.pending_command_count == 0
+    finally:
+        environment.close()
 
 
 def _max_tick_bundle(max_ticks: int) -> ScenarioBundle:
@@ -423,7 +612,10 @@ def test_terminal_cancels_future_pending_command_and_stops_ticks(
         assert result.terminated is False
         events = environment.command_events
         assert events[current.command_sequence].status is CommandStatus.APPLIED
-        assert events[future.command_sequence].status is CommandStatus.CANCELLED_ON_TERMINAL
+        assert (
+            events[future.command_sequence].status
+            is CommandStatus.CANCELLED_ON_TRUNCATION
+        )
         with pytest.raises(RealtimeAgentSessionError, match="session_ended"):
             environment.advance_tick()
     finally:
