@@ -34,6 +34,36 @@ _OPERATION_RUNNER_EXPORTS = frozenset({
     "SeatOperationError",
     "run_local_agent_match",
 })
+_REALTIME_EXPORTS = frozenset({
+    "CommandStatus",
+    "ManualRealtimeClock",
+    "RealtimeAgentSession",
+    "RealtimeAgentSessionError",
+    "RealtimeClock",
+    "RealtimeResetResult",
+    "RealtimeSeatBinding",
+    "RealtimeSeatView",
+    "RealtimeTickResult",
+    "SeatCommandEvent",
+    "SeatCommandReceipt",
+    "SystemMonotonicClock",
+    "realtime_episode_id",
+})
+_REALTIME_PUBLICATION_EXPORTS = frozenset({
+    "REALTIME_SUMMARY_NAME",
+    "REALTIME_TICKS_NAME",
+    "SEAT_COMMANDS_NAME",
+    "RealtimeEpisodePublication",
+    "RealtimeEpisodePublicationError",
+    "publish_realtime_episode",
+    "realtime_ticks_to_jsonl",
+    "seat_commands_to_jsonl",
+})
+_REALTIME_RUNNER_EXPORTS = frozenset({
+    "RealtimeAgentFailure",
+    "RealtimeLocalAgentResult",
+    "RealtimeLocalAgentRunner",
+})
 
 
 def __getattr__(name: str):
@@ -45,6 +75,18 @@ def __getattr__(name: str):
         from wargame_native_engine.agents import operation_runner
 
         return getattr(operation_runner, name)
+    if name in _REALTIME_EXPORTS:
+        from wargame_native_engine.agents import realtime
+
+        return getattr(realtime, name)
+    if name in _REALTIME_PUBLICATION_EXPORTS:
+        from wargame_native_engine.agents import realtime_publication
+
+        return getattr(realtime_publication, name)
+    if name in _REALTIME_RUNNER_EXPORTS:
+        from wargame_native_engine.agents import realtime_runner
+
+        return getattr(realtime_runner, name)
     raise AttributeError(name)
 
 __all__ = [
@@ -65,14 +107,38 @@ __all__ = [
     "NoOpAgent",
     "OperationAgentMatchResult",
     "OperationAgentMatchRunner",
+    "CommandStatus",
+    "ManualRealtimeClock",
     "RandomLegalAgent",
+    "RealtimeAgentSession",
+    "RealtimeAgentSessionError",
+    "RealtimeAgentFailure",
+    "RealtimeClock",
+    "RealtimeEpisodePublication",
+    "RealtimeEpisodePublicationError",
+    "RealtimeResetResult",
+    "RealtimeLocalAgentResult",
+    "RealtimeLocalAgentRunner",
+    "RealtimeSeatBinding",
+    "RealtimeSeatView",
+    "RealtimeTickResult",
     "ScriptedAgent",
     "ScriptedSeatAgent",
     "SeatActionCapabilities",
+    "SeatCommandEvent",
+    "SeatCommandReceipt",
     "SeatDecision",
     "SeatAgentExecutionError",
     "SeatOperation",
     "SeatOperationError",
     "WaitSeatAgent",
+    "SystemMonotonicClock",
+    "REALTIME_SUMMARY_NAME",
+    "REALTIME_TICKS_NAME",
+    "SEAT_COMMANDS_NAME",
+    "publish_realtime_episode",
+    "realtime_episode_id",
+    "realtime_ticks_to_jsonl",
     "run_local_agent_match",
+    "seat_commands_to_jsonl",
 ]
