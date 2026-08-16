@@ -30,6 +30,12 @@ class SessionDescriptor:
     terminated: bool = False
     truncated: bool = False
 
+    def __post_init__(self) -> None:
+        _exact_bool(self.terminal, "terminal")
+        _exact_bool(self.finalized, "finalized")
+        _exact_bool(self.terminated, "terminated")
+        _exact_bool(self.truncated, "truncated")
+
     def to_record(self) -> dict[str, object]:
         return {
             "session_id": self.session_id,
@@ -92,6 +98,11 @@ class ControllerView:
     terminated: bool = False
     truncated: bool = False
 
+    def __post_init__(self) -> None:
+        _exact_bool(self.terminal, "terminal")
+        _exact_bool(self.terminated, "terminated")
+        _exact_bool(self.truncated, "truncated")
+
     def to_record(self) -> dict[str, object]:
         return {
             "session_id": self.session_id,
@@ -144,3 +155,13 @@ class SessionPublication:
     terminal: bool
     truncated: bool
     control_audit_path: Path | None = None
+
+    def __post_init__(self) -> None:
+        _exact_bool(self.terminal, "terminal")
+        _exact_bool(self.truncated, "truncated")
+
+
+def _exact_bool(value: bool, field: str) -> bool:
+    if type(value) is not bool:
+        raise TypeError(f"{field} must be an exact bool")
+    return value

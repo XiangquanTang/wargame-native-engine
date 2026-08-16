@@ -4,9 +4,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass
-import os
 from pathlib import Path
-import tempfile
 from typing import Any, Mapping, Sequence
 
 from wargame_native_engine.agents.seat import (
@@ -14,31 +12,22 @@ from wargame_native_engine.agents.seat import (
     LocalSeatAgent,
     SeatDecision,
 )
-from wargame_native_engine.analysis import EightFactorAnalyzer, analyze_replay_to_jsonl
-from wargame_native_engine.compat.source_frame.serialization import (
-    canonical_source_json,
-)
 from wargame_native_engine.gateway import CommandGatewayError
-from wargame_native_engine.io.importers.source_replay_archive import (
-    SourceReplayArchiveImporter,
-)
-from wargame_native_engine.io.replay import replay_source_archive
-from wargame_native_engine.io.serialization import file_sha256, json_clone
+from wargame_native_engine.io.serialization import json_clone
 from wargame_native_engine.operations.facade import MatchHandle
 from wargame_native_engine.training.models import DecisionTransition
 from wargame_native_engine.training.multi_seat import (
     NativeDecisionSession,
     NativeMultiSeatError,
     mark_transition_pair_truncated,
+    training_episode_id,
 )
-from wargame_native_engine.training.transitions import (
-    DECISION_TRANSITIONS_NAME,
-    write_decision_transitions_jsonl,
+from wargame_native_engine.training.publication import (
+    publish_training_episode,
 )
 
 
-MATCH_SUMMARY_NAME = "match_summary.native.json"
-MATCH_SUMMARY_SCHEMA = "native-local-seat-match-summary/1.1"
+MATCH_SUMMARY_SCHEMA = "native-local-seat-match-summary/1.2"
 
 
 class LocalSeatMatchError(RuntimeError):
@@ -134,6 +123,8 @@ class LocalSeatMatchResult:
     final_state_hash: str
     strict_replay_match: bool
     online_offline_analysis_match: bool
+    run_namespace: str
+    episode_id: str
 
     @property
     def frame_count(self) -> int:
@@ -151,6 +142,7 @@ class LocalSeatMatchRunner:
         *,
         red_agent: LocalSeatAgent,
         blue_agent: LocalSeatAgent,
+        run_namespace: str,
     ) -> None:
         if not isinstance(match, MatchHandle):
             raise TypeError("match must be a MatchHandle")
@@ -163,11 +155,20 @@ class LocalSeatMatchRunner:
         seed = match.gateway.manager.agent_reset_context(
             match.session_id, "red", red_agent.agent_id
         ).seed
+        self.run_namespace = _nonempty_namespace(run_namespace)
+        episode_id = training_episode_id(
+            self.run_namespace,
+            match.bundle.scenario_identity.sha256,
+            seed,
+            1,
+        )
         self.decision_session = NativeDecisionSession(
             match,
-            episode_id=f"{match.session_id}-local-seat",
+            episode_id=episode_id,
+            run_namespace=self.run_namespace,
             seed=seed,
         )
+        self.decision_session.reset_result()
         self.controllers = self.decision_session.controllers
         self.product_services = self.decision_session.product_services
         self._transitions: list[DecisionTransition] = []
@@ -191,8 +192,6 @@ class LocalSeatMatchRunner:
         if type(overwrite) is not bool:
             raise TypeError("overwrite must be bool")
         target = Path(output_dir)
-        if os.path.lexists(target) and not overwrite:
-            raise FileExistsError(f"match output already exists: {target}")
 
         try:
             self._reset_agents()
@@ -205,95 +204,42 @@ class LocalSeatMatchRunner:
                     *transitions[:-2],
                     *mark_transition_pair_truncated(transitions[-2:]),
                 )
-            publication = self.match.publish(
+            publication = publish_training_episode(
+                self.match,
                 target,
+                run_namespace=self.run_namespace,
+                episode_id=self.decision_session.episode_id,
+                transitions=transitions,
+                decision_window_count=processed,
                 truncated=truncated,
-                overwrite=overwrite,
-            )
-            archive = SourceReplayArchiveImporter().import_path(
-                publication.replay_path
-            )
-            verification = replay_source_archive(
-                self.match.bundle.scenario,
-                publication.replay_path,
-                strict=True,
-                map_runtime_data=self.match.bundle.map_runtime_data,
-            )
-            if not verification.matches:
-                raise RuntimeError("strict replay final state hash mismatch")
-            with tempfile.TemporaryDirectory(
-                prefix="wargame-local-seat-analysis."
-            ) as temporary:
-                offline = Path(temporary) / "frame_analysis.native.jsonl"
-                analyze_replay_to_jsonl(
-                    publication.replay_path,
-                    offline,
-                    analyzer=EightFactorAnalyzer(),
-                )
-                online_offline = (
-                    publication.analysis_path.read_bytes()
-                    == offline.read_bytes()
-                )
-            if not online_offline:
-                raise RuntimeError("online and offline analysis JSONL differ")
-            transition_path = write_decision_transitions_jsonl(
-                publication.output_dir / DECISION_TRANSITIONS_NAME,
-                transitions,
-            )
-            final_state_hash = _nonempty_manifest_text(
-                archive.manifest, "final_state_hash"
-            )
-            native_terminal = bool(archive.manifest.get("termination", False))
-            native_truncated = bool(archive.manifest.get("truncated", False))
-            winner = archive.manifest.get("winner")
-            if winner is not None and not isinstance(winner, str):
-                raise RuntimeError("published replay winner is invalid")
-            summary = {
-                "summary_schema": MATCH_SUMMARY_SCHEMA,
-                "status": "completed" if native_terminal else "truncated",
-                "seed": archive.manifest.get("episode_seed"),
-                "scenario_id": archive.manifest.get("scenario_id"),
-                "scenario_hash": archive.manifest.get("scenario_hash"),
+                outcome=final_view.outcome,
+                summary_schema=MATCH_SUMMARY_SCHEMA,
+                summary_extra={
                 "red_agent_id": self.agents["red"].agent_id,
                 "blue_agent_id": self.agents["blue"].agent_id,
-                "decision_window_count": processed,
-                "fact_frame_count": publication.frame_count,
-                "step_count": publication.step_count,
-                "transition_count": len(transitions),
-                "terminal": native_terminal,
-                "truncated": native_truncated,
-                "winner": winner,
-                "outcome": final_view.outcome,
-                "final_state_hash": final_state_hash,
-                "replay_sha256": file_sha256(publication.replay_path),
-                "analysis_sha256": file_sha256(publication.analysis_path),
-                "transitions_sha256": file_sha256(transition_path),
-                "strict_replay_match": True,
-                "online_offline_analysis_match": True,
                 "error": None,
-            }
-            summary_path = publication.output_dir / MATCH_SUMMARY_NAME
-            _atomic_write(
-                summary_path,
-                (canonical_source_json(summary) + "\n").encode("utf-8"),
+                },
+                overwrite=overwrite,
             )
             return LocalSeatMatchResult(
                 publication.output_dir,
                 publication.replay_path,
                 publication.analysis_path,
-                transition_path,
-                summary_path,
-                native_terminal,
-                native_truncated,
+                publication.transition_path,
+                publication.summary_path,
+                publication.terminal,
+                publication.truncated,
                 processed,
-                publication.frame_count,
+                publication.fact_frame_count,
                 publication.step_count,
                 len(transitions),
-                winner,
+                publication.winner,
                 final_view.outcome,
-                final_state_hash,
+                publication.final_state_hash,
                 True,
                 True,
+                self.run_namespace,
+                self.decision_session.episode_id,
             )
         finally:
             self._close_agents()
@@ -423,6 +369,7 @@ def run_local_agent_match(
     *,
     red_agent: LocalSeatAgent,
     blue_agent: LocalSeatAgent,
+    run_namespace: str,
     output_dir: str | Path,
     max_decision_windows: int | None = None,
     overwrite: bool = False,
@@ -433,6 +380,7 @@ def run_local_agent_match(
         match,
         red_agent=red_agent,
         blue_agent=blue_agent,
+        run_namespace=run_namespace,
     ).run(
         output_dir,
         max_decision_windows=max_decision_windows,
@@ -440,23 +388,9 @@ def run_local_agent_match(
     )
 
 
-def _nonempty_manifest_text(manifest: Mapping[str, Any], field: str) -> str:
-    value = manifest.get(field)
-    if not isinstance(value, str) or not value:
-        raise RuntimeError(f"published replay lacks {field}")
+def _nonempty_namespace(value: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("run_namespace must be a non-empty string")
+    if value != value.strip():
+        raise ValueError("run_namespace must not contain surrounding whitespace")
     return value
-
-
-def _atomic_write(path: Path, payload: bytes) -> None:
-    descriptor, temporary = tempfile.mkstemp(
-        prefix=f".{path.name}.", dir=path.parent
-    )
-    try:
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(payload)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-    finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)

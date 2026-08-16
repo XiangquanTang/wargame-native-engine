@@ -196,14 +196,14 @@ class NativeTrainingEnv:
         if advance is None or advance.decision_window_index != window_index:
             self._failed = True
             raise NativeTrainingError("training_window_advance_evidence_missing")
-        terminated = bool(view.terminated)
-        training_truncated = bool(
+        terminated = view.terminated
+        training_truncated = (
             not terminated
             and not view.truncated
             and self.max_steps is not None
             and self._step_count >= self.max_steps
         )
-        truncated = False if terminated else bool(
+        truncated = False if terminated else (
             view.truncated or training_truncated
         )
         self._ended = terminated or truncated

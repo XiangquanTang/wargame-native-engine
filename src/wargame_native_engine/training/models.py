@@ -52,6 +52,10 @@ class TrainingStep:
     info: Mapping[str, Any]
     action_space: EncodedActionSpace
 
+    def __post_init__(self) -> None:
+        _exact_bool(self.terminated, "terminated")
+        _exact_bool(self.truncated, "truncated")
+
     def to_record(self) -> dict[str, object]:
         return {
             "observation": json_clone(self.observation),
@@ -66,6 +70,7 @@ class TrainingStep:
 @dataclass(frozen=True, slots=True)
 class AgentResetResult:
     episode_id: str
+    run_namespace: str
     observations: Mapping[str, Mapping[str, Any]]
     capabilities: Mapping[str, SeatActionCapabilities]
     decision_index: int
@@ -78,6 +83,7 @@ class AgentResetResult:
 
     def __post_init__(self) -> None:
         _episode(self.episode_id)
+        _namespace(self.run_namespace)
         _exact_nonnegative(self.decision_index, "decision_index")
         _exact_nonnegative(self.fact_frame_index, "fact_frame_index")
         _exact_nonnegative(self.sim_time_ms, "sim_time_ms")
@@ -89,6 +95,7 @@ class AgentResetResult:
     def to_record(self) -> dict[str, object]:
         return {
             "episode_id": self.episode_id,
+            "run_namespace": self.run_namespace,
             "observations": json_clone(self.observations),
             "capabilities": {
                 side: value.to_record()
@@ -107,6 +114,7 @@ class AgentResetResult:
 @dataclass(frozen=True, slots=True)
 class DecisionTransition:
     episode_id: str
+    run_namespace: str
     decision_index: int
     side: str
     observation: Mapping[str, Any]
@@ -128,6 +136,7 @@ class DecisionTransition:
 
     def __post_init__(self) -> None:
         _episode(self.episode_id)
+        _namespace(self.run_namespace)
         _exact_nonnegative(self.decision_index, "decision_index")
         if self.side not in {"red", "blue"}:
             raise ValueError("side must be RED or BLUE")
@@ -166,6 +175,7 @@ class DecisionTransition:
         return {
             "transition_schema": "native-decision-transition/1.0",
             "episode_id": self.episode_id,
+            "run_namespace": self.run_namespace,
             "decision_index": self.decision_index,
             "side": self.side,
             "observation": json_clone(self.observation),
@@ -191,6 +201,7 @@ class DecisionTransition:
 @dataclass(frozen=True, slots=True)
 class AgentStepResult:
     episode_id: str
+    run_namespace: str
     observations: Mapping[str, Mapping[str, Any]]
     capabilities: Mapping[str, SeatActionCapabilities]
     rewards: Mapping[str, float]
@@ -209,6 +220,7 @@ class AgentStepResult:
 
     def __post_init__(self) -> None:
         _episode(self.episode_id)
+        _namespace(self.run_namespace)
         if type(self.terminated) is not bool or type(self.truncated) is not bool:
             raise TypeError("terminated and truncated must be exact bool values")
         if self.terminated and self.truncated:
@@ -228,6 +240,7 @@ class AgentStepResult:
     def to_record(self) -> dict[str, object]:
         return {
             "episode_id": self.episode_id,
+            "run_namespace": self.run_namespace,
             "observations": json_clone(self.observations),
             "capabilities": {
                 side: value.to_record()
@@ -266,10 +279,28 @@ class SingleSeatStepResult:
     info: Mapping[str, Any]
     transition: DecisionTransition
 
+    def __post_init__(self) -> None:
+        _exact_bool(self.terminated, "terminated")
+        _exact_bool(self.truncated, "truncated")
+
 
 def _episode(value: str) -> str:
     if not isinstance(value, str) or not value:
         raise ValueError("episode_id must be non-empty")
+    return value
+
+
+def _namespace(value: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("run_namespace must be a non-empty string")
+    if value != value.strip():
+        raise ValueError("run_namespace must not contain surrounding whitespace")
+    return value
+
+
+def _exact_bool(value: bool, field: str) -> bool:
+    if type(value) is not bool:
+        raise TypeError(f"{field} must be an exact bool")
     return value
 
 

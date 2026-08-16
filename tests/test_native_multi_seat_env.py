@@ -215,11 +215,73 @@ def test_product_decision_invalid_later_operation_submits_nothing(
         match.close()
 
 
+def test_product_decision_combines_real_move_and_stop_move_in_one_submit(
+    tmp_path: Path,
+) -> None:
+    match = MatchFactory(
+        tmp_path,
+        bundle=_multi_actor_bundle(),
+        decision_interval_ms=1_000,
+        frame_interval_ms=1_000,
+    )(42, 1)
+    red = ProductOperationService(match.bind_controller(
+        "red", controller_id="native-multi-red"
+    ))
+    blue = ProductOperationService(match.bind_controller(
+        "blue", controller_id="native-multi-blue"
+    ))
+    try:
+        first = red.preview_decision(
+            SeatDecision.single(
+                SeatOperation("MOVE", (1,), destination_hex=105)
+            ),
+            request_id="start-move-red",
+        )
+        red.execute_decision(first.preview_token, request_id="start-move-execute")
+        waiting = blue.preview_decision(SeatDecision(), request_id="start-wait-blue")
+        blue.execute_decision(
+            waiting.preview_token, request_id="start-wait-execute"
+        )
+
+        original = match.gateway.submit_batch
+        match.gateway.submit_batch = Mock(  # type: ignore[method-assign]
+            wraps=original
+        )
+        combined = red.preview_decision(
+            SeatDecision((
+                SeatOperation("STOP_MOVE", (1,)),
+                SeatOperation("MOVE", (3,), destination_hex=104),
+            )),
+            request_id="combined-preview",
+        )
+        assert combined.operation_count == 2
+        assert combined.executable_count == 2
+        red.execute_decision(
+            combined.preview_token, request_id="combined-execute"
+        )
+        assert match.gateway.submit_batch.call_count == 1  # type: ignore[attr-defined]
+        waiting = blue.preview_decision(SeatDecision(), request_id="combined-wait")
+        blue.execute_decision(
+            waiting.preview_token, request_id="combined-wait-execute"
+        )
+        step = match.gateway.manager._managed(  # noqa: SLF001
+            match.session_id
+        ).environment.last_step_record
+        assert [
+            action["action_type"] for action in step["ordered_actions"]
+            if action["side"] == "red"
+        ] == ["MOVE", "STOP_MOVE"]
+    finally:
+        match.close()
+
+
 def test_native_multi_seat_step_is_one_decision_and_ten_fact_frames(
     tmp_path: Path,
 ) -> None:
     factory = MatchFactory(tmp_path)
-    environment = NativeMultiSeatEnv(factory, max_decision_windows=1)
+    environment = NativeMultiSeatEnv(
+        factory, run_namespace="test-native-multi", max_decision_windows=1
+    )
     try:
         initial = environment.reset(seed=42)
         assert initial.decision_index == 0
@@ -259,7 +321,8 @@ def test_multi_seat_preflight_failure_is_retryable_and_creates_no_transition(
             tmp_path,
             decision_interval_ms=1_000,
             frame_interval_ms=1_000,
-        )
+        ),
+        run_namespace="test-native-multi",
     )
     try:
         environment.reset(seed=42)
@@ -286,7 +349,9 @@ def test_execution_failure_after_red_submit_requires_reset_and_never_advances(
         decision_interval_ms=1_000,
         frame_interval_ms=1_000,
     )
-    environment = NativeMultiSeatEnv(factory)
+    environment = NativeMultiSeatEnv(
+        factory, run_namespace="test-native-multi"
+    )
     try:
         environment.reset(seed=42)
         session = environment._session  # noqa: SLF001 - failure boundary probe
@@ -323,7 +388,9 @@ def test_native_terminal_rewards_publish_and_strict_replay(tmp_path: Path) -> No
         decision_interval_ms=10_000,
         frame_interval_ms=1_000,
     )
-    environment = NativeMultiSeatEnv(factory)
+    environment = NativeMultiSeatEnv(
+        factory, run_namespace="test-native-multi"
+    )
     output = tmp_path / "published"
     try:
         environment.reset(seed=42)
@@ -355,7 +422,11 @@ def test_single_seat_adapter_reuses_multi_seat_and_calls_opponent_once(
     controlled_side: str,
 ) -> None:
     opponent = RecordingWaitSeatAgent(f"opponent-{controlled_side}")
-    multi = NativeMultiSeatEnv(MatchFactory(tmp_path), max_decision_windows=1)
+    multi = NativeMultiSeatEnv(
+        MatchFactory(tmp_path),
+        run_namespace="test-native-multi",
+        max_decision_windows=1,
+    )
     adapter = SingleSeatTrainingAdapter(
         multi,
         controlled_side=controlled_side,
@@ -386,7 +457,7 @@ def test_single_seat_retry_reuses_one_opponent_decision_for_the_window(
             tmp_path,
             decision_interval_ms=1_000,
             frame_interval_ms=1_000,
-        )),
+        ), run_namespace="test-native-multi"),
         controlled_side="red",
         opponent=opponent,
     )
@@ -411,7 +482,9 @@ def test_single_seat_opponent_failure_requires_reset_and_is_not_retried(
 
     opponent = FailingOpponent("failing-opponent")
     adapter = SingleSeatTrainingAdapter(
-        NativeMultiSeatEnv(MatchFactory(tmp_path)),
+        NativeMultiSeatEnv(
+            MatchFactory(tmp_path), run_namespace="test-native-multi"
+        ),
         controlled_side="red",
         opponent=opponent,
     )

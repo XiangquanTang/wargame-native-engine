@@ -136,6 +136,7 @@ def _run_wait_match(tmp_path: Path, name: str, windows: int = 2):
     try:
         result = LocalSeatMatchRunner(
             match,
+            run_namespace="test-local-seat-determinism",
             red_agent=red,
             blue_agent=blue,
         ).run(
@@ -160,7 +161,7 @@ def test_product_move_wait_chain_uses_one_agent_call_per_side_and_window(
     match = _facade_match(tmp_path)
     try:
         result = LocalSeatMatchRunner(
-            match, red_agent=red, blue_agent=blue
+            match, run_namespace="test-local-seat", red_agent=red, blue_agent=blue
         ).run(tmp_path / "output", max_decision_windows=1)
         audit = match.gateway.control_audit(match.session_id, "seat-red")
     finally:
@@ -234,7 +235,7 @@ def test_agent_context_is_side_only_detached_and_mutation_cannot_pollute_session
     )
     try:
         result = LocalSeatMatchRunner(
-            match, red_agent=red, blue_agent=blue
+            match, run_namespace="test-local-seat", red_agent=red, blue_agent=blue
         ).run(tmp_path / "output", max_decision_windows=1)
     finally:
         match.close()
@@ -274,7 +275,7 @@ def test_invalid_product_operation_is_not_silently_waited_or_advanced(
     try:
         with pytest.raises(SeatOperationError) as captured:
             LocalSeatMatchRunner(
-                match, red_agent=red, blue_agent=blue
+                match, run_namespace="test-local-seat", red_agent=red, blue_agent=blue
             ).run(output, max_decision_windows=1)
         assert match.status.frame_index == 0
         assert match.gateway.window(
@@ -298,7 +299,7 @@ def test_blue_agent_failure_occurs_before_any_submission_or_advance(
     try:
         with pytest.raises(SeatAgentExecutionError) as captured:
             LocalSeatMatchRunner(
-                match, red_agent=red, blue_agent=blue
+                match, run_namespace="test-local-seat", red_agent=red, blue_agent=blue
             ).run(tmp_path / "output", max_decision_windows=1)
         window = match.gateway.window(match.session_id, "seat-red")
         assert match.status.frame_index == 0
@@ -322,7 +323,7 @@ def test_red_agent_failure_calls_neither_blue_nor_environment_step(
     try:
         with pytest.raises(SeatAgentExecutionError) as captured:
             LocalSeatMatchRunner(
-                match, red_agent=red, blue_agent=blue
+                match, run_namespace="test-local-seat", red_agent=red, blue_agent=blue
             ).run(tmp_path / "output", max_decision_windows=1)
         assert match.status.frame_index == 0
     finally:
@@ -345,7 +346,7 @@ def test_agent_reset_failure_stops_before_any_decision_or_submission(
     try:
         with pytest.raises(SeatAgentExecutionError) as captured:
             LocalSeatMatchRunner(
-                match, red_agent=red, blue_agent=blue
+                match, run_namespace="test-local-seat", red_agent=red, blue_agent=blue
             ).run(tmp_path / "output", max_decision_windows=1)
         window = match.gateway.window(match.session_id, "seat-red")
         assert match.status.frame_index == 0
@@ -423,7 +424,7 @@ def test_analysis_failure_after_advance_reports_desynchronization(
     blue = RecordingSeatAgent("blue", SeatDecision())
     with pytest.raises(LocalSeatMatchError) as captured:
         LocalSeatMatchRunner(
-            match, red_agent=red, blue_agent=blue
+            match, run_namespace="test-local-seat", red_agent=red, blue_agent=blue
         ).run(tmp_path / "output", max_decision_windows=1)
     assert captured.value.status == "analysis_desynchronized"
     assert captured.value.detail["environment_already_advanced"] is True
@@ -488,6 +489,7 @@ def test_short_terminal_match_publishes_strict_replay_and_exact_analysis_hashes(
     try:
         result = LocalSeatMatchRunner(
             match,
+            run_namespace="test-local-seat-terminal",
             red_agent=WaitSeatAgent("terminal-red"),
             blue_agent=WaitSeatAgent("terminal-blue"),
         ).run(tmp_path / "output")
@@ -553,7 +555,7 @@ def test_map123_two_window_real_agent_smoke(tmp_path: Path) -> None:
     )
     try:
         result = LocalSeatMatchRunner(
-            match, red_agent=red, blue_agent=blue
+            match, run_namespace="test-local-seat-map123", red_agent=red, blue_agent=blue
         ).run(tmp_path / "map123-output", max_decision_windows=2)
     finally:
         match.close()

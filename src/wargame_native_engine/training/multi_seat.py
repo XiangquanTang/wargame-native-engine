@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -14,8 +14,12 @@ from wargame_native_engine.agents.seat import (
     SeatActionCapabilities,
     SeatDecision,
 )
-from wargame_native_engine.gateway import CommandGatewayError, SessionPublication
-from wargame_native_engine.io.serialization import json_clone
+from wargame_native_engine.gateway import (
+    CommandGatewayError,
+    DeadlineMode,
+    SessionPublication,
+)
+from wargame_native_engine.io.serialization import canonical_hash, json_clone
 from wargame_native_engine.operations import ProductOperationService
 from wargame_native_engine.operations.facade import MatchHandle
 from wargame_native_engine.training.models import (
@@ -27,6 +31,10 @@ from wargame_native_engine.training.models import (
 )
 from wargame_native_engine.training.transitions import (
     write_decision_transitions_jsonl,
+)
+from wargame_native_engine.training.publication import (
+    TrainingEpisodePublication,
+    publish_training_episode,
 )
 
 
@@ -51,6 +59,40 @@ class NativeMultiSeatError(RuntimeError):
         super().__init__(f"{self.code}:{self.message}")
 
 
+class UnsupportedTrainingDecisionModeError(ValueError):
+    """A training environment was attached to an autonomous deadline."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "native_multi_seat_env_requires_synchronous_decision_windows"
+        )
+
+
+class TrainingDecisionSnapshotMismatchError(NativeMultiSeatError):
+    """The current Gateway window no longer matches the emitted snapshot."""
+
+    def __init__(self, expected: int, actual: int) -> None:
+        self.expected = expected
+        self.actual = actual
+        super().__init__(
+            "training_decision_snapshot_mismatch_reset_required",
+            f"expected={expected};actual={actual}",
+            phase="snapshot",
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _DecisionSnapshot:
+    episode_id: str
+    decision_index: int
+    red_decision_index: int
+    blue_decision_index: int
+    frame_index: int
+    sim_time_ms: int
+    red_payload_hash: str
+    blue_payload_hash: str
+
+
 class NativeDecisionSession:
     """Shared decision executor used by Agent runners and training adapters.
 
@@ -63,14 +105,18 @@ class NativeDecisionSession:
         match: MatchHandle,
         *,
         episode_id: str,
+        run_namespace: str,
         seed: int,
     ) -> None:
         if not isinstance(match, MatchHandle):
             raise TypeError("match must be a MatchHandle")
         if not isinstance(episode_id, str) or not episode_id:
             raise ValueError("episode_id must be non-empty")
+        self.run_namespace = _run_namespace(run_namespace)
         if type(seed) is not int:
             raise TypeError("seed must be an exact int")
+        if match.gateway.deadline_mode is not DeadlineMode.SYNCHRONOUS:
+            raise UnsupportedTrainingDecisionModeError()
         self.match = match
         self.episode_id = episode_id
         self.seed = seed
@@ -87,37 +133,46 @@ class NativeDecisionSession:
             for side, controller in self.controllers.items()
         }
         self._failed = False
+        self._snapshot: _DecisionSnapshot | None = None
 
     def reset_result(self) -> AgentResetResult:
         self._require_synchronized()
         views = self._views()
         capabilities = self._capabilities(views)
         descriptor = self.match.status
+        snapshot = self._build_snapshot(views, capabilities)
+        if (
+            descriptor.frame_index != snapshot.frame_index
+            or descriptor.sim_time_ms != snapshot.sim_time_ms
+        ):
+            self._snapshot_mismatch(snapshot.decision_index, -1)
+        self._snapshot = snapshot
         return AgentResetResult(
-            self.episode_id,
-            _observations(views),
-            capabilities,
-            self._decision_index(),
-            descriptor.frame_index,
-            descriptor.sim_time_ms,
-            self.seed,
-            self.match.bundle.scenario_identity.scenario_id,
-            self.match.bundle.scenario_identity.sha256,
-            self.match.bundle.map_identity.map_id,
+            episode_id=self.episode_id,
+            run_namespace=self.run_namespace,
+            observations=_observations(views),
+            capabilities=capabilities,
+            decision_index=snapshot.decision_index,
+            fact_frame_index=descriptor.frame_index,
+            sim_time_ms=descriptor.sim_time_ms,
+            seed=self.seed,
+            scenario_id=self.match.bundle.scenario_identity.scenario_id,
+            scenario_hash=self.match.bundle.scenario_identity.sha256,
+            map_id=self.match.bundle.map_identity.map_id,
         )
 
     def decision_context(self, side: str) -> AgentDecisionContext:
         self._require_synchronized()
         normalized = _side(side)
-        view = self.controllers[normalized].observe()
-        capabilities = self._capability(normalized, view)
+        views, capabilities, _ = self._validated_current_snapshot()
+        view = views[normalized]
         return AgentDecisionContext(
             normalized,
-            capabilities.decision_index,
+            capabilities[normalized].decision_index,
             view.frame_index,
             view.sim_time_ms,
             json_clone(view.observation),
-            deepcopy(capabilities),
+            deepcopy(capabilities[normalized]),
         )
 
     def agent_reset_context(self, side: str, agent_id: str):
@@ -131,13 +186,14 @@ class NativeDecisionSession:
         blue_decision: SeatDecision,
     ) -> AgentStepResult:
         self._require_synchronized()
+        before_views, before_capabilities, snapshot = (
+            self._validated_current_snapshot()
+        )
         decisions = {
             "red": _decision(red_decision),
             "blue": _decision(blue_decision),
         }
-        before_views = self._views()
-        before_capabilities = self._capabilities(before_views)
-        decision_index = self._decision_index()
+        decision_index = snapshot.decision_index
         if any(
             value.decision_index != decision_index
             for value in before_capabilities.values()
@@ -206,16 +262,21 @@ class NativeDecisionSession:
             self.match.session_id, self.match.red_controller_id
         )
         if advance is None or advance.decision_window_index != decision_index:
-            self._failed = True
-            raise NativeMultiSeatError(
-                "decision_advance_evidence_missing",
-                "Gateway lacks timing evidence for the completed window",
-                phase="advance",
+            self._snapshot_mismatch(
+                decision_index,
+                -1 if advance is None else advance.decision_window_index,
             )
         after_views = self._views()
         after_capabilities = self._capabilities(after_views)
-        terminated = bool(after_views["red"].terminated)
-        truncated = False if terminated else bool(after_views["red"].truncated)
+        terminated = after_views["red"].terminated
+        truncated = False if terminated else after_views["red"].truncated
+        self._validate_completed_window(
+            snapshot,
+            advance,
+            after_views,
+            after_capabilities,
+            ended=terminated or truncated,
+        )
         rewards = _rewards(
             terminated=terminated,
             truncated=truncated,
@@ -223,50 +284,56 @@ class NativeDecisionSession:
         )
         transitions = tuple(
             DecisionTransition(
-                self.episode_id,
-                decision_index,
-                side,
-                json_clone(before_views[side].observation),
-                deepcopy(before_capabilities[side]),
-                decisions[side],
-                rewards[side],
-                json_clone(after_views[side].observation),
-                deepcopy(after_capabilities[side]),
-                terminated,
-                truncated,
-                self.seed,
-                self.match.bundle.scenario_identity.scenario_id,
-                self.match.bundle.scenario_identity.sha256,
-                self.match.bundle.map_identity.map_id,
-                advance.first_frame_index,
-                advance.last_frame_index,
-                advance.sim_time_before_ms,
-                advance.sim_time_after_ms,
+                episode_id=self.episode_id,
+                run_namespace=self.run_namespace,
+                decision_index=decision_index,
+                side=side,
+                observation=json_clone(before_views[side].observation),
+                capabilities=deepcopy(before_capabilities[side]),
+                decision=decisions[side],
+                reward=rewards[side],
+                next_observation=json_clone(after_views[side].observation),
+                next_capabilities=deepcopy(after_capabilities[side]),
+                terminated=terminated,
+                truncated=truncated,
+                seed=self.seed,
+                scenario_id=self.match.bundle.scenario_identity.scenario_id,
+                scenario_hash=self.match.bundle.scenario_identity.sha256,
+                map_id=self.match.bundle.map_identity.map_id,
+                fact_frame_start=advance.first_frame_index,
+                fact_frame_end=advance.last_frame_index,
+                sim_time_start_ms=advance.sim_time_before_ms,
+                sim_time_end_ms=advance.sim_time_after_ms,
             )
             for side in ("red", "blue")
         )
         next_index = (
             decision_index
             if terminated or truncated
-            else self._decision_index()
+            else decision_index + 1
         )
+        if not (terminated or truncated):
+            self._snapshot = self._build_snapshot(
+                after_views, after_capabilities
+            )
         return AgentStepResult(
-            self.episode_id,
-            _observations(after_views),
-            after_capabilities,
-            rewards,
-            terminated,
-            truncated,
-            decision_index,
-            next_index,
-            advance.first_frame_index,
-            advance.last_frame_index,
-            advance.sim_time_before_ms,
-            advance.sim_time_after_ms,
-            after_views["red"].winner,
-            after_views["red"].outcome,
-            transitions,
-            {
+            episode_id=self.episode_id,
+            run_namespace=self.run_namespace,
+            observations=_observations(after_views),
+            capabilities=after_capabilities,
+            rewards=rewards,
+            terminated=terminated,
+            truncated=truncated,
+            decision_index=decision_index,
+            next_decision_index=next_index,
+            fact_frame_start=advance.first_frame_index,
+            fact_frame_end=advance.last_frame_index,
+            sim_time_start_ms=advance.sim_time_before_ms,
+            sim_time_end_ms=advance.sim_time_after_ms,
+            winner=after_views["red"].winner,
+            outcome=after_views["red"].outcome,
+            transitions=transitions,
+            info={
                 "decision_window_index": decision_index,
                 "generated_frame_count": advance.generated_frame_count,
                 "fact_frame_range_contract": "closed",
@@ -275,8 +342,86 @@ class NativeDecisionSession:
             },
         )
 
-    def _decision_index(self) -> int:
-        return self.controllers["red"].window().decision_window_index
+    def _validated_current_snapshot(self):
+        snapshot = self._snapshot
+        if snapshot is None:
+            raise NativeMultiSeatError(
+                "training_decision_snapshot_uninitialized",
+                "reset_result must bind the initial decision snapshot",
+                phase="snapshot",
+            )
+        views = self._views()
+        capabilities = self._capabilities(views)
+        current = self._build_snapshot(views, capabilities)
+        if current != snapshot:
+            self._snapshot_mismatch(
+                snapshot.decision_index, current.decision_index
+            )
+        return views, capabilities, snapshot
+
+    def _build_snapshot(self, views, capabilities) -> _DecisionSnapshot:
+        red_index = views["red"].step_index
+        blue_index = views["blue"].step_index
+        actual = red_index if red_index == blue_index else -1
+        if (
+            red_index != blue_index
+            or capabilities["red"].decision_index != red_index
+            or capabilities["blue"].decision_index != blue_index
+            or views["red"].frame_index != views["blue"].frame_index
+            or views["red"].sim_time_ms != views["blue"].sim_time_ms
+            or views["red"].terminal != views["blue"].terminal
+            or views["red"].terminated != views["blue"].terminated
+            or views["red"].truncated != views["blue"].truncated
+        ):
+            expected = (
+                red_index
+                if self._snapshot is None
+                else self._snapshot.decision_index
+            )
+            self._snapshot_mismatch(expected, actual)
+        return _DecisionSnapshot(
+            self.episode_id,
+            red_index,
+            red_index,
+            blue_index,
+            views["red"].frame_index,
+            views["red"].sim_time_ms,
+            _side_snapshot_hash(views["red"], capabilities["red"]),
+            _side_snapshot_hash(views["blue"], capabilities["blue"]),
+        )
+
+    def _validate_completed_window(
+        self,
+        snapshot: _DecisionSnapshot,
+        advance,
+        views,
+        capabilities,
+        *,
+        ended: bool,
+    ) -> None:
+        if (
+            advance.decision_window_index != snapshot.decision_index
+            or advance.first_frame_index != snapshot.frame_index + 1
+            or advance.last_frame_index != views["red"].frame_index
+            or advance.sim_time_before_ms != snapshot.sim_time_ms
+            or advance.sim_time_after_ms != views["red"].sim_time_ms
+        ):
+            self._snapshot_mismatch(
+                snapshot.decision_index, advance.decision_window_index
+            )
+        completed = self._build_snapshot(views, capabilities)
+        expected_after = (
+            snapshot.decision_index
+            if ended
+            else snapshot.decision_index + 1
+        )
+        if completed.decision_index != expected_after:
+            self._snapshot_mismatch(expected_after, completed.decision_index)
+
+    def _snapshot_mismatch(self, expected: int, actual: int) -> None:
+        self._failed = True
+        self._snapshot = None
+        raise TrainingDecisionSnapshotMismatchError(expected, actual)
 
     def _views(self):
         return {
@@ -329,10 +474,12 @@ class NativeMultiSeatEnv:
         self,
         match_factory: MatchFactory,
         *,
+        run_namespace: str,
         max_decision_windows: int | None = None,
     ) -> None:
         if not callable(match_factory):
             raise TypeError("match_factory must be callable")
+        self.run_namespace = _run_namespace(run_namespace)
         if max_decision_windows is not None and (
             type(max_decision_windows) is not int
             or max_decision_windows <= 0
@@ -357,17 +504,31 @@ class NativeMultiSeatEnv:
         match = self._match_factory(seed, self._episode_sequence)
         if not isinstance(match, MatchHandle):
             raise TypeError("match_factory must return MatchHandle")
+        episode_id = training_episode_id(
+            self.run_namespace,
+            match.bundle.scenario_identity.sha256,
+            seed,
+            self._episode_sequence,
+        )
+        try:
+            session = NativeDecisionSession(
+                match,
+                episode_id=episode_id,
+                run_namespace=self.run_namespace,
+                seed=seed,
+            )
+            reset_result = session.reset_result()
+        except BaseException:
+            match.close()
+            self._match = None
+            self._session = None
+            raise
         self._match = match
-        episode_id = (
-            f"{match.session_id}-episode-{self._episode_sequence:06d}"
-        )
-        self._session = NativeDecisionSession(
-            match, episode_id=episode_id, seed=seed
-        )
+        self._session = session
         self._transitions.clear()
         self._decision_count = 0
-        self._ended = bool(match.status.terminal)
-        return self._session.reset_result()
+        self._ended = match.status.terminal
+        return reset_result
 
     def step(
         self,
@@ -377,7 +538,7 @@ class NativeMultiSeatEnv:
         self._require_active()
         result = self._require_session().step(red_decision, blue_decision)
         self._decision_count += 1
-        training_truncated = bool(
+        training_truncated = (
             not result.terminated
             and not result.truncated
             and self.max_decision_windows is not None
@@ -426,6 +587,10 @@ class NativeMultiSeatEnv:
         assert self._match is not None
         return self._match
 
+    @property
+    def episode_id(self) -> str:
+        return self._require_session().episode_id
+
     def write_transitions(self, path: str | Path) -> Path:
         return write_decision_transitions_jsonl(path, self.transitions)
 
@@ -443,6 +608,36 @@ class NativeMultiSeatEnv:
         return self.match.publish(
             output_dir,
             truncated=not self.match.status.terminal,
+            overwrite=overwrite,
+        )
+
+    def publish_training_package(
+        self,
+        output_dir: str | Path,
+        *,
+        summary_schema: str,
+        outcome: str | None = None,
+        summary_extra: Mapping[str, Any] | None = None,
+        overwrite: bool = False,
+    ) -> TrainingEpisodePublication:
+        """Publish facts, analysis, transitions and summary as one sample."""
+
+        self._require_initialized()
+        if not self._ended:
+            raise NativeMultiSeatError(
+                "native_multi_seat_active", "active episode cannot be published"
+            )
+        return publish_training_episode(
+            self.match,
+            output_dir,
+            run_namespace=self.run_namespace,
+            episode_id=self.episode_id,
+            transitions=self.transitions,
+            decision_window_count=self._decision_count,
+            truncated=not self.match.status.terminal,
+            outcome=outcome,
+            summary_schema=summary_schema,
+            summary_extra=summary_extra,
             overwrite=overwrite,
         )
 
@@ -504,6 +699,7 @@ class SingleSeatTrainingAdapter:
         self.opponent = opponent
         self._reset = False
         self._opponent_decision_index: int | None = None
+        self._opponent_cache_key: tuple[str, int] | None = None
         self._opponent_decision: SeatDecision | None = None
 
     def reset(self, seed: int = 42) -> SingleSeatResetResult:
@@ -521,6 +717,7 @@ class SingleSeatTrainingAdapter:
             ) from exc
         self._reset = True
         self._opponent_decision_index = None
+        self._opponent_cache_key = None
         self._opponent_decision = None
         return SingleSeatResetResult(
             json_clone(result.observations[self.controlled_side]),
@@ -540,8 +737,14 @@ class SingleSeatTrainingAdapter:
                 "single_seat_not_reset", "call reset before use"
             )
         controlled_decision = _decision(decision)
-        context = self.environment.decision_context(self.opponent_side)
-        if self._opponent_decision_index == context.decision_index:
+        try:
+            context = self.environment.decision_context(self.opponent_side)
+        except NativeMultiSeatError:
+            self._reset = False
+            self._clear_opponent_cache()
+            raise
+        cache_key = (self.environment.episode_id, context.decision_index)
+        if self._opponent_cache_key == cache_key:
             assert self._opponent_decision is not None
             opponent_decision = deepcopy(self._opponent_decision)
         else:
@@ -557,14 +760,21 @@ class SingleSeatTrainingAdapter:
                     phase="act",
                 ) from exc
             self._opponent_decision_index = context.decision_index
+            self._opponent_cache_key = cache_key
             self._opponent_decision = deepcopy(opponent_decision)
         decisions = {
             self.controlled_side: controlled_decision,
             self.opponent_side: opponent_decision,
         }
-        result = self.environment.step(decisions["red"], decisions["blue"])
+        try:
+            result = self.environment.step(decisions["red"], decisions["blue"])
+        except NativeMultiSeatError as exc:
+            if exc.code != "decision_preview_failed":
+                self._reset = False
+                self._clear_opponent_cache()
+            raise
         self._opponent_decision_index = None
-        self._opponent_decision = None
+        self._clear_opponent_cache()
         transition = next(
             value
             for value in result.transitions
@@ -598,6 +808,11 @@ class SingleSeatTrainingAdapter:
             self.opponent.close()
         finally:
             self.environment.close()
+
+    def _clear_opponent_cache(self) -> None:
+        self._opponent_decision_index = None
+        self._opponent_cache_key = None
+        self._opponent_decision = None
 
 
 def mark_transition_pair_truncated(
@@ -664,3 +879,46 @@ def _rewards(
         return {"red": 0.0, "blue": 0.0}
     loser = "blue" if winner == "red" else "red"
     return {winner: 1.0, loser: -1.0}
+
+
+def _run_namespace(value: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("run_namespace must be a non-empty string")
+    if value != value.strip():
+        raise ValueError("run_namespace must not contain surrounding whitespace")
+    return value
+
+
+def training_episode_id(
+    run_namespace: str,
+    scenario_hash: str,
+    seed: int,
+    episode_sequence: int,
+) -> str:
+    """Return the stable namespace/scenario/seed/local-sequence identity."""
+
+    _run_namespace(run_namespace)
+    if not isinstance(scenario_hash, str) or not scenario_hash:
+        raise ValueError("scenario_hash must be non-empty")
+    if type(seed) is not int:
+        raise TypeError("seed must be an exact int")
+    if type(episode_sequence) is not int or episode_sequence <= 0:
+        raise TypeError("episode_sequence must be a positive exact int")
+    identity = canonical_hash({
+        "run_namespace": run_namespace,
+        "scenario_hash": scenario_hash,
+        "seed": seed,
+        "episode_sequence": episode_sequence,
+    })
+    return f"native-training-{identity[:32]}"
+
+
+def _side_snapshot_hash(view, capabilities: SeatActionCapabilities) -> str:
+    return canonical_hash({
+        "decision_index": view.step_index,
+        "frame_index": view.frame_index,
+        "sim_time_ms": view.sim_time_ms,
+        "observation": view.observation,
+        "valid_actions": view.valid_actions,
+        "capabilities": capabilities.to_record(),
+    })

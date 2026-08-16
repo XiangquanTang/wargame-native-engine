@@ -43,7 +43,9 @@ class DeterministicMatchFactory:
 
 def _run_one(root: Path):
     environment = NativeMultiSeatEnv(
-        DeterministicMatchFactory(root), max_decision_windows=1
+        DeterministicMatchFactory(root),
+        run_namespace="test-decision-transition",
+        max_decision_windows=1,
     )
     initial = environment.reset(seed=42)
     result = environment.step(SeatDecision(), SeatDecision())
@@ -123,7 +125,10 @@ def test_transition_writer_rejects_nonfinite_reward_without_mutating_input(
 
 
 def test_reset_starts_new_episode_identity_and_decision_zero(tmp_path: Path) -> None:
-    environment = NativeMultiSeatEnv(DeterministicMatchFactory(tmp_path))
+    environment = NativeMultiSeatEnv(
+        DeterministicMatchFactory(tmp_path),
+        run_namespace="test-decision-transition",
+    )
     try:
         first = environment.reset(seed=42)
         environment.step(SeatDecision(), SeatDecision())

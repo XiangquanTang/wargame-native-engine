@@ -32,6 +32,7 @@ def test_operation_agent_runner_uses_facade_gateway_and_publishes_evidence(
     )
     result = OperationAgentMatchRunner(
         match,
+        run_namespace="test-operation-agent",
         red_agent=WaitSeatAgent("agent-red-policy"),
         blue_agent=WaitSeatAgent("agent-blue-policy"),
     ).run(tmp_path / "published", max_decision_windows=2)

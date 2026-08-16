@@ -20,6 +20,15 @@ from wargame_native_engine.training.multi_seat import (
     NativeMultiSeatEnv,
     NativeMultiSeatError,
     SingleSeatTrainingAdapter,
+    TrainingDecisionSnapshotMismatchError,
+    UnsupportedTrainingDecisionModeError,
+    training_episode_id,
+)
+from wargame_native_engine.training.publication import (
+    MATCH_SUMMARY_NAME,
+    TrainingEpisodePublication,
+    TrainingEpisodePublicationError,
+    publish_training_episode,
 )
 from wargame_native_engine.training.observation_encoder import (
     SideObservationEncoder,
@@ -47,9 +56,16 @@ __all__ = [
     "SingleSeatResetResult",
     "SingleSeatStepResult",
     "SingleSeatTrainingAdapter",
+    "TrainingDecisionSnapshotMismatchError",
+    "UnsupportedTrainingDecisionModeError",
+    "training_episode_id",
+    "TrainingEpisodePublication",
+    "TrainingEpisodePublicationError",
+    "MATCH_SUMMARY_NAME",
     "SideObservationEncoder",
     "TrainingReset",
     "TrainingStep",
     "decision_transitions_to_jsonl",
     "write_decision_transitions_jsonl",
+    "publish_training_episode",
 ]

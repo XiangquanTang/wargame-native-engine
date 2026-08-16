@@ -42,6 +42,15 @@ class SimulationAdvance:
     terminated: bool = False
     truncated: bool = False
 
+    def __post_init__(self) -> None:
+        for field, value in (
+            ("terminal", self.terminal),
+            ("terminated", self.terminated),
+            ("truncated", self.truncated),
+        ):
+            if type(value) is not bool:
+                raise TypeError(f"{field} must be an exact bool")
+
 
 class SimulationScheduler:
     """Advance a closed control window as one or more fact frames.

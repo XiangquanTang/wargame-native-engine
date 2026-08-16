@@ -325,10 +325,12 @@ class SessionManager:
                     raise
             managed.step_index = update.frame_index
             native_result = managed.environment.session.result()
+            if type(update.done) is not bool:
+                raise TypeError("live update done must be an exact bool")
             return SessionDescriptor(
                 session_id=managed.external_id,
                 step_index=managed.step_index,
-                terminal=bool(update.done),
+                terminal=update.done,
                 finalized=False,
                 frame_index=managed.step_index,
                 sim_time_ms=_managed_sim_time_ms(managed),
@@ -400,8 +402,8 @@ class SessionManager:
                 analysis_path=target / "frame_analysis.native.jsonl",
                 frame_count=int(manifest["frame_count"]),
                 step_count=int(manifest["step_count"]),
-                terminal=bool(outcome.get("terminal", False)),
-                truncated=bool(outcome.get("truncated", False)),
+                terminal=outcome.get("terminal", False),
+                truncated=outcome.get("truncated", False),
                 control_audit_path=(
                     None
                     if control_audit_payload is None

@@ -28,6 +28,7 @@ def test_native_training_cli_publishes_true_terminal_episode(
     assert main([
         "--scenario-bundle", str(scenario),
         "--output-dir", str(output),
+        "--run-namespace", "test-native-training-cli",
         "--seed", "42",
         "--decision-interval-ms", "2000",
         "--frame-interval-ms", "1000",

@@ -117,6 +117,7 @@ def parser() -> argparse.ArgumentParser:
         description="Run one deterministic local RED/BLUE Agent match"
     )
     value.add_argument("--output-dir", required=True, type=Path)
+    value.add_argument("--run-namespace", required=True)
     value.add_argument("--scenario", type=Path, default=DEFAULT_SCENARIO)
     value.add_argument(
         "--scenario-bundle",
@@ -163,6 +164,7 @@ def run_seat_match(args: argparse.Namespace) -> dict[str, object]:
                 match,
                 red_agent=WaitSeatAgent("local-red-wait"),
                 blue_agent=WaitSeatAgent("local-blue-wait"),
+                run_namespace=args.run_namespace,
                 output_dir=args.output_dir,
                 max_decision_windows=args.max_decision_windows,
                 overwrite=args.overwrite,
@@ -175,6 +177,8 @@ def run_seat_match(args: argparse.Namespace) -> dict[str, object]:
         "map_id": bundle.map_identity.map_id,
         "red_agent": args.red_agent,
         "blue_agent": args.blue_agent,
+        "run_namespace": result.run_namespace,
+        "episode_id": result.episode_id,
         "decision_window_count": result.decision_window_count,
         "fact_frame_count": result.fact_frame_count,
         "transition_count": result.transition_count,
