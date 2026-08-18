@@ -22,8 +22,10 @@ from wargame_native_engine.agents.seat import (
     AgentDecisionContext,
     SeatActionCapabilities,
     SeatDecision,
+    SeatOperation,
 )
 from wargame_native_engine.gateway import CommandGatewayError, DeadlineMode
+from wargame_native_engine.gateway.models import ControllerView
 from wargame_native_engine.io.serialization import canonical_hash, json_clone
 from wargame_native_engine.operations import ProductOperationService
 from wargame_native_engine.operations.facade import MatchHandle
@@ -362,9 +364,11 @@ class RealtimeAgentSession:
         )
         self._match: MatchHandle | None = None
         self._services: dict[str, ProductOperationService] = {}
+        self._advisory_services: dict[str, ProductOperationService] = {}
         self._bindings: dict[str, RealtimeSeatBinding] = {}
         self._binding_by_id: dict[str, RealtimeSeatBinding] = {}
         self._latest: dict[str, RealtimeSeatView] = {}
+        self._controller_views: dict[str, ControllerView] = {}
         self._issued: dict[str, deque[int]] = {
             "red": deque(), "blue": deque(),
         }
@@ -438,15 +442,27 @@ class RealtimeAgentSession:
                 ))
                 for side in ("red", "blue")
             }
+            advisory_services = {
+                side: ProductOperationService(match.bind_controller(
+                    side,
+                    controller_id=(
+                        match.red_controller_id
+                        if side == "red" else match.blue_controller_id
+                    ),
+                ))
+                for side in ("red", "blue")
+            }
             anchor = self._clock_now()
             with self._lock:
                 self._match = match
                 self._services = services
+                self._advisory_services = advisory_services
                 self._bindings = bindings
                 self._binding_by_id = {
                     value.binding_id: value for value in bindings.values()
                 }
                 self._latest.clear()
+                self._controller_views.clear()
                 self._issued = {"red": deque(), "blue": deque()}
                 self._version_owner.clear()
                 self._next_observation_version = 0
@@ -486,9 +502,11 @@ class RealtimeAgentSession:
                 if self._match is match:
                     self._match = None
                     self._services.clear()
+                    self._advisory_services.clear()
                     self._bindings.clear()
                     self._binding_by_id.clear()
                     self._latest.clear()
+                    self._controller_views.clear()
             match.close()
             raise
 
@@ -506,67 +524,118 @@ class RealtimeAgentSession:
         version = _nonnegative_int(observation_version, "observation_version")
         detached = deepcopy(decision)
         with self._lock:
-            authoritative = self._binding_by_id.get(binding.binding_id)
-            if authoritative is None:
-                raise RealtimeAgentSessionError(
-                    "realtime_binding_unknown", "seat binding is not active"
-                )
-            side = authoritative.seat
-            if self._lifecycle is not RealtimeLifecycleState.ACCEPTING or self._ended:
-                return SeatCommandReceipt(
-                    None,
-                    side,
-                    False,
-                    None,
-                    CommandStatus.REJECTED_AT_SUBMIT,
-                    self._submission_closed_code_locked(),
-                )
-            # This clock read is intentionally inside the same critical section
-            # as target selection, sequence allocation, supersession and queue
-            # insertion.  It is the live-command linearization point.
-            now = self._clock_now()
-            sequence = self._allocate_sequence_locked()
-            target = self._target_tick_locked(now)
-            if binding != authoritative:
-                return self._reject_at_submit_locked(
-                    sequence,
-                    side,
-                    version,
-                    detached,
-                    now,
-                    target,
-                    "realtime_binding_side_mismatch",
-                )
-            owner = self._version_owner.get(version)
-            if owner != side:
-                code = (
-                    (
-                        "observation_version_future"
-                        if version >= self._next_observation_version
-                        else "observation_version_expired_or_unknown"
-                    )
-                    if owner is None
-                    else "observation_version_side_mismatch"
-                )
-                return self._reject_at_submit_locked(
-                    sequence, side, version, detached, now, target, code,
-                )
-            old_sequence = self._pending.get((target, side))
-            if old_sequence is not None:
-                old = self._events[old_sequence]
-                self._events[old_sequence] = replace(
-                    old, status=CommandStatus.SUPERSEDED,
-                    error_code="superseded_by_later_seat_decision",
-                )
-            event = SeatCommandEvent(
-                self._episode(), sequence, side, version, detached,
-                self._current_tick, target, CommandStatus.PENDING, now,
+            return self._submit_locked(
+                binding,
+                version=version,
+                decision=detached,
+                merge_operation=None,
             )
-            self._events[sequence] = event
-            self._pending[(target, side)] = sequence
+
+    def submit_operation(
+        self,
+        binding: RealtimeSeatBinding,
+        *,
+        observation_version: int,
+        operation: "SeatOperation",
+    ) -> SeatCommandReceipt:
+        """Atomically append one browser operation to its target-tick decision.
+
+        This is an orchestration convenience, not a second adjudication path.
+        Disjoint actors already pending for the same seat/tick are retained;
+        the newly selected actor replaces only its own older pending operation.
+        The resulting complete ``SeatDecision`` is still revalidated through
+        the normal product service at apply time.  ``submit()`` retains the
+        existing full-decision overwrite contract used by Agents and replay.
+        """
+
+        if not isinstance(binding, RealtimeSeatBinding):
+            raise TypeError("binding must be a RealtimeSeatBinding")
+        if not isinstance(operation, SeatOperation):
+            raise TypeError("operation must be a SeatOperation")
+        version = _nonnegative_int(observation_version, "observation_version")
+        detached = deepcopy(operation)
+        with self._lock:
+            return self._submit_locked(
+                binding,
+                version=version,
+                decision=SeatDecision.single(detached),
+                merge_operation=detached,
+            )
+
+    def _submit_locked(
+        self,
+        binding: RealtimeSeatBinding,
+        *,
+        version: int,
+        decision: SeatDecision,
+        merge_operation: SeatOperation | None,
+    ) -> SeatCommandReceipt:
+        authoritative = self._binding_by_id.get(binding.binding_id)
+        if authoritative is None:
+            raise RealtimeAgentSessionError(
+                "realtime_binding_unknown", "seat binding is not active"
+            )
+        side = authoritative.seat
+        if self._lifecycle is not RealtimeLifecycleState.ACCEPTING or self._ended:
             return SeatCommandReceipt(
-                sequence, side, True, target, CommandStatus.PENDING, None,
+                None,
+                side,
+                False,
+                None,
+                CommandStatus.REJECTED_AT_SUBMIT,
+                self._submission_closed_code_locked(),
             )
+        # This clock read is intentionally inside the same critical section
+        # as target selection, sequence allocation, supersession and queue
+        # insertion.  It is the live-command linearization point.
+        now = self._clock_now()
+        sequence = self._allocate_sequence_locked()
+        target = self._target_tick_locked(now)
+        if binding != authoritative:
+            return self._reject_at_submit_locked(
+                sequence,
+                side,
+                version,
+                decision,
+                now,
+                target,
+                "realtime_binding_side_mismatch",
+            )
+        owner = self._version_owner.get(version)
+        if owner != side:
+            code = (
+                (
+                    "observation_version_future"
+                    if version >= self._next_observation_version
+                    else "observation_version_expired_or_unknown"
+                )
+                if owner is None
+                else "observation_version_side_mismatch"
+            )
+            return self._reject_at_submit_locked(
+                sequence, side, version, decision, now, target, code,
+            )
+        old_sequence = self._pending.get((target, side))
+        if old_sequence is not None and merge_operation is not None:
+            decision = _merge_pending_operation(
+                self._events[old_sequence].decision,
+                merge_operation,
+            )
+        if old_sequence is not None:
+            old = self._events[old_sequence]
+            self._events[old_sequence] = replace(
+                old, status=CommandStatus.SUPERSEDED,
+                error_code="superseded_by_later_seat_decision",
+            )
+        event = SeatCommandEvent(
+            self._episode(), sequence, side, version, decision,
+            self._current_tick, target, CommandStatus.PENDING, now,
+        )
+        self._events[sequence] = event
+        self._pending[(target, side)] = sequence
+        return SeatCommandReceipt(
+            sequence, side, True, target, CommandStatus.PENDING, None,
+        )
 
     def submit_recorded(
         self,
@@ -833,6 +902,79 @@ class RealtimeAgentSession:
         with self._lock:
             authoritative = self._resolve_binding_locked(binding)
             return deepcopy(self._latest[authoritative.seat])
+
+    def controller_snapshot(
+        self, binding: RealtimeSeatBinding,
+    ) -> tuple[RealtimeSeatView, ControllerView]:
+        """Return one coherent, detached side snapshot for presentation.
+
+        The second value is the detached ``ControllerView`` captured when the
+        observation version was issued.  Reusing that exact projection keeps
+        a browser read coherent with its observation version and, critically,
+        avoids rebuilding an expensive side projection while an authoritative
+        Map-sized tick is in progress.  No mutable Session or WorldState is
+        exposed.
+        """
+
+        with self._lock:
+            authoritative = self._resolve_binding_locked(binding)
+            return (
+                deepcopy(self._latest[authoritative.seat]),
+                deepcopy(self._controller_views[authoritative.seat]),
+            )
+
+    def operation_capabilities(
+        self,
+        binding: RealtimeSeatBinding,
+        actor_ids: Sequence[int],
+    ) -> dict[str, object]:
+        """Return the existing side-only product capability summary."""
+
+        with self._lock:
+            authoritative = self._resolve_binding_locked(binding)
+            self._require_accepting()
+            service = self._advisory_services[authoritative.seat]
+        return deepcopy(service.capabilities(actor_ids))
+
+    def preview_operation(
+        self,
+        binding: RealtimeSeatBinding,
+        operation: "SeatOperation",
+        *,
+        observation_version: int,
+        request_id: str,
+    ):
+        """Build one advisory product preview for a realtime seat command.
+
+        The preview registry is deliberately separate from the registry used
+        by authoritative tick application.  A slow browser preview therefore
+        cannot supersede or invalidate the frozen decision being applied by
+        the simulation thread.  The high-level operation is revalidated again
+        at its target tick by ``_services``.
+        """
+
+        if not isinstance(operation, SeatOperation):
+            raise TypeError("operation must be a SeatOperation")
+        version = _nonnegative_int(observation_version, "observation_version")
+        with self._lock:
+            authoritative = self._resolve_binding_locked(binding)
+            self._require_accepting()
+            owner = self._version_owner.get(version)
+            if owner != authoritative.seat:
+                code = (
+                    "observation_version_side_mismatch"
+                    if owner is not None
+                    else "observation_version_expired_or_unknown"
+                )
+                raise RealtimeAgentSessionError(
+                    code,
+                    "preview observation version is not active for this seat",
+                )
+            service = self._advisory_services[authoritative.seat]
+        return service.preview_operation(
+            **operation.preview_arguments(),
+            request_id=request_id,
+        )
 
     def decision_context(
         self, binding: RealtimeSeatBinding,
@@ -1146,6 +1288,9 @@ class RealtimeAgentSession:
                 )
             match = self._match
             self._match = None
+            self._services.clear()
+            self._advisory_services.clear()
+            self._controller_views.clear()
             self._closed = True
             self._lifecycle = RealtimeLifecycleState.CLOSED
         if match is not None:
@@ -1176,6 +1321,11 @@ class RealtimeAgentSession:
             window, view = match.gateway.controller_state(
                 match.session_id, controller_id
             )
+            # Keep the exact side projection paired with the issued realtime
+            # observation.  ControllerView is already detached at the Gateway
+            # boundary; callers receive another deep copy via
+            # controller_snapshot().
+            self._controller_views[side] = view
             actors = () if view.terminal else _friendly_actor_ids(view.observation)
             summary = (
                 _empty_capability_summary()
@@ -1400,6 +1550,39 @@ def _friendly_actor_ids(observation: Mapping[str, Any]) -> tuple[int, ...]:
         if type(actor) is int and actor >= 0:
             result.append(actor)
     return tuple(sorted(set(result)))
+
+
+def _merge_pending_operation(
+    pending: SeatDecision,
+    incoming: SeatOperation,
+) -> SeatDecision:
+    """Compose browser operations without changing Agent overwrite semantics."""
+
+    if incoming.whole_side_wait:
+        return SeatDecision.single(incoming)
+    incoming_actors = set(incoming.actor_ids)
+    retained: list[SeatOperation] = []
+    for operation in pending.operations:
+        if operation.whole_side_wait:
+            continue
+        remaining = tuple(
+            actor_id for actor_id in operation.actor_ids
+            if actor_id not in incoming_actors
+        )
+        if not remaining:
+            continue
+        choices = tuple(
+            (actor_id, weapon_id)
+            for actor_id, weapon_id in operation.weapon_choices
+            if actor_id in remaining
+        )
+        retained.append(replace(
+            operation,
+            actor_ids=remaining,
+            weapon_choices=choices,
+        ))
+    retained.append(incoming)
+    return SeatDecision(tuple(retained))
 
 
 def realtime_episode_id(

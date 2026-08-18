@@ -97,6 +97,39 @@ def test_server_planned_multicell_action_is_window_authorized_and_executed(
     assert recorded[0]["parameters"]["path"] == list(proposal.ordered_path)
 
 
+def test_adjacent_product_move_reuses_the_equivalent_frozen_authorization(
+    gateway,
+) -> None:
+    value, factory, session_id = gateway
+    proposal = value.plan_move(
+        session_id,
+        "red-controller",
+        request_id="plan-adjacent-red",
+        expected_window=0,
+        unit_id=1,
+        destination_hex=102,
+    )
+    assert proposal.reachable is True
+    assert proposal.ordered_path == (102,)
+
+    value.submit_batch(
+        session_id,
+        "red-controller",
+        request_id="submit-adjacent-red",
+        expected_window=0,
+        ordered_action_ids=[proposal.action_id],
+    )
+    value.submit_batch(
+        session_id,
+        "blue-controller",
+        request_id="submit-adjacent-blue",
+        expected_window=0,
+        ordered_action_ids=[],
+    )
+    recorded = factory.environments[0].last_step_record["ordered_actions"]
+    assert recorded[0]["parameters"]["path"] == [102]
+
+
 def test_proposal_records_are_detached_and_request_id_is_idempotent(gateway) -> None:
     value, _, session_id = gateway
     first = value.plan_move(

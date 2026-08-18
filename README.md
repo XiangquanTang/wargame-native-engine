@@ -30,6 +30,52 @@ Recommended application entry points are `WargameFacade` for product control,
 `GameSession.step` and `SessionManager.advance_ms` are trusted core boundaries,
 not the first integration tutorial for untrusted clients.
 
+For continuous human control, start the loopback realtime Web adapter:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src \
+python -m scripts.run_realtime_dual_control \
+  --scenario-bundle examples/source_movement_scenario.json \
+  --output-dir /tmp/wargame-realtime-web \
+  --run-namespace local-realtime-web-000 \
+  --tick-interval-ms 1000
+```
+
+Open the printed RED and BLUE URLs in separate tabs. “下达命令” admits a
+high-level operation for a future authoritative tick and does not lock the
+seat while waiting for its opponent. A missing side contributes an empty
+batch, so time and ongoing MOVE state continue. Multiple disjoint actors
+submitted by one browser within the same target tick are accumulated; a newer
+operation for the same actor replaces that actor's older pending operation.
+Paths, targets and weapons are still planned or selected by the server and are
+revalidated at apply time. `Ctrl+C` stops admission and atomically publishes
+Replay, analysis, command events and tick events under `--output-dir`.
+
+`scripts.run_dual_side_control` remains the synchronous DecisionWindow product
+flow for deliberate two-sided decisions. It intentionally locks a seat after
+that side submits. The two Web modes are explicit and do not change each
+other's orchestration contract.
+
+For a deterministic two-Agent movement/fire smoke, use the same realtime core
+and product operations, then inspect the complete package in the replay viewer:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python -m scripts.run_realtime_agent_match \
+  --scenario-bundle=examples/source_movement_scenario.json \
+  --output-dir=/tmp/wargame-random-agents \
+  --run-namespace=random-agents-000 --seed=42 \
+  --tick-interval-ms=1000 --max-ticks=30 \
+  --red-agent=random --blue-agent=random
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python -m scripts.run_replay_viewer \
+  --replay-dir=/tmp/wargame-random-agents --port=8000
+```
+
+`random` selects from detached, side-only capabilities but returns a product
+`SeatOperation`: MOVE endpoints are replanned by the server and SHOOT is
+revalidated at its apply tick. Ongoing MOVE is not resubmitted each tick. The
+map renderer interpolates a friendly unit along its current segment using the
+recorded progress; an opponent route is never disclosed to enable animation.
+
 ## Engine semantic contract
 
 One authoritative `WorldState` advances as:

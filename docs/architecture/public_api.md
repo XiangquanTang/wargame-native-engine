@@ -87,10 +87,39 @@ PYTHONPATH=src python -m scripts.run_dual_side_control \
   --frame-interval-ms 1000
 ```
 
+The command above is the synchronous, whole-seat DecisionWindow application:
+one execute finishes that side's decision for the current window.
+
+For continuous fixed-tick human control use the realtime adapter instead:
+
+```bash
+PYTHONPATH=src python -m scripts.run_realtime_dual_control \
+  --scenario-bundle examples/source_movement_scenario.json \
+  --output-dir /tmp/wargame-realtime-web \
+  --run-namespace local-realtime-web-000 \
+  --tick-interval-ms 1000
+```
+
+Its HTTP handlers only preview high-level product operations and enqueue a
+server-bound `SeatDecision`. They never call `GameSession.step`; the
+`RealtimeAgentSession` background loop alone seals RED/BLUE commands, supplies
+an empty batch for a missing seat, and advances the shared Gateway/Scheduler
+path once per authoritative tick. Apply-time product validation remains
+authoritative, so an operation based on an older observation may be recorded
+as rejected rather than rewritten or applied to stale state.
+
 The command prints separate token-bound RED and BLUE loopback URLs.  It loads
 the file as one `ScenarioBundle`, creates the match through `WargameFacade`,
 and gives the renderer the Bundle's map record.  It is a local development
 interface, not internet-grade authentication.
+
+`scripts.run_realtime_agent_match --red-agent=random --blue-agent=random`
+provides a deterministic reference smoke over the same `SeatDecision` and
+product-validation path. The random controller receives only its detached side
+observation and capabilities. It does not return action IDs, paths, GREEN or
+mutable Engine objects. Its output package can be opened directly by
+`scripts.run_replay_viewer` because realtime publication includes Replay and
+the required analysis sidecar.
 
 ## Six logical boundaries
 

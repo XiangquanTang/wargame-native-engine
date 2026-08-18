@@ -780,8 +780,10 @@
         const spread = stackSpread(stack.length);
         stack.forEach((unit, index) => {
           const angle = stack.length > 1 ? Math.PI * 2 * index / stack.length - Math.PI / 2 : 0;
-          const x = center.x + Math.cos(angle) * spread;
-          const y = center.y + Math.sin(angle) * spread;
+          const moving = unitDisplayPoint(unit, this.map.hex_size);
+          const display = this._screen(moving);
+          const x = display.x + Math.cos(angle) * spread;
+          const y = display.y + Math.sin(angle) * spread;
           this._drawUnit(context, unit, x, y);
         });
         if (stack.length > 1) {
@@ -876,6 +878,22 @@
     }
   }
 
+  function unitDisplayPoint(unit, hexSize) {
+    const start = hexToPixel(unit.row, unit.column, hexSize);
+    if (!Number.isInteger(unit.movement_target_hex)) return start;
+    const progress = Number(unit.movement_progress);
+    if (!Number.isFinite(progress) || progress <= 0) return start;
+    const targetHex = Number(unit.movement_target_hex);
+    const target = hexToPixel(
+      Math.floor(targetHex / 100), targetHex % 100, hexSize,
+    );
+    const ratio = Math.max(0, Math.min(1, progress));
+    return {
+      x: start.x + (target.x - start.x) * ratio,
+      y: start.y + (target.y - start.y) * ratio,
+    };
+  }
+
   const api = {
     MapRenderer,
     computeWorldBounds,
@@ -884,6 +902,7 @@
     formatEdgeFacts,
     hexToPixel,
     hexVertices,
+    unitDisplayPoint,
     pixelToHex,
     riverEdgeSegment,
     summarizeMapLayers,

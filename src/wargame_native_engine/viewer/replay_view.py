@@ -485,6 +485,15 @@ def _viewer_unit(
     row, column = unit.row_col
     state = mappings.unit_state(unit).value
     health_ratio = unit.blood / unit.max_blood
+    move_path = unit.raw.get("move_path")
+    movement_target_hex = (
+        move_path[0]
+        if isinstance(move_path, list)
+        and move_path
+        and type(move_path[0]) is int
+        and move_path[0] >= 0
+        else None
+    )
     return {
         "operator_id": unit.obj_id,
         "category": category,
@@ -496,6 +505,8 @@ def _viewer_unit(
         "current_hex": unit.current_hex,
         "row": row,
         "column": column,
+        "movement_target_hex": movement_target_hex,
+        "movement_progress": max(0.0, min(1.0, unit.current_progress)),
         "blood": unit.blood,
         "max_blood": unit.max_blood,
         "health_ratio": health_ratio,

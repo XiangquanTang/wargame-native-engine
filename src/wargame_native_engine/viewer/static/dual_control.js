@@ -12,6 +12,7 @@ let isPlanning = false;
 let isExecuting = false;
 let isRefreshing = false;
 let lastError = null;
+let lastNotice = null;
 let lastFrameIndex = null;
 let lastRequestId = null;
 let previewSequence = 0;
@@ -32,6 +33,8 @@ const OPERATION_LABELS = {
 const PRODUCT_STATE = {
   WAITING_SELECTION: ["等待选择", "请选择单位并下达操作。"],
   WAITING_OPPONENT: ["等待对方", "本方操作已提交，正在等待对方。"],
+  COMMAND_PENDING: ["命令已入队", "命令将在目标权威 Tick 重新校验并执行；可以继续操作其他单位。"],
+  COMMAND_REJECTED: ["命令未执行", "命令在应用时已不再合法；可以根据最新态势重新下达。"],
   ADVANCING: ["推进中", "双方操作已齐备，引擎正在推进。"],
   TERMINAL: ["已终局", "对局已经结束。"],
 };
@@ -107,6 +110,7 @@ function statusText() {
   if (isPlanning) return ["正在规划", "服务端正在逐单位验证并生成预览。"];
   if (isExecuting) return ["正在提交", "正在安全提交本方操作，请勿重复点击。"];
   if (lastError) return ["操作失败", lastError];
+  if (lastNotice) return ["命令已入队", lastNotice];
   const state = current?.product_status?.product_state || "WAITING_SELECTION";
   return PRODUCT_STATE[state] || PRODUCT_STATE.WAITING_SELECTION;
 }
@@ -261,7 +265,9 @@ function renderPreview() {
 function render({ redrawMap = true } = {}) {
   if (!current) return;
   $("side-badge").textContent = current.side.toUpperCase();
-  $("side-summary").textContent = `${current.side.toUpperCase()} 控制席位`;
+  $("side-summary").textContent = current.control_mode === "realtime"
+    ? `${current.side.toUpperCase()} 实时连续控制席位`
+    : `${current.side.toUpperCase()} 控制席位`;
   $("frame-index").textContent = String(current.product_status.frame_index);
   $("time-summary").textContent = `仿真时间 ${current.product_status.sim_time_ms} ms`;
   $("map-mode").textContent = `${current.scene.map.mode} · ${current.scene.map.map_id}`;
@@ -270,6 +276,8 @@ function render({ redrawMap = true } = {}) {
   $("debug-frame").textContent = String(current.product_status.frame_index);
   $("debug-sim-time").textContent = `${current.product_status.sim_time_ms} ms`;
   $("debug-request").textContent = lastRequestId || "—";
+  $("execute-operation").textContent = current.control_mode === "realtime"
+    ? "下达命令" : "执行";
   renderSelection();
   renderPreview();
   renderToolbar();
@@ -284,6 +292,7 @@ function clearOperation({ clearSelection = false } = {}) {
   operationPreview = null;
   executeRequestId = null;
   lastError = null;
+  lastNotice = null;
   $("confirm-partial").checked = false;
   if (clearSelection) selectedUnitIds.clear();
   $("tool-instruction").textContent = selectedUnitIds.size
@@ -355,6 +364,7 @@ async function handleHexSelection(value) {
 async function activateTool(kind) {
   if (isPlanning || isExecuting || !current?.product_status?.can_operate) return;
   lastError = null;
+  lastNotice = null;
   operationPreview = null;
   executeRequestId = null;
   targetHex = null;
@@ -380,6 +390,7 @@ async function previewOperation(kind, extra = {}) {
   if (isPlanning || isExecuting) return;
   isPlanning = true;
   lastError = null;
+  lastNotice = null;
   operationPreview = null;
   render();
   try {
@@ -392,6 +403,9 @@ async function previewOperation(kind, extra = {}) {
         actor_ids: extra.whole_side_wait ? [] : selectedIds(),
         operation_type: kind,
         movement_mode: "NORMAL",
+        ...(current?.control_mode === "realtime" ? {
+          observation_version: current.observation_version,
+        } : {}),
         ...extra,
       }),
     });
@@ -433,7 +447,9 @@ async function executeOperation() {
     activeTool = null;
     targetHex = null;
     targetUnitId = null;
-    if (result.product_state === "WAITING_OPPONENT") {
+    if (current?.control_mode === "realtime" && result.accepted) {
+      lastNotice = `命令已接纳，将在 Tick ${result.target_tick} 应用；无需等待对方。`;
+    } else if (result.product_state === "WAITING_OPPONENT") {
       lastError = null;
     }
     await refresh();
@@ -485,6 +501,7 @@ async function refresh() {
       selectedUnitIds.clear();
       clearOperation();
     } else if (frameChanged) {
+      lastNotice = null;
       activeTool = null;
       targetHex = null;
       targetUnitId = null;

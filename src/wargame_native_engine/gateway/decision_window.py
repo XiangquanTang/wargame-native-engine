@@ -206,10 +206,22 @@ class DecisionWindow:
                 f"actor {action.actor_id} lacks frozen {action.action_type.value}",
             )
         existing = snapshot.get(detached.action_id)
-        if existing is not None and existing != detached:
-            raise CommandGatewayError(
-                "proposal_action_id_conflict", detached.action_id
-            )
+        if existing is not None:
+            # A one-segment server-planned MOVE can be byte-for-byte the same
+            # EngineAction already frozen at window open.  Its ValidAction
+            # provenance changes from ``source_action_router`` to
+            # ``operation_move_proposal``, but provenance is evidence rather
+            # than action identity.  Reuse the frozen authorization when the
+            # action and priority agree; never reject a legitimate adjacent
+            # product MOVE merely because its source label differs.
+            if (
+                existing.action != detached.action
+                or existing.priority != detached.priority
+            ):
+                raise CommandGatewayError(
+                    "proposal_action_id_conflict", detached.action_id
+                )
+            return
         updated = dict(snapshot)
         updated[detached.action_id] = detached
         outer = dict(self.valid_action_snapshots)

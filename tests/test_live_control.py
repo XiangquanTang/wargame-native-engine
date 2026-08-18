@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from copy import deepcopy
+from dataclasses import replace
 import hashlib
 from http.client import HTTPConnection
 import json
@@ -157,6 +159,34 @@ def test_controller_record_is_detached_and_uses_only_bound_side_frame(
             fixture.gateway.view(fixture.session_id, fixture.red_id)
         )
         assert refreshed["source_frame"]["operators"]
+    finally:
+        fixture.close()
+
+
+def test_controller_record_interpolates_only_the_friendly_route(
+    tmp_path: Path,
+) -> None:
+    fixture = Fixture(tmp_path)
+    try:
+        original = fixture.gateway.view(fixture.session_id, fixture.red_id)
+        frame = deepcopy(original.source_frame)
+        friendly = frame["operators"][0]
+        friendly.update({"cur_pos": 0.25, "move_path": [102], "stop": 0})
+        hidden_route = deepcopy(friendly)
+        hidden_route.update({
+            "obj_id": 999, "color": 1, "cur_hex": 106,
+            "cur_pos": 0.75, "move_path": [105],
+        })
+        frame["operators"].append(hidden_route)
+        record = controller_view_record(replace(original, source_frame=frame))
+        units = {
+            value["operator_id"]: value
+            for value in record["frame"]["viewer_units"]
+        }
+        assert units[1]["movement_target_hex"] == 102
+        assert units[1]["movement_progress"] == 0.25
+        assert units[999]["movement_target_hex"] is None
+        assert units[999]["movement_progress"] == 0.0
     finally:
         fixture.close()
 

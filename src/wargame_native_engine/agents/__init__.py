@@ -7,6 +7,7 @@ from wargame_native_engine.agents.protocol import (
     AgentStepContext,
 )
 from wargame_native_engine.agents.random_legal import RandomLegalAgent
+from wargame_native_engine.agents.random_seat import RandomProductSeatAgent
 from wargame_native_engine.agents.seat import (
     AgentDecisionContext,
     LocalSeatAgent,
@@ -114,6 +115,7 @@ __all__ = [
     "CommandStatus",
     "ManualRealtimeClock",
     "RandomLegalAgent",
+    "RandomProductSeatAgent",
     "RealtimeAgentSession",
     "RealtimeAgentSessionError",
     "RealtimeCancellationReason",

@@ -12,6 +12,7 @@ from wargame_native_engine.agents import (
     RealtimeAgentSession,
     RealtimeExecutionMode,
     RealtimeLocalAgentRunner,
+    RandomProductSeatAgent,
     WaitSeatAgent,
 )
 from wargame_native_engine.data import ScenarioBundle, ScenarioCatalog
@@ -64,8 +65,8 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--timeout-seconds", type=float, default=60.0)
     value.add_argument("--shutdown-timeout-seconds", type=float, default=120.0)
     value.add_argument("--max-catch-up-ticks-per-batch", type=int, default=4)
-    value.add_argument("--red-agent", choices=("wait",), default="wait")
-    value.add_argument("--blue-agent", choices=("wait",), default="wait")
+    value.add_argument("--red-agent", choices=("wait", "random"), default="wait")
+    value.add_argument("--blue-agent", choices=("wait", "random"), default="wait")
     value.add_argument("--overwrite", action="store_true")
     return value
 
@@ -90,8 +91,8 @@ def run_smoke(args: argparse.Namespace) -> dict[str, object]:
         )
         runner = RealtimeLocalAgentRunner(
             session,
-            red_agent=WaitSeatAgent("realtime-red-wait"),
-            blue_agent=WaitSeatAgent("realtime-blue-wait"),
+            red_agent=_agent(args.red_agent, side="red", seed=args.seed),
+            blue_agent=_agent(args.blue_agent, side="blue", seed=args.seed),
         )
         try:
             result = runner.run(
@@ -149,6 +150,17 @@ def run_smoke(args: argparse.Namespace) -> dict[str, object]:
             session.close()
     print(json.dumps(report, ensure_ascii=False, sort_keys=True))
     return report
+
+
+def _agent(kind: str, *, side: str, seed: int):
+    if kind == "wait":
+        return WaitSeatAgent(f"realtime-{side}-wait")
+    if kind == "random":
+        return RandomProductSeatAgent(
+            f"realtime-{side}-random",
+            seed=seed + (101 if side == "red" else 202),
+        )
+    raise ValueError(f"unsupported realtime seat agent {kind!r}")
 
 
 def main(argv: list[str] | None = None) -> int:

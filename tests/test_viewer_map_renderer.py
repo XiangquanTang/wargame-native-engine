@@ -266,7 +266,10 @@ def test_coordinate_fallback_uses_fact_extent_without_terrain() -> None:
 
 def test_viewer_unit_projection_preserves_side_category_and_fact_status() -> None:
     operator = _unit(1, 0, 101)
-    operator.update({"blood": 0, "lose_control": True, "can_to_move": False})
+    operator.update({
+        "blood": 0, "lose_control": True, "can_to_move": False,
+        "cur_pos": 0.25, "move_path": [102],
+    })
     passenger = _unit(2, 1, 101)
     passenger.update({"on_board": 1, "car": 1})
     frame = SourceFrameImporter().from_dict(
@@ -288,6 +291,8 @@ def test_viewer_unit_projection_preserves_side_category_and_fact_status() -> Non
     assert by_id[2]["carrier_id"] == 1
     assert by_id[1]["row"] == by_id[2]["row"] == 1
     assert by_id[1]["column"] == by_id[2]["column"] == 1
+    assert by_id[1]["movement_target_hex"] == 102
+    assert by_id[1]["movement_progress"] == 0.25
 
 
 def test_web_geometry_matches_mature_pyqt_reference_points() -> None:
@@ -334,6 +339,9 @@ def test_map_renderer_has_stack_selection_zoom_and_pan_contracts() -> None:
     assert "this._drawUnknownElevation(context, vertices)" in source
     assert "this._drawElevationLabel(context, cell)" in source
     assert "formatEdgeFacts" in source
+    assert "function unitDisplayPoint(unit, hexSize)" in source
+    assert "unit.movement_target_hex" in source
+    assert "unit.movement_progress" in source
 
 
 @pytest.mark.parametrize(("min_row", "max_row"), [
@@ -405,6 +413,9 @@ def test_map_renderer_executes_in_node_when_available() -> None:
         "if(r.formatEdgeFacts([0,0,0,0,0,0])!=='none')process.exit(7);"
         "const q=r.summarizeMapLayers({cells:[{terrain_semantic:'forest',elevation:10,roads:[1,0,0,0,0,0],rivers:[0,2,0,0,0,0]}]});"
         "if(q.elevation_cell_count!==1||q.road_edge_count!==1||q.river_types[0]!==2)process.exit(8);"
+        "const d=r.unitDisplayPoint({row:1,column:1,movement_target_hex:102,movement_progress:0.25},36);"
+        "const a=r.hexToPixel(1,1,36),z=r.hexToPixel(1,2,36);"
+        "if(Math.abs(d.x-(a.x+(z.x-a.x)*0.25))>1e-9)process.exit(9);"
     )
     subprocess.run(
         ["node", "-e", script, str(MAP_RENDERER)],

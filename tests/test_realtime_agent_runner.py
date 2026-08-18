@@ -259,3 +259,27 @@ def test_realtime_cli_smoke_reports_complete_package(tmp_path: Path) -> None:
     assert report["truncated"] is True
     assert output.joinpath("seat_commands.native.jsonl").is_file()
     assert output.joinpath("realtime_ticks.native.jsonl").is_file()
+
+
+def test_realtime_cli_random_agents_submit_product_decisions(tmp_path: Path) -> None:
+    output = tmp_path / "random-cli-episode"
+    args = parser().parse_args([
+        "--scenario-bundle", str(SCENARIO),
+        "--output-dir", str(output),
+        "--run-namespace", "random-cli-worker-000",
+        "--tick-interval-ms", "50",
+        "--max-ticks", "4",
+        "--red-agent", "random",
+        "--blue-agent", "random",
+    ])
+    report = run_smoke(args)
+    assert report["tick_count"] == 4
+    assert report["accepted_command_count"] > 0
+    assert report["applied_command_count"] > 0
+    assert report["agent_failure_count"] == 0
+    command_text = output.joinpath("seat_commands.native.jsonl").read_text(
+        encoding="utf-8"
+    )
+    assert '"operation_type":"MOVE"' in command_text or (
+        '"operation_type":"WEAPON_' in command_text
+    )

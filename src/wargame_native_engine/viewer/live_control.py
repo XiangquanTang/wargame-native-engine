@@ -129,10 +129,10 @@ def controller_view_record(view: ControllerView) -> dict[str, object]:
     if explicit != view.perspective:
         raise ValueError("controller Source frame perspective mismatch")
     viewer_units = [
-        _viewer_unit(item, "operator")
+        _viewer_unit(item, "operator", view.perspective)
         for item in _mapping_array(frame.get("operators"), "operators")
     ] + [
-        _viewer_unit(item, "passenger")
+        _viewer_unit(item, "passenger", view.perspective)
         for item in _mapping_array(frame.get("passengers"), "passengers")
     ]
     return {
@@ -158,7 +158,9 @@ def _mapping_array(value: object, field: str) -> tuple[Mapping[str, Any], ...]:
     return tuple(value)  # type: ignore[return-value]
 
 
-def _viewer_unit(value: Mapping[str, Any], category: str) -> dict[str, object]:
+def _viewer_unit(
+    value: Mapping[str, Any], category: str, perspective: str,
+) -> dict[str, object]:
     current_hex = value.get("cur_hex")
     if type(current_hex) is not int or current_hex < 0:
         raise ValueError("controller unit cur_hex must be a non-negative int")
@@ -176,6 +178,25 @@ def _viewer_unit(value: Mapping[str, Any], category: str) -> dict[str, object]:
     side = "red" if value.get("color") == 0 else (
         "blue" if value.get("color") == 1 else "unknown"
     )
+    movement_target_hex = None
+    movement_progress = 0.0
+    # A friendly unit's submitted route is already known to its own seat.
+    # Do not expose the next cell of an opponent route merely to animate it.
+    if side == perspective.lower():
+        move_path = value.get("move_path")
+        if (
+            isinstance(move_path, Sequence)
+            and not isinstance(move_path, (str, bytes))
+            and move_path
+            and type(move_path[0]) is int
+            and move_path[0] >= 0
+        ):
+            movement_target_hex = move_path[0]
+            raw_progress = value.get("cur_pos", 0.0)
+            if isinstance(raw_progress, (int, float)) and not isinstance(
+                raw_progress, bool
+            ):
+                movement_progress = max(0.0, min(1.0, float(raw_progress)))
     operator_id = value.get("obj_id")
     return {
         "operator_id": operator_id,
@@ -188,6 +209,8 @@ def _viewer_unit(value: Mapping[str, Any], category: str) -> dict[str, object]:
         "current_hex": current_hex,
         "row": current_hex // 100,
         "column": current_hex % 100,
+        "movement_target_hex": movement_target_hex,
+        "movement_progress": movement_progress,
         "blood": blood,
         "max_blood": max_blood,
         "health_ratio": health_ratio,
