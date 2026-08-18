@@ -4,12 +4,16 @@ This project is a clean, independent implementation. It does not copy or call
 the official SDK, bypass authentication, or claim equivalent adjudication.
 Every rule implemented here is labelled **Native simplified rules**.
 
-Source snapshot used for planning:
+Read-only source snapshot used for the original planning audit:
 
-- repository: `/home/txq/wargame/wargame_benchmark_lab`
+- repository: `<read-only-source-repository>` (not a runtime dependency)
 - branch: `feature/full-game-agent-interface`
 - commit: `6288919fb8ff9f68e59f93117daab453e4ed5aba`
 - worktree at inspection: clean
+
+Optional acceptance tests now locate equivalent read-only inputs only when the
+caller explicitly sets `WARGAME_SOURCE_SNAPSHOT_ROOT` or
+`WARGAME_SOURCE_REPLAY_ROOT`. Public examples do not use that data.
 
 ## Directly migrate
 

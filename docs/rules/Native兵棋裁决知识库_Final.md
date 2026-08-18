@@ -1,6 +1,6 @@
 # Native 兵棋裁决知识库（Final）
 
-> 适用项目：`/home/txq/wargame/wargame_native_engine`  
+> 适用项目：当前 `wargame_native_engine` 源码仓库
 > 机器主表：`native_adjudication_tables_final.json`  
 > 完整原文：`推演规则_完整纯文本_Final.md`  
 > 本文件是 Codex 的首读说明；实现时不再读取原 PDF。

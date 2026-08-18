@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 import hashlib
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -18,10 +19,10 @@ from wargame_native_engine.data import (
 )
 
 
-EXTERNAL_ROOT = Path(
-    "/home/txq/wargame/wargame_benchmark_lab/local_data/"
-    "sdk_data_snapshot/phase9a_multireplay_pilot"
-)
+EXTERNAL_ROOT = Path(os.environ.get(
+    "WARGAME_SOURCE_SNAPSHOT_ROOT",
+    "local_data/source_snapshot",
+))
 REAL_SUPPLEMENT = Path(
     "config/source_scenario_conversion/scenarios/"
     "2201010105.native-supplement.json"

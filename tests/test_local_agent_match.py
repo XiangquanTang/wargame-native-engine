@@ -4,6 +4,7 @@ from copy import deepcopy
 from dataclasses import FrozenInstanceError
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Callable
 from zipfile import ZipFile
@@ -53,10 +54,10 @@ from wargame_native_engine.session.source_environment import (
 
 
 SCENARIO = Path("examples/source_movement_scenario.json")
-SNAPSHOT_ROOT = Path(
-    "/home/txq/wargame/wargame_benchmark_lab/local_data/"
-    "sdk_data_snapshot/phase9a_multireplay_pilot"
-)
+SNAPSHOT_ROOT = Path(os.environ.get(
+    "WARGAME_SOURCE_SNAPSHOT_ROOT",
+    "local_data/source_snapshot",
+))
 SOURCE_SCENARIO_123 = SNAPSHOT_ROOT / "scenarios/2201010105.json"
 SOURCE_MAP_123 = SNAPSHOT_ROOT / "maps/123/basic.json"
 SUPPLEMENT_123 = Path(

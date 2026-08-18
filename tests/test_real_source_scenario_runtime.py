@@ -4,6 +4,7 @@ from contextlib import contextmanager
 import hashlib
 from http.client import HTTPConnection
 import json
+import os
 from pathlib import Path
 import threading
 from typing import Iterator
@@ -28,10 +29,10 @@ from wargame_native_engine.viewer.dual_control_server import (
 )
 
 
-SNAPSHOT_ROOT = Path(
-    "/home/txq/wargame/wargame_benchmark_lab/local_data/"
-    "sdk_data_snapshot/phase9a_multireplay_pilot"
-)
+SNAPSHOT_ROOT = Path(os.environ.get(
+    "WARGAME_SOURCE_SNAPSHOT_ROOT",
+    "local_data/source_snapshot",
+))
 SOURCE_SCENARIO = SNAPSHOT_ROOT / "scenarios/2201010105.json"
 SOURCE_MAP = SNAPSHOT_ROOT / "maps/123/basic.json"
 SUPPLEMENT = Path(

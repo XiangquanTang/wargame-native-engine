@@ -24,15 +24,20 @@ is retained for the episode. Systems receive the relevant movement,
 visibility, combat or terminal rule object rather than embedding tolerances,
 ranges, damage or max-tick constants.
 
-## Synchronous resolution
+## Joint resolution and transactional ticks
 
-Every side's action is validated against the same pre-tick valid-action set.
-Accepted intents are canonically sorted. Deployment, state and straight-line
-movement effects are applied, then every attack committed as legal for that
-tick contributes to an aggregate damage table. Damage is applied by sorted
-target ID, so an operator destroyed during that damage pass still executes its
-already committed attack. Terminal evaluation follows damage and objective
-scoring.
+Every action in a sealed RED/BLUE batch is validated against the same
+authoritative pre-tick state. Accepted intents are staged and canonically
+resolved. Direct-fire effects contribute to an aggregate target table before
+losses are applied, so canonical ordering cannot create hidden initiative.
+The configured simultaneous-damage and destroyed-actor policies determine
+whether an already-qualified action executes.
+
+The Engine evolves an isolated working state through action effects, ongoing
+movement, visibility and termination. Only a successful complete tick commits
+the working World, NativeRNG state, logical time and sequences. A failure at
+any core stage restores the exact tick-start snapshot and produces no GREEN
+fact frame.
 
 Events use a stable `(tick, event priority, side, actor, target, event hash)`
 order. Mapping insertion order is not part of adjudication. This is the
@@ -58,10 +63,12 @@ validated request -> final JSON direct-fire tables -> discrete mutation
                                              -> strict direct-fire replay
 ```
 
-This does not replace the synchronous `native_simplified` mode. The scheduler
-is first-arrival-first-adjudication. Personnel uses base 2D6 plus an independent
-correction D6; vehicles use two independent 2D6 rolls. `blood` is authoritative
-for discrete loss and compatibility `health` is derived.
+This does not replace the synchronous `native_simplified` mode. Realtime
+arrival order determines command admission metadata and target Tick, not
+combat initiative. Commands sealed into the same Tick use joint same-pre-state
+adjudication. Personnel uses base 2D6 plus an independent correction D6;
+vehicles use two independent 2D6 rolls. `blood` is authoritative for discrete
+loss and compatibility `health` is derived.
 
 ## Unified source-compatible movement
 
@@ -92,3 +99,7 @@ RED and BLUE never derive visibility or inspect GREEN records. The projector
 rebuilds visible enemy records from safe SideObservation fields and cleans
 nested ID relations. Only the referee owns GREEN. The Recorder consumes a
 detached GREEN serialization and has no engine/backend reference.
+
+The public source-release composition, supported entry points and non-
+authoritative adapter boundaries are summarized in
+`docs/architecture/source_release.md`.

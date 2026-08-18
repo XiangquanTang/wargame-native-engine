@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -26,14 +27,14 @@ ROOT = Path(__file__).resolve().parents[1]
 MAP_RENDERER = (
     ROOT / "src/wargame_native_engine/viewer/static/map_renderer.js"
 )
-EXTERNAL_SNAPSHOT = Path(
-    "/home/txq/wargame/wargame_benchmark_lab/local_data/"
-    "sdk_data_snapshot/phase9a_multireplay_pilot"
-)
-EXTERNAL_REPLAYS = Path(
-    "/home/txq/wargame/wargame_benchmark_lab/local_data/"
-    "replay_sources/phase9a_multireplay_pilot"
-)
+EXTERNAL_SNAPSHOT = Path(os.environ.get(
+    "WARGAME_SOURCE_SNAPSHOT_ROOT",
+    "local_data/source_snapshot",
+))
+EXTERNAL_REPLAYS = Path(os.environ.get(
+    "WARGAME_SOURCE_REPLAY_ROOT",
+    "local_data/source_replays",
+))
 
 
 def test_explicit_map_config_loads_old_renderer_odd_r_subset(

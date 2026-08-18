@@ -5,6 +5,18 @@ experiment engine. All adjudication is explicitly **Native simplified rules**;
 it does not import or claim compatibility with an official SDK, authentication
 configuration, binary package, or hidden rules.
 
+It is a server-authoritative, fixed-tick simulation engine with:
+
+* same-pre-state RED/BLUE joint adjudication;
+* transactional atomic Tick commit and deterministic `NativeRNG`;
+* long-running movement and state transitions advanced by the Engine;
+* synchronous training and continuous realtime controller modes;
+* detached RED/BLUE observations plus complete referee-only GREEN evidence;
+* Human Web, deterministic Random Agent and project-native training adapters;
+* state recording and deterministic strict rule replay;
+* command/tick/control audit trails and per-frame analysis;
+* read-only Web replay viewing and local dual-side control.
+
 ## GitHub source release quick start
 
 This release is intended to run from a cloned source tree; it is not yet a
@@ -24,6 +36,18 @@ advances one joint authoritative tick, writes a GREEN replay, and verifies it
 by strict rule re-execution. It needs no private map, old SDK, credentials, or
 external service.
 
+Run a deterministic same-tick mutual-fire example through the public product
+operation path:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python examples/run_joint_fire.py \
+  --output /tmp/wargame-public-joint-fire --seed 1
+```
+
+Both actors are qualified against the same pre-state and are destroyed in one
+joint Tick. The generated Replay is strictly re-executed before success is
+reported.
+
 Recommended application entry points are `WargameFacade` for product control,
 `NativeMultiSeatEnv` for synchronous deterministic Agent training, and
 `RealtimeAgentSession` for fixed-tick asynchronous command collection.
@@ -35,10 +59,10 @@ For continuous human control, start the loopback realtime Web adapter:
 ```bash
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src \
 python -m scripts.run_realtime_dual_control \
-  --scenario-bundle examples/source_movement_scenario.json \
-  --output-dir /tmp/wargame-realtime-web \
-  --run-namespace local-realtime-web-000 \
-  --tick-interval-ms 1000
+  --scenario-bundle=examples/source_movement_scenario.json \
+  --output-dir=/tmp/wargame-realtime-web \
+  --run-namespace=local-realtime-web-000 \
+  --tick-interval-ms=1000 --host=127.0.0.1 --port=8003 --overwrite
 ```
 
 Open the printed RED and BLUE URLs in separate tabs. “下达命令” admits a
@@ -64,10 +88,15 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python -m scripts.run_realtime_agent_ma
   --scenario-bundle=examples/source_movement_scenario.json \
   --output-dir=/tmp/wargame-random-agents \
   --run-namespace=random-agents-000 --seed=42 \
-  --tick-interval-ms=1000 --max-ticks=30 \
-  --red-agent=random --blue-agent=random
+  --tick-interval-ms=100 --max-ticks=5 \
+  --red-agent=random --blue-agent=random --overwrite
+PYTHONDONTWRITEBYTECODE=1 python examples/verify_replay.py \
+  --scenario-bundle=examples/source_movement_scenario.json \
+  --replay=/tmp/wargame-random-agents/replay.zip
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python -m scripts.run_replay_viewer \
-  --replay-dir=/tmp/wargame-random-agents --port=8000
+  --replay-dir=/tmp/wargame-random-agents \
+  --map-config=examples/public_source_movement_map.json \
+  --port=8000
 ```
 
 `random` selects from detached, side-only capabilities but returns a product
@@ -75,6 +104,14 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python -m scripts.run_replay_viewer \
 revalidated at its apply tick. Ongoing MOVE is not resubmitted each tick. The
 map renderer interpolates a friendly unit along its current segment using the
 recorded progress; an opponent route is never disclosed to enable animation.
+Open `http://127.0.0.1:8000/` after the final command. Generated Replay,
+analysis, command, Tick, control-audit and summary files remain under `/tmp`;
+they are not repository assets.
+
+Public example data and provenance are documented in
+`examples/README.md` and `docs/release/PROVENANCE.md`. Map 123 is a bounded
+development validation case and is deliberately not required by this source
+release.
 
 ## Engine semantic contract
 
@@ -295,3 +332,15 @@ The smoke moves, changes visibility, resolves direct fire, packages
 replays its steps, and compares final hashes. See
 `docs/SOURCE_PERSPECTIVES.md`, `docs/SOURCE_REPLAY_RECORDER.md`, and
 `docs/MINIMAL_END_TO_END_ACCEPTANCE.md`.
+
+## Documentation and license
+
+Start with `docs/architecture/source_release.md` for public/internal boundaries,
+`docs/architecture/public_api.md` for product control, `examples/README.md` for
+public fixture provenance, and `CONTRIBUTING.md` for release regression gates.
+Replay details are in `docs/REPLAY_FORMAT.md` and
+`docs/SOURCE_REPLAY_RECORDER.md`.
+
+Project source is released under the MIT License in `LICENSE`. Before making a
+public repository, the owner should complete the rule-guide/table redistribution
+confirmation recorded in `docs/release/PROVENANCE.md`.

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -15,10 +16,10 @@ from wargame_native_engine.movement.map_adapter import SourceHexMap
 from wargame_native_engine.movement.policy import load_source_movement_policy
 
 
-EXTERNAL_SNAPSHOT = Path(
-    "/home/txq/wargame/wargame_benchmark_lab/local_data/"
-    "sdk_data_snapshot/phase9a_multireplay_pilot"
-)
+EXTERNAL_SNAPSHOT = Path(os.environ.get(
+    "WARGAME_SOURCE_SNAPSHOT_ROOT",
+    "local_data/source_snapshot",
+))
 
 
 def _cell(
