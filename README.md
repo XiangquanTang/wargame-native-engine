@@ -1,4 +1,5 @@
 # wargame_native_engine
+![Public River Valley dual-perspective demo](docs/assets/public-river-valley-demo.png)
 
 `wargame_native_engine` 0.4.0 is an independent, transparent and deterministic
 experiment engine. All adjudication is explicitly **Native simplified rules**;
