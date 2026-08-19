@@ -26,6 +26,38 @@ PyPI-stable SDK distribution.
 git clone <repository-url>
 cd wargame_native_engine
 python -m pip install -e .
+```
+
+Start the recommended first-page interactive demo. It uses a committed,
+project-authored 24x18 river-valley map with 432 configured hexes, 12 units,
+elevation, forests, settlements, soft ground, roads, rivers and three bridge
+objectives:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src \
+python -m scripts.run_realtime_dual_control \
+  --scenario-bundle=examples/public_river_valley_scenario.json \
+  --output-dir=/tmp/wargame-river-valley-web \
+  --run-namespace=river-valley-web-000 \
+  --tick-interval-ms=1000 --host=127.0.0.1 --port=8003 --overwrite
+```
+
+Open the printed RED URL as the operator page and the BLUE URL in a second
+tab. Commands are queued without waiting for the other seat while the fixed
+authoritative Tick continues movement. `Ctrl+C` publishes the full Replay and
+audit package. View that package with the same terrain map:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src \
+python -m scripts.run_replay_viewer \
+  --replay-dir=/tmp/wargame-river-valley-web \
+  --map-config=examples/public_river_valley_map.json \
+  --port=8000
+```
+
+For the smallest one-Tick engine smoke instead, run:
+
+```bash
 PYTHONDONTWRITEBYTECODE=1 python examples/run_source_release.py \
   --output /tmp/wargame-native-source-example --seed 42
 ```

@@ -28,6 +28,7 @@ jobs:
           PYTHONDONTWRITEBYTECODE=1 pytest -p no:cacheprovider
           tests/test_joint_tick_semantics.py
           tests/test_source_release_example.py
+          tests/test_public_battlefield_demo.py
           tests/test_source_perspectives.py
           tests/test_replay.py
           tests/test_random_product_seat_agent.py -q
