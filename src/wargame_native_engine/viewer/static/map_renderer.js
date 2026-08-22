@@ -291,6 +291,7 @@
         side: null,
         visibilityHexIds: new Set(),
         weaponEnvelopeHexIds: new Set(),
+        confirmedContactHexIds: new Set(),
       };
       this._bindEvents();
     }
@@ -343,6 +344,7 @@
       side = null,
       visibility_hex_ids: visibilityHexIds = [],
       weapon_envelope_hex_ids: weaponEnvelopeHexIds = [],
+      confirmed_contact_hex_ids: confirmedContactHexIds = [],
     } = {}) {
       const normalized = (values) => new Set(
         (Array.isArray(values) ? values : [])
@@ -353,6 +355,7 @@
         side: side === "red" || side === "blue" ? side : null,
         visibilityHexIds: normalized(visibilityHexIds),
         weaponEnvelopeHexIds: normalized(weaponEnvelopeHexIds),
+        confirmedContactHexIds: normalized(confirmedContactHexIds),
       };
     }
 
@@ -757,8 +760,25 @@
       };
       // Draw the broader, lighter weapon layer first so visibility remains
       // legible where the two read-only fields overlap.
-      draw(this.tacticalOverlay.weaponEnvelopeHexIds, colors.weapon);
       draw(this.tacticalOverlay.visibilityHexIds, colors.visibility);
+      draw(this.tacticalOverlay.weaponEnvelopeHexIds, colors.weapon);
+      context.save();
+      context.strokeStyle = "#ffd84d";
+      context.lineWidth = 3;
+      for (const hexId of this.tacticalOverlay.confirmedContactHexIds) {
+        const row = Math.floor(hexId / 100);
+        const column = hexId % 100;
+        if (this.cellByKey.size && !this.cellByKey.has(`${row}:${column}`)) continue;
+        const vertices = hexVertices(row, column, this.map.hex_size)
+          .map((point) => this._screen(point));
+        context.beginPath();
+        vertices.forEach((point, index) => index
+          ? context.lineTo(point.x, point.y)
+          : context.moveTo(point.x, point.y));
+        context.closePath();
+        context.stroke();
+      }
+      context.restore();
     }
 
     _drawSelectedHex(context) {

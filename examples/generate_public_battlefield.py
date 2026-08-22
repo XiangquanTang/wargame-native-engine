@@ -204,11 +204,15 @@ def _elevation(row: int, column: int) -> int:
 
 def _operators() -> list[dict[str, Any]]:
     positions = {
-        "red": ((101, 4, 4), (102, 6, 5), (103, 4, 8),
+        "red": ((101, 4, 4), (102, 6, 5), (103, 11, 7),
                 (104, 6, 10), (105, 4, 13), (106, 6, 15)),
-        "blue": ((201, 21, 4), (202, 19, 6), (203, 21, 8),
+        "blue": ((201, 21, 4), (202, 19, 6), (203, 17, 7),
                  (204, 19, 11), (205, 21, 14), (206, 19, 16)),
     }
+    # Keep one symmetric vehicle contact in the open central corridor.  Hexes
+    # 711 and 717 have deterministic clear LOS and are six hexes apart, so the
+    # public Web demo exposes a real SHOOT action immediately without changing
+    # observation, weapon-range, or direct-fire rules.
     operators = []
     for side, records in positions.items():
         for index, (operator_id, column, row) in enumerate(records):

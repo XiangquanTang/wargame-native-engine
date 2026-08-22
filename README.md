@@ -1,6 +1,23 @@
 # wargame_native_engine
 ![Public River Valley dual-perspective demo](docs/assets/public-river-valley-demo.png)
 
+```text
+Human Web / Rule Agent
+          |
+          v
+  Realtime Control
+          |
+          v
+ Joint Adjudication
+          |
+    +-----+-----+
+    v     v     v
+   RED   BLUE  GREEN
+                |
+                v
+              Replay
+```
+
 `wargame_native_engine` 0.4.0 is an independent, transparent and deterministic
 experiment engine. All adjudication is explicitly **Native simplified rules**;
 it does not import or claim compatibility with an official SDK, authentication
@@ -46,7 +63,12 @@ python -m scripts.run_realtime_dual_control \
 Open the printed RED URL as the operator page and the BLUE URL in a second
 tab. Commands are queued without waiting for the other seat while the fixed
 authoritative Tick continues movement. `Ctrl+C` publishes the full Replay and
-audit package. View that package with the same terrain map:
+audit package. Selecting one friendly unit also enables the Tactical Awareness
+controls: Sensor Coverage is a theoretical unobscured-target observation field,
+Weapon Envelope is the theoretical direct-fire area, and yellow outlines are
+that selected unit's confirmed contacts. These detached overlays never issue
+commands or expose GREEN state. View the published package with the same
+terrain map:
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src \
@@ -80,6 +102,62 @@ PYTHONDONTWRITEBYTECODE=1 python examples/run_joint_fire.py \
 Both actors are qualified against the same pre-state and are destroyed in one
 joint Tick. The generated Replay is strictly re-executed before success is
 reported.
+
+## Demo showcase
+
+### 1. Realtime Human Control
+
+The close-combat public fixture keeps the 24x18 terrain presentation while
+placing six RED and six BLUE units at six-to-eight-hex contact distances. It
+is designed to make MOVE, weapon state, and direct fire easy to demonstrate:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src \
+python -m scripts.run_realtime_dual_control \
+  --scenario-bundle=examples/public_close_combat_scenario.json \
+  --output-dir=/tmp/wargame-close-combat-web \
+  --run-namespace=close-combat-web-000 \
+  --tick-interval-ms=1000 --host=127.0.0.1 --port=8003 --overwrite
+```
+
+Open the printed RED and BLUE URLs. `WEAPON_LOCK` is the Native simplified
+rule's stow/secure transition; it does not mean target lock. Use
+`WEAPON_UNFOLD` before SHOOT when a weapon profile requires deployment.
+
+### 2. Tactical Rule Agent Simulation
+
+This deterministic, non-random controller consumes only detached side
+observations and server-issued product capabilities. It prefers legal SHOOT,
+unfolds after contact when needed, and otherwise advances using a server-issued
+MOVE endpoint. Both seats run independently over `RealtimeAgentSession`:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src \
+python -m scripts.run_tactical_agent_demo \
+  --scenario-bundle=examples/public_close_combat_scenario.json \
+  --output-dir=/tmp/wargame-tactical-agent-demo \
+  --run-namespace=tactical-agent-demo-000 \
+  --seed=42 --tick-interval-ms=100 --max-ticks=8 --overwrite
+```
+
+The JSON result reports ticks, accepted/applied commands, observed contacts,
+SHOOT operations, and strict Replay verification. This is a transparent rule
+showcase, not an RL or tactical-performance claim.
+
+### 3. Replay Viewer
+
+Open either generated package with the matching committed presentation map:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src \
+python -m scripts.run_replay_viewer \
+  --replay-dir=/tmp/wargame-tactical-agent-demo \
+  --map-config=examples/public_close_combat_map.json \
+  --port=8000
+```
+
+Then visit `http://127.0.0.1:8000/`. Replay is authoritative GREEN evidence;
+frame analysis and the Viewer remain non-authoritative derivatives.
 
 Recommended application entry points are `WargameFacade` for product control,
 `NativeMultiSeatEnv` for synchronous deterministic Agent training, and

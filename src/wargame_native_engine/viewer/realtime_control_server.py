@@ -324,17 +324,32 @@ class RealtimeDualControlRequestHandler(BaseHTTPRequestHandler):
                         "tactical overlay requires exactly token, "
                         "observation_version and unit_id"
                     )
-                _side, binding = self._seat(body["token"])
+                side, binding = self._seat(body["token"])
                 version = _exact_nonnegative_int(
                     body["observation_version"], "observation_version"
                 )
+                unit_id = _exact_nonnegative_int(body["unit_id"], "unit_id")
                 overlay = self.server.realtime_session.tactical_overlay(
                     binding,
                     observation_version=version,
-                    unit_id=_exact_nonnegative_int(body["unit_id"], "unit_id"),
+                    unit_id=unit_id,
                 )
+                seat_view, controller_view = (
+                    self.server.realtime_session.controller_snapshot(binding)
+                )
+                if seat_view.observation_version != version:
+                    raise RealtimeAgentSessionError(
+                        "tactical_overlay_observation_stale",
+                        "tactical overlay requires the latest observation version",
+                    )
                 record = overlay.to_record()
                 record["observation_version"] = version
+                record["frame_index"] = seat_view.frame_index
+                record["confirmed_contacts"] = _confirmed_contacts(
+                    side,
+                    unit_id,
+                    controller_view,
+                )
                 self._send_json(HTTPStatus.OK, record)
                 return
             if path == "/api/product/preview":
@@ -539,6 +554,67 @@ class RealtimeDualControlRequestHandler(BaseHTTPRequestHandler):
             # command has been admitted, so this is a normal client disconnect
             # rather than an Engine or action failure.
             return
+
+
+def _confirmed_contacts(
+    side: str,
+    unit_id: int,
+    view: ControllerView,
+) -> dict[str, object]:
+    """Project only contacts already present in one frozen side observation."""
+
+    if view.perspective.lower() != side:
+        raise ValueError("confirmed-contact perspective mismatch")
+    friendlies = view.observation.get("friendly_operators")
+    enemies = view.observation.get("visible_enemies")
+    if not isinstance(friendlies, list) or not isinstance(enemies, list):
+        raise ValueError("side observation lacks operator arrays")
+    selected = tuple(
+        value for value in friendlies
+        if isinstance(value, Mapping) and value.get("operator_id") == unit_id
+    )
+    if len(selected) != 1:
+        raise ValueError("selected unit is absent from the side observation")
+    raw = selected[0].get("raw_attributes")
+    raw = raw if isinstance(raw, Mapping) else {}
+    seen = raw.get("see_enemy_bop_ids", [])
+    if not isinstance(seen, list):
+        raise ValueError("selected unit contact IDs must be an array")
+    visible = {
+        _exact_nonnegative_int(value.get("operator_id"), "visible enemy ID"): value
+        for value in enemies
+        if isinstance(value, Mapping)
+    }
+    confirmed_ids = tuple(sorted({
+        _exact_nonnegative_int(value, "confirmed contact ID")
+        for value in seen
+        if _exact_nonnegative_int(value, "confirmed contact ID") in visible
+    }))
+    projected_units = {
+        _exact_nonnegative_int(value.get("obj_id"), "source contact ID"): value
+        for field in ("operators", "passengers")
+        for value in view.source_frame.get(field, [])
+        if isinstance(value, Mapping)
+    }
+    targets = []
+    for target_id in confirmed_ids:
+        source = projected_units.get(target_id)
+        if source is None:
+            raise ValueError("confirmed contact is absent from side source projection")
+        targets.append({
+            "target_id": target_id,
+            "hex_id": _exact_nonnegative_int(
+                source.get("cur_hex"), "confirmed contact hex"
+            ),
+            "target_domain": str(
+                visible[target_id].get("operator_type", "UNKNOWN")
+            ).upper(),
+        })
+    return {
+        "semantics": "selected_unit_current_observed_enemies",
+        "hex_ids": sorted({value["hex_id"] for value in targets}),
+        "targets": targets,
+    }
 
 
 def create_realtime_dual_control_server(

@@ -304,10 +304,11 @@ class ProductOperationService:
                             if type(target) is int:
                                 shoot_targets.add(target)
                 else:
+                    code, message = _capability_unavailable(kind, menu)
                     value["unavailable"].append({
                         "unit_id": unit_id,
-                        "code": "operation_unavailable",
-                        "message": _unavailable_message(kind),
+                        "code": code,
+                        "message": message,
                     })
         return {
             "selected_count": len(actors),
@@ -1018,6 +1019,48 @@ def _unavailable_message(operation: str) -> str:
         "WEAPON_LOCK": "当前不能锁定武器",
         "WAIT": "当前不能等待",
     }.get(operation, "当前不能执行该操作")
+
+
+def _capability_unavailable(
+    operation: str,
+    menu: Any,
+) -> tuple[str, str]:
+    """Explain only conditions already evidenced by the frozen side menu."""
+
+    available = set(menu.available)
+    state = str(menu.unit.get("state", "")).upper()
+    moving = "STOP_MOVE" in available or state == "MOVING"
+    transitioning = state == "TRANSITIONING"
+    if operation == "SHOOT":
+        raw = menu.unit.get("raw_attributes")
+        visible = (
+            raw.get("see_enemy_bop_ids", ())
+            if isinstance(raw, Mapping)
+            else ()
+        )
+        if not visible:
+            return "no_visible_enemy", "当前未发现可见敌军"
+        if moving:
+            return "actor_moving", "单位正在移动；当前武器不能移动射击"
+        if transitioning:
+            return "actor_transitioning", "单位正在进行状态转换"
+        if "WEAPON_UNFOLD" in available:
+            return "weapon_not_unfolded", "武器尚未展开"
+        return (
+            "no_legal_shoot",
+            "可见目标不满足射程、弹药、冷却、武器或目标类型条件",
+        )
+    if operation in {"WEAPON_LOCK", "WEAPON_UNFOLD"}:
+        label = "锁定" if operation == "WEAPON_LOCK" else "展开"
+        if moving:
+            return "actor_must_be_stopped", f"单位移动中；停止后才能{label}武器"
+        if transitioning:
+            return "transition_in_progress", "武器状态转换正在进行"
+        if operation == "WEAPON_LOCK" and "WEAPON_UNFOLD" in available:
+            return "weapon_already_locked", "武器已经锁定"
+        if operation == "WEAPON_UNFOLD" and "WEAPON_LOCK" in available:
+            return "weapon_already_unfolded", "武器已经展开"
+    return "operation_unavailable", _unavailable_message(operation)
 
 
 def _reason_message(code: str) -> str:

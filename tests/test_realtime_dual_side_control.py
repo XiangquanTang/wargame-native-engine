@@ -30,6 +30,7 @@ from wargame_native_engine.viewer.realtime_control_server import (
 
 
 SCENARIO = Path("examples/source_movement_scenario.json")
+PUBLIC_SCENARIO = Path("examples/public_river_valley_scenario.json")
 
 
 class MatchFactory:
@@ -219,6 +220,90 @@ def test_realtime_web_execute_queues_without_waiting_for_blue_and_remains_operab
             assert ready["product_state"] == "WAITING_SELECTION"
             assert ready["can_operate"] is True
             assert ready["frame_index"] == 1
+    finally:
+        fixture.close()
+
+
+def test_public_river_valley_pages_expose_a_real_shoot_command(
+    tmp_path: Path,
+) -> None:
+    fixture = Fixture(
+        tmp_path,
+        bundle=ScenarioBundle.from_path(PUBLIC_SCENARIO),
+    )
+    try:
+        with running_server(fixture.server) as address:
+            assert request(
+                address, "GET", "/red?token=red-token-123",
+            )[0] == 200
+            assert request(
+                address, "GET", "/blue?token=blue-token-456",
+            )[0] == 200
+            red = decoded(request(
+                address,
+                "GET",
+                "/api/product/bootstrap?token=red-token-123",
+            )[1])
+            blue = decoded(request(
+                address,
+                "GET",
+                "/api/product/bootstrap?token=blue-token-456",
+            )[1])
+            assert red["side"] == "red"
+            assert blue["side"] == "blue"
+
+            status, payload, _ = request(
+                address,
+                "POST",
+                "/api/product/capabilities",
+                {"token": "red-token-123", "actor_ids": [103]},
+            )
+            assert status == 200
+            capabilities = decoded(payload)
+            assert capabilities["operations"]["SHOOT"]["applicable_count"] == 1
+            assert capabilities["shoot_target_ids"] == [202, 203]
+            assert capabilities["operations"]["WEAPON_UNFOLD"]["unavailable"] == [{
+                "code": "weapon_already_unfolded",
+                "message": "武器已经展开",
+                "unit_id": 103,
+            }]
+
+            status, payload, _ = request(
+                address,
+                "POST",
+                "/api/product/preview",
+                {
+                    "token": "red-token-123",
+                    "request_id": "public-web-shoot",
+                    "observation_version": red["observation_version"],
+                    "actor_ids": [103],
+                    "operation_type": "SHOOT",
+                    "target_id": 203,
+                },
+            )
+            assert status == 200
+            preview = decoded(payload)
+            assert preview["can_execute"] is True
+            assert preview["per_unit_results"][0]["weapon_options"] == [{
+                "summary": "武器36",
+                "target_id": 203,
+                "weapon_id": 36,
+            }]
+            status, payload, _ = request(
+                address,
+                "POST",
+                "/api/product/execute",
+                {
+                    "token": "red-token-123",
+                    "preview_token": preview["preview_token"],
+                    "request_id": "public-web-shoot-execute",
+                },
+            )
+            assert status == 202
+            assert decoded(payload)["accepted"] is True
+            tick = fixture.session.advance_tick()
+            assert tick.red_command_sequences == (0,)
+            assert fixture.session.command_events[0].status is CommandStatus.APPLIED
     finally:
         fixture.close()
 

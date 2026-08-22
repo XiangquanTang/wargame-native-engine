@@ -323,6 +323,23 @@ def test_realtime_overlay_api_is_current_seat_bound_and_recorder_neutral(
                 {"target_id": 202, "hex_id": 619},
                 {"target_id": 203, "hex_id": 717},
             ]
+            assert overlay["confirmed_contacts"] == {
+                "semantics": "selected_unit_current_observed_enemies",
+                "hex_ids": [619, 717],
+                "targets": [
+                    {
+                        "target_id": 202,
+                        "hex_id": 619,
+                        "target_domain": "PERSONNEL",
+                    },
+                    {
+                        "target_id": 203,
+                        "hex_id": 717,
+                        "target_domain": "VEHICLE",
+                    },
+                ],
+            }
+            assert overlay["frame_index"] == red["product_status"]["frame_index"]
             assert engine.snapshot() == before
             assert engine._last_events == events_before  # noqa: SLF001
             assert {
@@ -335,11 +352,22 @@ def test_realtime_overlay_api_is_current_seat_bound_and_recorder_neutral(
                 "observation_version": red["observation_version"],
                 "unit_id": 203,
             })[0] == 403
-            assert _request(address, "POST", "/api/product/tactical-overlay", {
+            blue_overlay = _request(
+                address, "POST", "/api/product/tactical-overlay", {
                 "token": "overlay-blue-token",
                 "observation_version": blue["observation_version"],
                 "unit_id": 203,
-            })[0] == 200
+                },
+            )
+            assert blue_overlay[0] == 200
+            assert {
+                value["target_id"]
+                for value in blue_overlay[1]["confirmed_contacts"]["targets"]
+            } <= {
+                value["operator_id"]
+                for value in blue["scene"]["frame"]["viewer_units"]
+                if value["side"] == "red"
+            }
             cross_status, cross = _request(
                 address, "POST", "/api/product/tactical-overlay", {
                     "token": "overlay-red-token",
@@ -447,7 +475,25 @@ def test_realtime_overlay_uses_frozen_view_during_authoritative_tick(
             expected_record["observation_version"] = (
                 reset.red.observation_version
             )
+            expected_record["frame_index"] = reset.red.frame_index
+            contacts = overlay.pop("confirmed_contacts")
             assert overlay == expected_record
+            assert contacts == {
+                "semantics": "selected_unit_current_observed_enemies",
+                "hex_ids": [619, 717],
+                "targets": [
+                    {
+                        "target_id": 202,
+                        "hex_id": 619,
+                        "target_domain": "PERSONNEL",
+                    },
+                    {
+                        "target_id": 203,
+                        "hex_id": 717,
+                        "target_domain": "VEHICLE",
+                    },
+                ],
+            }
             assert session._processing is True  # noqa: SLF001
     finally:
         release.set()
@@ -468,10 +514,14 @@ def test_tactical_overlay_frontend_is_read_only_and_below_action_targets() -> No
     assert "unit_id: unitId" in source
     assert "tacticalOverlayCache" in source
     assert "overlayRequestEpoch" in source
+    assert "confirmed_contact_hex_ids" in source
+    assert "confirmed_contacts?.hex_ids" in source
     assert 'id="toggle-visibility-overlay"' in page
     assert 'id="toggle-weapon-envelope"' in page
     assert "setTacticalOverlay" in renderer
     assert "_drawTacticalOverlays" in renderer
+    assert "confirmedContactHexIds" in renderer
+    assert 'context.strokeStyle = "#ffd84d"' in renderer
     assert renderer.index("this._drawMap(context)") < renderer.index(
         "this._drawTacticalOverlays(context)"
     ) < renderer.index("this._drawScenarioFeatures(context")

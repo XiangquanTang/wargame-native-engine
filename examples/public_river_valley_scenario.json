@@ -12631,8 +12631,8 @@
       "side": "red",
       "operator_type": "VEHICLE",
       "subtype": "public-demo-vehicle",
-      "x": 4,
-      "y": 8,
+      "x": 11,
+      "y": 7,
       "altitude": 0,
       "heading": 0,
       "health": 100,
@@ -12652,7 +12652,7 @@
       ],
       "attack_range": 0,
       "attack_damage": 0,
-      "current_hex": 804,
+      "current_hex": 711,
       "cur_pos_millionths": 0,
       "move_path": [],
       "movement_mode": "NORMAL",
@@ -12865,8 +12865,8 @@
       "side": "blue",
       "operator_type": "VEHICLE",
       "subtype": "public-demo-vehicle",
-      "x": 21,
-      "y": 8,
+      "x": 17,
+      "y": 7,
       "altitude": 0,
       "heading": 180,
       "health": 100,
@@ -12886,7 +12886,7 @@
       ],
       "attack_range": 0,
       "attack_damage": 0,
-      "current_hex": 821,
+      "current_hex": 717,
       "cur_pos_millionths": 0,
       "move_path": [],
       "movement_mode": "NORMAL",
@@ -13055,8 +13055,8 @@
           5
         ],
         "103": [
-          4,
-          8
+          11,
+          7
         ],
         "104": [
           6,
@@ -13081,8 +13081,8 @@
           6
         ],
         "203": [
-          21,
-          8
+          17,
+          7
         ],
         "204": [
           19,

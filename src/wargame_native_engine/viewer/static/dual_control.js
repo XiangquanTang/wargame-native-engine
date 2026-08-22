@@ -113,6 +113,9 @@ function tacticalOverlayHexes(kind) {
   if (kind === "visibility") {
     return tacticalOverlay.visibility_field?.hex_ids || [];
   }
+  if (kind === "contacts") {
+    return tacticalOverlay.confirmed_contacts?.hex_ids || [];
+  }
   return tacticalOverlay.weapon_envelope?.hex_ids || [];
 }
 
@@ -143,6 +146,7 @@ function renderMap() {
       ? tacticalOverlayHexes("visibility") : [],
     weapon_envelope_hex_ids: weaponEnvelopeEnabled
       ? tacticalOverlayHexes("weapon") : [],
+    confirmed_contact_hex_ids: tacticalOverlayHexes("contacts"),
   });
   mapRenderer.setActionTargets({
     shoot_target_ids: activeTool === "SHOOT"
@@ -412,7 +416,8 @@ async function loadTacticalOverlay({ force = false } = {}) {
   }
   const unitId = unitIds[0];
   const observationVersion = current.observation_version;
-  const cacheKey = `${observationVersion}:${unitId}`;
+  const frameIndex = current.product_status.frame_index;
+  const cacheKey = `${frameIndex}:${observationVersion}:${unitId}`;
   if (!force && tacticalOverlayCache.has(cacheKey)) {
     tacticalOverlay = tacticalOverlayCache.get(cacheKey);
     render();
