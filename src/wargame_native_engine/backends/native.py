@@ -61,6 +61,16 @@ class NativeEngineBackend:
     ) -> UnitTacticalOverlay:
         return self.engine.query_unit_tactical_overlay(side, unit_id)
 
+    def query_unit_tactical_overlay_from_projection(
+        self, side: str, unit_id: int,
+        observation: Mapping[str, object],
+        source_frame: Mapping[str, object],
+        valid_actions: Sequence[Mapping[str, object]],
+    ) -> UnitTacticalOverlay:
+        return self.engine.query_unit_tactical_overlay_from_projection(
+            side, unit_id, observation, source_frame, valid_actions
+        )
+
     def step(self, actions: Mapping[str, EngineAction | None] | Sequence[EngineAction],
              *, delta_time_seconds: int | float | None = None,
              delta_time_ms: int | None = None) -> StepResult:

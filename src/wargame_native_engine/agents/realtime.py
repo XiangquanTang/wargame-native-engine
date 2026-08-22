@@ -968,25 +968,25 @@ class RealtimeAgentSession:
                     code,
                     "tactical overlay requires the latest observation version",
                 )
-            if self._processing:
-                raise RealtimeAgentSessionError(
-                    "tactical_overlay_tick_in_progress_retry",
-                    "authoritative tick is in progress; retry with the next observation",
-                )
             key = (authoritative.seat, version, actor)
             cached = self._tactical_overlay_cache.get(key)
             if cached is None:
                 match = self._require_match()
-                controller_id = (
-                    match.red_controller_id
-                    if authoritative.seat == "red"
-                    else match.blue_controller_id
-                )
-                cached = match.gateway.query_unit_tactical_overlay(
-                    match.session_id,
-                    controller_id,
-                    actor,
-                )
+                view = deepcopy(self._controller_views[authoritative.seat])
+                try:
+                    cached = (
+                        match.gateway.manager
+                        .query_unit_tactical_overlay_from_projection(
+                            match.session_id,
+                            authoritative.seat,
+                            actor,
+                            view,
+                        )
+                    )
+                except ValueError as exc:
+                    raise CommandGatewayError(
+                        "tactical_overlay_query_rejected", str(exc)
+                    ) from exc
                 self._tactical_overlay_cache[key] = cached
             return deepcopy(cached)
 

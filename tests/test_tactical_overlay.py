@@ -382,6 +382,81 @@ def test_realtime_overlay_api_is_current_seat_bound_and_recorder_neutral(
         session.close()
 
 
+def test_realtime_overlay_uses_frozen_view_during_authoritative_tick(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = _overlay_bundle()
+    session = RealtimeAgentSession(
+        _MatchFactory(tmp_path / "factory", bundle),
+        run_namespace="tactical-overlay-concurrent-tick-test",
+        tick_interval_ms=1_000,
+        clock=ManualRealtimeClock(),
+    )
+    reset = session.reset(seed=42)
+    entered = threading.Event()
+    release = threading.Event()
+    failure: list[BaseException] = []
+    match = session._require_match()  # noqa: SLF001
+    managed = match.gateway.manager._managed(match.session_id)  # noqa: SLF001
+    engine = managed.environment.session.backend.engine
+    expected = engine.query_unit_tactical_overlay("red", 103)
+    original = engine._step_source  # noqa: SLF001
+
+    def blocking_step(*args, **kwargs):
+        entered.set()
+        if not release.wait(timeout=10):
+            raise TimeoutError("test did not release authoritative Engine step")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(engine, "_step_source", blocking_step)
+
+    def advance() -> None:
+        try:
+            session.advance_tick()
+        except BaseException as exc:  # pragma: no cover - asserted below
+            failure.append(exc)
+
+    server = create_realtime_dual_control_server(
+        session,
+        red_binding=reset.red_binding,
+        blue_binding=reset.blue_binding,
+        red_token="overlay-red-token",
+        blue_token="overlay-blue-token",
+        map_data=bundle.render_map_record(),
+        port=0,
+    )
+    thread = threading.Thread(target=advance)
+    try:
+        with _running_server(server) as address:
+            thread.start()
+            assert entered.wait(timeout=5)
+            assert session._processing is True  # noqa: SLF001
+            status, overlay = _request(
+                address,
+                "POST",
+                "/api/product/tactical-overlay",
+                {
+                    "token": "overlay-red-token",
+                    "observation_version": reset.red.observation_version,
+                    "unit_id": 103,
+                },
+            )
+            assert status == 200
+            expected_record = expected.to_record()
+            expected_record["observation_version"] = (
+                reset.red.observation_version
+            )
+            assert overlay == expected_record
+            assert session._processing is True  # noqa: SLF001
+    finally:
+        release.set()
+        thread.join(timeout=10)
+        session.close()
+    assert not thread.is_alive()
+    assert failure == []
+
+
 def test_tactical_overlay_frontend_is_read_only_and_below_action_targets() -> None:
     static = Path("src/wargame_native_engine/viewer/static")
     source = (static / "dual_control.js").read_text(encoding="utf-8")

@@ -20,6 +20,7 @@ from wargame_native_engine.core.event import EngineEvent, EventType, event_sort_
 from wargame_native_engine.core.observation import (
     OperatorObservation, SideObservation, objective_view,
 )
+from wargame_native_engine.core.operator import OperatorState
 from wargame_native_engine.core.result import GameResult, StepResult
 from wargame_native_engine.core.rng import NativeRNG
 from wargame_native_engine.core.tactical_overlay import (
@@ -341,6 +342,147 @@ class NativeEngine:
             raise ValueError(f"unknown unit: {unit_id}") from exc
         if operator.side != side:
             raise ValueError("unit is not controlled by side")
+        fire_targets = []
+        for value in self.valid_actions(side):
+            action = value.action
+            if (
+                action.action_type is ActionType.SHOOT
+                and action.actor_id == unit_id
+                and action.target_id is not None
+            ):
+                target = world.operators.get(action.target_id)
+                if target is None or target.current_hex is None:
+                    raise RuntimeError("legal SHOOT target lacks a current hex")
+                fire_targets.append(FireTarget(
+                    action.target_id,
+                    target.current_hex,
+                ))
+
+        return self._build_unit_tactical_overlay(operator, fire_targets)
+
+    def query_unit_tactical_overlay_from_projection(
+        self,
+        side: str,
+        unit_id: int,
+        observation: Mapping[str, Any],
+        source_frame: Mapping[str, Any],
+        valid_actions: Sequence[Mapping[str, Any]],
+    ) -> UnitTacticalOverlay:
+        """Query one frozen side projection without reading live WorldState.
+
+        Realtime ticks evolve a private working state.  This projection form
+        lets a browser query the exact observation version it received while
+        such a tick is running.  Only the selected friendly unit, enemies
+        already visible in that side projection, and that projection's frozen
+        legal actions participate.
+        """
+
+        self._require_side(side)
+        if type(unit_id) is not int or unit_id < 0:
+            raise ValueError("unit_id must be a non-negative exact int")
+        if not isinstance(observation, Mapping):
+            raise TypeError("observation must be a mapping")
+        if not isinstance(source_frame, Mapping):
+            raise TypeError("source_frame must be a mapping")
+
+        friendly = _record_by_id(
+            observation.get("friendly_operators"), unit_id, "operator_id"
+        )
+        if friendly is None:
+            raise ValueError("unit is not controlled by side")
+        if friendly.get("side") != side:
+            raise ValueError("unit is not controlled by side")
+        source_operator = _record_by_id(
+            source_frame.get("operators"), unit_id, "obj_id"
+        )
+        if source_operator is None or source_operator.get("owner") != side:
+            raise ValueError("side projection lacks controlled unit evidence")
+
+        template = next(
+            (value for value in self.scenario.operators
+             if value.operator_id == unit_id),
+            None,
+        )
+        if template is None:
+            raise ValueError(f"unknown unit: {unit_id}")
+        projected = OperatorState.from_dict(template.to_dict())
+        projected.operator_type = str(friendly.get(
+            "operator_type", projected.operator_type
+        ))
+        projected.current_hex = _exact_nonnegative_record_int(
+            source_operator.get("cur_hex"), "friendly cur_hex"
+        )
+        position = friendly.get("position")
+        if (not isinstance(position, Sequence)
+                or isinstance(position, (str, bytes))
+                or len(position) != 2):
+            raise ValueError("friendly position must contain x and y")
+        projected.x = float(position[0])
+        projected.y = float(position[1])
+        projected.altitude = float(friendly.get("altitude", projected.altitude))
+        projected.alive = _exact_record_bool(friendly.get("alive"), "alive")
+        projected.deployed = _exact_record_bool(
+            friendly.get("deployed"), "deployed"
+        )
+        weapon_ids = source_operator.get("carry_weapon_ids")
+        if not isinstance(weapon_ids, Sequence) or isinstance(
+            weapon_ids, (str, bytes)
+        ):
+            raise ValueError("friendly carry_weapon_ids must be a sequence")
+        projected.weapon_ids = sorted({
+            _exact_nonnegative_record_int(value, "weapon_id")
+            for value in weapon_ids
+        })
+
+        visible_ids = {
+            _exact_nonnegative_record_int(value.get("operator_id"), "target_id")
+            for value in _record_sequence(
+                observation.get("visible_enemies"), "visible_enemies"
+            )
+        }
+        source_visible = {}
+        for value in _record_sequence(
+            source_frame.get("operators"), "source operators"
+        ):
+            target_id = _exact_nonnegative_record_int(
+                value.get("obj_id"), "target_id"
+            )
+            if value.get("owner") != side and target_id in visible_ids:
+                source_visible[target_id] = value
+        fire_targets = []
+        for value in valid_actions:
+            if not isinstance(value, Mapping):
+                raise TypeError("valid action records must be mappings")
+            action = value.get("action")
+            if not isinstance(action, Mapping):
+                raise ValueError("valid action record lacks action mapping")
+            if (
+                action.get("side") == side
+                and action.get("action_type") == ActionType.SHOOT.value
+                and action.get("actor_id") == unit_id
+            ):
+                target_id = _exact_nonnegative_record_int(
+                    action.get("target_id"), "target_id"
+                )
+                target = source_visible.get(target_id)
+                if target is None:
+                    raise ValueError(
+                        "legal SHOOT target is absent from visible side projection"
+                    )
+                fire_targets.append(FireTarget(
+                    target_id,
+                    _exact_nonnegative_record_int(
+                        target.get("cur_hex"), "target cur_hex"
+                    ),
+                ))
+
+        return self._build_unit_tactical_overlay(projected, fire_targets)
+
+    def _build_unit_tactical_overlay(
+        self,
+        operator: OperatorState,
+        fire_targets: Sequence[FireTarget],
+    ) -> UnitTacticalOverlay:
         if not operator.alive or not operator.deployed:
             raise ValueError("unit is not active")
         if operator.current_hex is None:
@@ -418,24 +560,8 @@ class NativeEngine:
                 envelope_hexes,
             ))
 
-        fire_targets = []
-        for value in self.valid_actions(side):
-            action = value.action
-            if (
-                action.action_type is ActionType.SHOOT
-                and action.actor_id == unit_id
-                and action.target_id is not None
-            ):
-                target = world.operators.get(action.target_id)
-                if target is None or target.current_hex is None:
-                    raise RuntimeError("legal SHOOT target lacks a current hex")
-                fire_targets.append(FireTarget(
-                    action.target_id,
-                    target.current_hex,
-                ))
-
         return UnitTacticalOverlay(
-            unit_id,
+            operator.operator_id,
             VisibilityField(tuple(visibility_domains)),
             WeaponEnvelope(tuple(weapons)),
             FireTargets(tuple(sorted(
@@ -1639,6 +1765,40 @@ class NativeEngine:
             int(observer.current_hex),
             int(target_hex),
         )
+
+
+def _record_sequence(value: Any, field: str) -> tuple[Mapping[str, Any], ...]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        raise ValueError(f"{field} must be a sequence")
+    if not all(isinstance(item, Mapping) for item in value):
+        raise ValueError(f"{field} must contain mappings")
+    return tuple(value)
+
+
+def _record_by_id(
+    value: Any,
+    expected_id: int,
+    id_field: str,
+) -> Mapping[str, Any] | None:
+    matches = tuple(
+        item for item in _record_sequence(value, id_field)
+        if item.get(id_field) == expected_id
+    )
+    if len(matches) > 1:
+        raise ValueError(f"duplicate {id_field}: {expected_id}")
+    return None if not matches else matches[0]
+
+
+def _exact_nonnegative_record_int(value: Any, field: str) -> int:
+    if type(value) is not int or value < 0:
+        raise ValueError(f"{field} must be a non-negative exact int")
+    return value
+
+
+def _exact_record_bool(value: Any, field: str) -> bool:
+    if type(value) is not bool:
+        raise ValueError(f"{field} must be an exact bool")
+    return value
 
 
 def _unit_domain(value: str) -> UnitDomain:

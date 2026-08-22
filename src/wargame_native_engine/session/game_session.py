@@ -74,6 +74,17 @@ class GameSession:
         self._require_active()
         return self.backend.query_unit_tactical_overlay(side, unit_id)
 
+    def query_unit_tactical_overlay_from_projection(
+        self, side: str, unit_id: int,
+        observation: Mapping[str, object],
+        source_frame: Mapping[str, object],
+        valid_actions: Sequence[Mapping[str, object]],
+    ) -> UnitTacticalOverlay:
+        self._require_active()
+        return self.backend.query_unit_tactical_overlay_from_projection(
+            side, unit_id, observation, source_frame, valid_actions
+        )
+
     def step(self, action_batch: Mapping[
             str, AgentAction | EngineAction | None] | Sequence[EngineAction], *,
              delta_time_seconds: int | float | None = None,

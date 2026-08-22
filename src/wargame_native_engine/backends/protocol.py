@@ -24,6 +24,12 @@ class EngineBackend(Protocol):
     def query_unit_tactical_overlay(
         self, side: str, unit_id: int,
     ) -> UnitTacticalOverlay: ...
+    def query_unit_tactical_overlay_from_projection(
+        self, side: str, unit_id: int,
+        observation: Mapping[str, object],
+        source_frame: Mapping[str, object],
+        valid_actions: Sequence[Mapping[str, object]],
+    ) -> UnitTacticalOverlay: ...
     def step(self, actions: Mapping[str, EngineAction | None] | Sequence[EngineAction],
              *, delta_time_seconds: int | float | None = None,
              delta_time_ms: int | None = None) -> StepResult: ...

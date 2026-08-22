@@ -228,6 +228,34 @@ class SessionManager:
                 raise RuntimeError("tactical_overlay_query_modified_engine_state")
             return deepcopy(result)
 
+    def query_unit_tactical_overlay_from_projection(
+        self,
+        session_id: str,
+        side: str,
+        unit_id: int,
+        view: ControllerView,
+    ) -> UnitTacticalOverlay:
+        """Evaluate a frozen side view without acquiring the tick lock.
+
+        The Engine implementation used here reads only immutable scenario,
+        LOS, weapon-profile data and the detached ``ControllerView``.  It does
+        not inspect live ``WorldState``; consequently it remains safe while a
+        realtime tick owns the managed-session advancement lock.
+        """
+
+        managed = self._managed(session_id)
+        self._require_usable(managed)
+        _require_side(managed, side)
+        if view.session_id != managed.external_id:
+            raise ValueError("controller view belongs to another session")
+        if view.perspective.lower() != side:
+            raise ValueError("controller view belongs to another side")
+        session = managed.environment.session
+        result = session.query_unit_tactical_overlay_from_projection(
+            side, unit_id, view.observation, view.source_frame, view.valid_actions
+        )
+        return deepcopy(result)
+
     def agent_reset_context(
         self,
         session_id: str,
