@@ -7,6 +7,7 @@ from wargame_native_engine.core.action import EngineAction, ValidAction
 from wargame_native_engine.core.engine import NativeEngine
 from wargame_native_engine.core.observation import SideObservation
 from wargame_native_engine.core.result import GameResult, StepResult
+from wargame_native_engine.core.tactical_overlay import UnitTacticalOverlay
 from wargame_native_engine.core.world import WorldState
 from wargame_native_engine.io.scenario import NativeScenario
 from wargame_native_engine.movement.models import MovementMode, RoutePlan
@@ -54,6 +55,11 @@ class NativeEngineBackend:
         return self.engine.plan_move(
             side, unit_id, destination_hex, movement_mode
         )
+
+    def query_unit_tactical_overlay(
+        self, side: str, unit_id: int,
+    ) -> UnitTacticalOverlay:
+        return self.engine.query_unit_tactical_overlay(side, unit_id)
 
     def step(self, actions: Mapping[str, EngineAction | None] | Sequence[EngineAction],
              *, delta_time_seconds: int | float | None = None,

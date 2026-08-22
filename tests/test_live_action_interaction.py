@@ -89,6 +89,71 @@ def test_product_page_hides_internal_control_panels_and_supports_multiselect() -
     assert "this.drag.moved" in renderer
 
 
+def test_realtime_tick_refresh_preserves_the_interaction_draft() -> None:
+    source = (STATIC / "dual_control.js").read_text(encoding="utf-8")
+    refresh = source[
+        source.index("async function refresh()"):
+        source.index("operationButtons.forEach")
+    ]
+    hex_selection = source[
+        source.index("async function handleHexSelection"):
+        source.index("async function activateTool")
+    ]
+
+    assert "const refreshEpoch = interactionEpoch" in refresh
+    assert "refreshEpoch === interactionEpoch" in refresh
+    assert "reconcileInteractionDraft()" in refresh
+    for destructive_update in (
+        "selectedUnitIds.clear()",
+        "activeTool = null",
+        "targetHex = null",
+        "targetUnitId = null",
+        "operationPreview = null",
+        "executeRequestId = null",
+    ):
+        assert destructive_update not in refresh
+    assert hex_selection.index('activeTool === "MOVE"') < hex_selection.index(
+        'previewOperation("MOVE"'
+    )
+    assert "selectedUnitIds.clear()" not in hex_selection
+
+
+def test_inflight_refresh_and_preview_cannot_overwrite_newer_interaction() -> None:
+    source = (STATIC / "dual_control.js").read_text(encoding="utf-8")
+    capabilities = source[
+        source.index("async function loadCapabilities"):
+        source.index("async function handleUnitSelection")
+    ]
+    preview = source[
+        source.index("async function previewOperation"):
+        source.index("async function executeOperation")
+    ]
+
+    assert "expectedEpoch = interactionEpoch" in capabilities
+    assert "expectedEpoch !== interactionEpoch" in capabilities
+    assert "requestedActorIds" in capabilities
+    assert "const previewEpoch = interactionEpoch" in preview
+    assert preview.count("previewEpoch !== interactionEpoch") == 2
+    assert "operationPreview = nextPreview" in preview
+
+
+def test_product_toolbar_surfaces_rule_reasons_for_disabled_actions() -> None:
+    source = (STATIC / "dual_control.js").read_text(encoding="utf-8")
+    operation_count = source[
+        source.index("function operationCount"):
+        source.index("function renderToolbar")
+    ]
+    toolbar = source[
+        source.index("function renderToolbar"):
+        source.index("function renderPreview")
+    ]
+
+    assert "unavailable[0].message" in operation_count
+    assert "function operationHint" in operation_count
+    assert "new Set" in operation_count
+    assert "button.title = operationHint(kind)" in toolbar
+
+
 def test_live_action_index_pure_functions_when_node_is_available() -> None:
     node = shutil.which("node")
     if node is None:

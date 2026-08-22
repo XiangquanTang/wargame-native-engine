@@ -287,6 +287,11 @@
         previewMovePosition: null, previewShootTargetId: null,
         plannedPath: [], plannedPaths: [],
       };
+      this.tacticalOverlay = {
+        side: null,
+        visibilityHexIds: new Set(),
+        weaponEnvelopeHexIds: new Set(),
+      };
       this._bindEvents();
     }
 
@@ -299,6 +304,7 @@
       this.scale = 1;
       this.offsetX = 0;
       this.offsetY = 0;
+      this.setTacticalOverlay();
     }
 
     setActionTargets({
@@ -333,6 +339,23 @@
       };
     }
 
+    setTacticalOverlay({
+      side = null,
+      visibility_hex_ids: visibilityHexIds = [],
+      weapon_envelope_hex_ids: weaponEnvelopeHexIds = [],
+    } = {}) {
+      const normalized = (values) => new Set(
+        (Array.isArray(values) ? values : [])
+          .filter((value) => Number.isInteger(value) && value >= 0)
+          .map(Number),
+      );
+      this.tacticalOverlay = {
+        side: side === "red" || side === "blue" ? side : null,
+        visibilityHexIds: normalized(visibilityHexIds),
+        weaponEnvelopeHexIds: normalized(weaponEnvelopeHexIds),
+      };
+    }
+
     render(frame, selectedUnitId) {
       this.frame = frame;
       const selectedValues = Array.isArray(selectedUnitId)
@@ -351,6 +374,7 @@
       this.hitTargets = [];
       if (!this.map) return;
       this._drawMap(context);
+      this._drawTacticalOverlays(context);
       this._drawScenarioFeatures(context, this.map?.scenario?.features || []);
       this._drawObjectives(context, frame?.cities || []);
       this._drawActionTargets(context);
@@ -703,6 +727,38 @@
         }
         context.restore();
       }
+    }
+
+    _drawTacticalOverlays(context) {
+      const side = this.tacticalOverlay.side;
+      if (!side) return;
+      const colors = side === "red" ? {
+        visibility: "rgba(255,120,120,0.18)",
+        weapon: "rgba(255,80,80,0.12)",
+      } : {
+        visibility: "rgba(110,175,255,0.18)",
+        weapon: "rgba(70,140,255,0.12)",
+      };
+      const draw = (hexIds, color) => {
+        context.fillStyle = color;
+        for (const hexId of hexIds) {
+          const row = Math.floor(hexId / 100);
+          const column = hexId % 100;
+          if (this.cellByKey.size && !this.cellByKey.has(`${row}:${column}`)) continue;
+          const vertices = hexVertices(row, column, this.map.hex_size)
+            .map((point) => this._screen(point));
+          context.beginPath();
+          vertices.forEach((point, index) => index
+            ? context.lineTo(point.x, point.y)
+            : context.moveTo(point.x, point.y));
+          context.closePath();
+          context.fill();
+        }
+      };
+      // Draw the broader, lighter weapon layer first so visibility remains
+      // legible where the two read-only fields overlap.
+      draw(this.tacticalOverlay.weaponEnvelopeHexIds, colors.weapon);
+      draw(this.tacticalOverlay.visibilityHexIds, colors.visibility);
     }
 
     _drawSelectedHex(context) {

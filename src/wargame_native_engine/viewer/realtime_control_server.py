@@ -318,6 +318,25 @@ class RealtimeDualControlRequestHandler(BaseHTTPRequestHandler):
                     ),
                 )
                 return
+            if path == "/api/product/tactical-overlay":
+                if set(body) != {"token", "observation_version", "unit_id"}:
+                    raise ValueError(
+                        "tactical overlay requires exactly token, "
+                        "observation_version and unit_id"
+                    )
+                _side, binding = self._seat(body["token"])
+                version = _exact_nonnegative_int(
+                    body["observation_version"], "observation_version"
+                )
+                overlay = self.server.realtime_session.tactical_overlay(
+                    binding,
+                    observation_version=version,
+                    unit_id=_exact_nonnegative_int(body["unit_id"], "unit_id"),
+                )
+                record = overlay.to_record()
+                record["observation_version"] = version
+                self._send_json(HTTPStatus.OK, record)
+                return
             if path == "/api/product/preview":
                 allowed = {
                     "token", "request_id", "observation_version", "actor_ids",

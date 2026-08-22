@@ -5,6 +5,7 @@ from typing import Mapping, Protocol, Sequence
 from wargame_native_engine.core.action import EngineAction, ValidAction
 from wargame_native_engine.core.observation import SideObservation
 from wargame_native_engine.core.result import GameResult, StepResult
+from wargame_native_engine.core.tactical_overlay import UnitTacticalOverlay
 from wargame_native_engine.core.world import WorldState
 from wargame_native_engine.io.scenario import NativeScenario
 from wargame_native_engine.movement.models import MovementMode, RoutePlan
@@ -20,6 +21,9 @@ class EngineBackend(Protocol):
     def plan_move(self, side: str, unit_id: int, destination_hex: int,
                   movement_mode: MovementMode | str = MovementMode.NORMAL
                   ) -> RoutePlan: ...
+    def query_unit_tactical_overlay(
+        self, side: str, unit_id: int,
+    ) -> UnitTacticalOverlay: ...
     def step(self, actions: Mapping[str, EngineAction | None] | Sequence[EngineAction],
              *, delta_time_seconds: int | float | None = None,
              delta_time_ms: int | None = None) -> StepResult: ...

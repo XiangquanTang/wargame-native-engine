@@ -12,6 +12,7 @@ from wargame_native_engine.core.action import (
     EngineAction,
     ValidAction,
 )
+from wargame_native_engine.core.tactical_overlay import UnitTacticalOverlay
 from wargame_native_engine.gateway.control_audit import ControlAuditLog
 from wargame_native_engine.gateway.deadline import (
     DeadlineMode,
@@ -240,6 +241,26 @@ class CommandGateway:
             if valid is not None:
                 window.authorize_proposal(side, valid)
             return registered
+
+    def query_unit_tactical_overlay(
+        self,
+        session_id: str,
+        controller_id: str,
+        unit_id: int,
+    ) -> UnitTacticalOverlay:
+        """Resolve controller identity before issuing a side-only query."""
+
+        gateway_session = self._gateway_session(session_id)
+        with gateway_session.lock:
+            side = _bound_side(gateway_session, controller_id)
+            try:
+                return self.manager.query_unit_tactical_overlay(
+                    session_id, side, unit_id
+                )
+            except ValueError as exc:
+                raise CommandGatewayError(
+                    "tactical_overlay_query_rejected", str(exc)
+                ) from exc
 
     def proposal(
         self,

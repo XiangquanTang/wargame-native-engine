@@ -22,6 +22,15 @@ from wargame_native_engine.core.observation import (
 )
 from wargame_native_engine.core.result import GameResult, StepResult
 from wargame_native_engine.core.rng import NativeRNG
+from wargame_native_engine.core.tactical_overlay import (
+    FireTarget,
+    FireTargets,
+    UnitTacticalOverlay,
+    VisibilityDomainField,
+    VisibilityField,
+    WeaponEnvelope,
+    WeaponEnvelopeEntry,
+)
 from wargame_native_engine.core.world import Stage, WorldState
 from wargame_native_engine.io.scenario import (
     NativeScenario,
@@ -52,7 +61,7 @@ from wargame_native_engine.systems.terminal import evaluate_terminal
 from wargame_native_engine.systems.visibility import can_see
 from wargame_native_engine.visibility import (
     HexCell, HexMapProfile, LineOfSightEvidence, ObservationProfiles,
-    evaluate_visibility,
+    evaluate_line_of_sight, evaluate_visibility, hex_distance,
     within_maximum_observation_distance,
 )
 from wargame_native_engine.version import ADJUDICATION_SEMANTICS_VERSION
@@ -307,6 +316,132 @@ class NativeEngine:
                 int(destination_hex), mode,
             )
         return self._route_planner.plan(operator, int(destination_hex), mode, world)
+
+    def query_unit_tactical_overlay(
+        self,
+        side: str,
+        unit_id: int,
+    ) -> UnitTacticalOverlay:
+        """Project read-only tactical space for one controlled ground unit.
+
+        Visibility delegates to the same observation evaluator used by the
+        authoritative observation refresh.  Weapon envelopes use the same
+        static LOS authority and weapon profiles, but intentionally ignore
+        enemy occupancy and current weapon readiness.  Current fire targets
+        remain a projection of the existing legal ``SHOOT`` actions.
+        """
+
+        world = self._require_world()
+        self._require_side(side)
+        if type(unit_id) is not int or unit_id < 0:
+            raise ValueError("unit_id must be a non-negative exact int")
+        try:
+            operator = world.operators[unit_id]
+        except KeyError as exc:
+            raise ValueError(f"unknown unit: {unit_id}") from exc
+        if operator.side != side:
+            raise ValueError("unit is not controlled by side")
+        if not operator.alive or not operator.deployed:
+            raise ValueError("unit is not active")
+        if operator.current_hex is None:
+            raise ValueError("unit has no current hex")
+        observer_domain = _unit_domain(operator.operator_type)
+        if observer_domain not in {UnitDomain.PERSONNEL, UnitDomain.VEHICLE}:
+            raise ValueError(
+                "tactical overlay v1 supports PERSONNEL and VEHICLE observers"
+            )
+        if self._source_map is None or self._source_visibility_map is None:
+            raise ValueError("tactical overlay requires a source-compatible hex map")
+
+        cells = tuple(sorted(
+            self.scenario.map.hexes, key=lambda value: value.hex_id
+        ))
+        line_of_sight: dict[int, LineOfSightEvidence] = {}
+
+        def ground_los(hex_id: int) -> LineOfSightEvidence:
+            cached = line_of_sight.get(hex_id)
+            if cached is None:
+                cached = self._line_of_sight_to_ground_hex(operator, hex_id)
+                line_of_sight[hex_id] = cached
+            return cached
+
+        visibility_domains = []
+        for target_domain in (UnitDomain.PERSONNEL, UnitDomain.VEHICLE):
+            visible_hexes = []
+            for cell in cells:
+                if not within_maximum_observation_distance(
+                    observer_hex=operator.current_hex,
+                    target_hex=cell.hex_id,
+                    observer_domain=observer_domain,
+                    target_domain=target_domain,
+                    observation_profiles=self._source_observation_profiles,
+                ):
+                    continue
+                result = evaluate_visibility(
+                    self._source_visibility_map,
+                    observer_hex=operator.current_hex,
+                    target_hex=cell.hex_id,
+                    observer_domain=observer_domain,
+                    target_domain=target_domain,
+                    target_concealed=False,
+                    target_terrain=self._source_map.terrain(cell.hex_id).value,
+                    observation_profiles=self._source_observation_profiles,
+                    line_of_sight_evidence=ground_los(cell.hex_id),
+                )
+                if result.observable:
+                    visible_hexes.append(cell.hex_id)
+            visibility_domains.append(VisibilityDomainField(
+                target_domain.value,
+                tuple(visible_hexes),
+            ))
+
+        supported_ground_domains = {UnitDomain.PERSONNEL, UnitDomain.VEHICLE}
+        weapons = []
+        for weapon_id in sorted(operator.weapon_ids):
+            profile = self._source_weapon_profile(weapon_id)
+            target_domains = tuple(sorted(
+                value.value
+                for value in profile.target_domains & supported_ground_domains
+            ))
+            envelope_hexes = tuple(
+                cell.hex_id
+                for cell in cells
+                if target_domains
+                and hex_distance(operator.current_hex, cell.hex_id)
+                <= profile.maximum_range
+                and ground_los(cell.hex_id).visible
+            )
+            weapons.append(WeaponEnvelopeEntry(
+                int(weapon_id),
+                profile.maximum_range,
+                target_domains,
+                envelope_hexes,
+            ))
+
+        fire_targets = []
+        for value in self.valid_actions(side):
+            action = value.action
+            if (
+                action.action_type is ActionType.SHOOT
+                and action.actor_id == unit_id
+                and action.target_id is not None
+            ):
+                target = world.operators.get(action.target_id)
+                if target is None or target.current_hex is None:
+                    raise RuntimeError("legal SHOOT target lacks a current hex")
+                fire_targets.append(FireTarget(
+                    action.target_id,
+                    target.current_hex,
+                ))
+
+        return UnitTacticalOverlay(
+            unit_id,
+            VisibilityField(tuple(visibility_domains)),
+            WeaponEnvelope(tuple(weapons)),
+            FireTargets(tuple(sorted(
+                set(fire_targets), key=lambda value: (value.target_id, value.hex_id)
+            ))),
+        )
 
     def step(self, actions: Mapping[str, EngineAction | None]
              | Sequence[EngineAction], *,
@@ -1480,6 +1615,29 @@ class NativeEngine:
             int(target.current_hex),
             observer_height_m=observer_height,
             target_height_m=target_height,
+        )
+
+    def _line_of_sight_to_ground_hex(
+        self,
+        observer: Any,
+        target_hex: int,
+    ) -> LineOfSightEvidence:
+        """Use the current LOS authority for a hypothetical ground endpoint."""
+
+        if self._source_visibility_map is None:
+            raise ValueError("SOURCE_VISIBILITY_MAP_UNAVAILABLE")
+        observer_height = _source_visibility_height_m(observer)
+        if self.map_runtime_data is not None and observer_height is not None:
+            return self.map_runtime_data.visibility.line_of_sight(
+                int(observer.current_hex),
+                int(target_hex),
+                observer_height_m=observer_height,
+                target_height_m=0,
+            )
+        return evaluate_line_of_sight(
+            self._source_visibility_map,
+            int(observer.current_hex),
+            int(target_hex),
         )
 
 

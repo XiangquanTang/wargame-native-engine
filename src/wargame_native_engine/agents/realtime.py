@@ -25,6 +25,7 @@ from wargame_native_engine.agents.seat import (
     SeatOperation,
 )
 from wargame_native_engine.gateway import CommandGatewayError, DeadlineMode
+from wargame_native_engine.core.tactical_overlay import UnitTacticalOverlay
 from wargame_native_engine.gateway.models import ControllerView
 from wargame_native_engine.io.serialization import canonical_hash, json_clone
 from wargame_native_engine.operations import ProductOperationService
@@ -369,6 +370,9 @@ class RealtimeAgentSession:
         self._binding_by_id: dict[str, RealtimeSeatBinding] = {}
         self._latest: dict[str, RealtimeSeatView] = {}
         self._controller_views: dict[str, ControllerView] = {}
+        self._tactical_overlay_cache: dict[
+            tuple[str, int, int], UnitTacticalOverlay
+        ] = {}
         self._issued: dict[str, deque[int]] = {
             "red": deque(), "blue": deque(),
         }
@@ -463,6 +467,7 @@ class RealtimeAgentSession:
                 }
                 self._latest.clear()
                 self._controller_views.clear()
+                self._tactical_overlay_cache.clear()
                 self._issued = {"red": deque(), "blue": deque()}
                 self._version_owner.clear()
                 self._next_observation_version = 0
@@ -507,6 +512,7 @@ class RealtimeAgentSession:
                     self._binding_by_id.clear()
                     self._latest.clear()
                     self._controller_views.clear()
+                    self._tactical_overlay_cache.clear()
             match.close()
             raise
 
@@ -936,6 +942,54 @@ class RealtimeAgentSession:
             service = self._advisory_services[authoritative.seat]
         return deepcopy(service.capabilities(actor_ids))
 
+    def tactical_overlay(
+        self,
+        binding: RealtimeSeatBinding,
+        *,
+        observation_version: int,
+        unit_id: int,
+    ) -> UnitTacticalOverlay:
+        """Return the current side-bound tactical overlay without advancing."""
+
+        version = _nonnegative_int(observation_version, "observation_version")
+        actor = _nonnegative_int(unit_id, "unit_id")
+        with self._lock:
+            authoritative = self._resolve_binding_locked(binding)
+            self._require_accepting()
+            latest = self._latest[authoritative.seat]
+            if version != latest.observation_version:
+                owner = self._version_owner.get(version)
+                code = (
+                    "tactical_overlay_observation_side_mismatch"
+                    if owner is not None and owner != authoritative.seat
+                    else "tactical_overlay_observation_stale"
+                )
+                raise RealtimeAgentSessionError(
+                    code,
+                    "tactical overlay requires the latest observation version",
+                )
+            if self._processing:
+                raise RealtimeAgentSessionError(
+                    "tactical_overlay_tick_in_progress_retry",
+                    "authoritative tick is in progress; retry with the next observation",
+                )
+            key = (authoritative.seat, version, actor)
+            cached = self._tactical_overlay_cache.get(key)
+            if cached is None:
+                match = self._require_match()
+                controller_id = (
+                    match.red_controller_id
+                    if authoritative.seat == "red"
+                    else match.blue_controller_id
+                )
+                cached = match.gateway.query_unit_tactical_overlay(
+                    match.session_id,
+                    controller_id,
+                    actor,
+                )
+                self._tactical_overlay_cache[key] = cached
+            return deepcopy(cached)
+
     def preview_operation(
         self,
         binding: RealtimeSeatBinding,
@@ -1314,6 +1368,7 @@ class RealtimeAgentSession:
 
     def _issue_views_locked(self) -> None:
         match = self._require_match()
+        self._tactical_overlay_cache.clear()
         for side in ("red", "blue"):
             controller_id = (
                 match.red_controller_id if side == "red" else match.blue_controller_id

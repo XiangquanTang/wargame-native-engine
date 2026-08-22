@@ -17,6 +17,12 @@ let lastFrameIndex = null;
 let lastRequestId = null;
 let previewSequence = 0;
 let executeRequestId = null;
+let interactionEpoch = 0;
+let tacticalOverlay = null;
+let visibilityOverlayEnabled = false;
+let weaponEnvelopeEnabled = false;
+let overlayRequestEpoch = 0;
+const tacticalOverlayCache = new Map();
 let mapRenderer = null;
 const pageNonce = globalThis.crypto?.randomUUID?.()
   || `${Date.now()}-${Math.floor(performance.now())}`;
@@ -75,6 +81,41 @@ function selectedIds() {
   return Array.from(selectedUnitIds).map(Number).sort((left, right) => left - right);
 }
 
+function advanceInteractionEpoch() {
+  interactionEpoch += 1;
+  return interactionEpoch;
+}
+
+function reconcileInteractionDraft() {
+  const before = selectedIds();
+  const retained = before.filter((unitId) => isFriendlySelectable(unitById(unitId)));
+  if (retained.length === before.length) return false;
+  selectedUnitIds.clear();
+  retained.forEach((unitId) => selectedUnitIds.add(unitId));
+  activeTool = null;
+  targetHex = null;
+  targetUnitId = null;
+  operationPreview = null;
+  executeRequestId = null;
+  invalidateTacticalOverlay();
+  advanceInteractionEpoch();
+  return true;
+}
+
+function invalidateTacticalOverlay({ clearCache = false } = {}) {
+  overlayRequestEpoch += 1;
+  tacticalOverlay = null;
+  if (clearCache) tacticalOverlayCache.clear();
+}
+
+function tacticalOverlayHexes(kind) {
+  if (!tacticalOverlay) return [];
+  if (kind === "visibility") {
+    return tacticalOverlay.visibility_field?.hex_ids || [];
+  }
+  return tacticalOverlay.weapon_envelope?.hex_ids || [];
+}
+
 function renderHexInfo(value) {
   $("hex-info").textContent = value
     ? `row=${value.row} column=${value.column} position=${value.position_id} · terrain=${value.terrain_semantic} (${value.terrain_code ?? "UNKNOWN"}) · elevation=${value.elevation ?? "UNKNOWN"} · roads=${window.ReplayMapRenderer.formatEdgeFacts(value.roads)} · rivers=${window.ReplayMapRenderer.formatEdgeFacts(value.rivers)} · units=${(value.units || []).map((unit) => unit.operator_id).join(",") || "none"}`
@@ -96,6 +137,13 @@ function plannedPaths() {
 
 function renderMap() {
   if (!mapRenderer || !current?.scene) return;
+  mapRenderer.setTacticalOverlay({
+    side: current.side,
+    visibility_hex_ids: visibilityOverlayEnabled
+      ? tacticalOverlayHexes("visibility") : [],
+    weapon_envelope_hex_ids: weaponEnvelopeEnabled
+      ? tacticalOverlayHexes("weapon") : [],
+  });
   mapRenderer.setActionTargets({
     shoot_target_ids: activeTool === "SHOOT"
       ? capabilities?.shoot_target_ids || [] : [],
@@ -147,7 +195,17 @@ function renderSelection() {
 function operationCount(kind) {
   if (kind === "WAIT" && !selectedUnitIds.size) return "整方可用";
   const applicable = capabilities?.operations?.[kind]?.applicable_count || 0;
+  const unavailable = capabilities?.operations?.[kind]?.unavailable || [];
+  if (!applicable && selectedUnitIds.size && unavailable.length) {
+    return unavailable[0].message || `${applicable}/${selectedUnitIds.size} 可用`;
+  }
   return `${applicable}/${selectedUnitIds.size} 可用`;
+}
+
+function operationHint(kind) {
+  const unavailable = capabilities?.operations?.[kind]?.unavailable || [];
+  const messages = Array.from(new Set(unavailable.map((item) => item.message).filter(Boolean)));
+  return messages.join("；");
 }
 
 function renderToolbar() {
@@ -156,6 +214,7 @@ function renderToolbar() {
     const kind = button.dataset.operation;
     button.classList.toggle("active", activeTool === kind);
     button.querySelector("small").textContent = operationCount(kind);
+    button.title = operationHint(kind);
     const applicable = kind === "WAIT" && !selectedUnitIds.size
       ? 1 : capabilities?.operations?.[kind]?.applicable_count || 0;
     button.disabled = !canOperate || applicable === 0;
@@ -165,6 +224,15 @@ function renderToolbar() {
     || $("confirm-partial").checked;
   $("execute-operation").disabled = !canOperate
     || !operationPreview?.can_execute || !partialReady;
+  const singleSelected = selectedUnitIds.size === 1;
+  $("toggle-visibility-overlay").disabled = !singleSelected;
+  $("toggle-weapon-envelope").disabled = !singleSelected;
+  $("toggle-visibility-overlay").classList.toggle(
+    "active", visibilityOverlayEnabled,
+  );
+  $("toggle-weapon-envelope").classList.toggle(
+    "active", weaponEnvelopeEnabled,
+  );
 }
 
 function renderWeaponChoices() {
@@ -294,14 +362,20 @@ function clearOperation({ clearSelection = false } = {}) {
   lastError = null;
   lastNotice = null;
   $("confirm-partial").checked = false;
-  if (clearSelection) selectedUnitIds.clear();
+  if (clearSelection) {
+    selectedUnitIds.clear();
+    invalidateTacticalOverlay();
+  }
+  advanceInteractionEpoch();
   $("tool-instruction").textContent = selectedUnitIds.size
     ? "请选择操作。" : "请选择一个或多个己方单位。";
   render();
 }
 
-async function loadCapabilities() {
+async function loadCapabilities({ expectedEpoch = interactionEpoch } = {}) {
+  const requestedActorIds = selectedIds();
   if (!current || !selectedUnitIds.size) {
+    if (expectedEpoch !== interactionEpoch) return;
     capabilities = {
       selected_count: 0,
       selected_units: [],
@@ -312,23 +386,92 @@ async function loadCapabilities() {
     return;
   }
   try {
-    capabilities = await requestJson("/api/product/capabilities", {
+    const nextCapabilities = await requestJson("/api/product/capabilities", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ token, actor_ids: selectedIds() }),
+      body: JSON.stringify({ token, actor_ids: requestedActorIds }),
     });
+    if (expectedEpoch !== interactionEpoch
+        || JSON.stringify(requestedActorIds) !== JSON.stringify(selectedIds())) return;
+    capabilities = nextCapabilities;
     lastError = null;
   } catch (error) {
+    if (expectedEpoch !== interactionEpoch) return;
     lastError = `无法读取单位操作：${error.message}`;
   }
   render();
 }
 
+async function loadTacticalOverlay({ force = false } = {}) {
+  const unitIds = selectedIds();
+  if (!current || unitIds.length !== 1
+      || (!visibilityOverlayEnabled && !weaponEnvelopeEnabled)) {
+    invalidateTacticalOverlay();
+    render();
+    return;
+  }
+  const unitId = unitIds[0];
+  const observationVersion = current.observation_version;
+  const cacheKey = `${observationVersion}:${unitId}`;
+  if (!force && tacticalOverlayCache.has(cacheKey)) {
+    tacticalOverlay = tacticalOverlayCache.get(cacheKey);
+    render();
+    return;
+  }
+  const requestEpoch = ++overlayRequestEpoch;
+  tacticalOverlay = null;
+  render();
+  try {
+    const result = await requestJson("/api/product/tactical-overlay", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        token,
+        observation_version: observationVersion,
+        unit_id: unitId,
+      }),
+    });
+    if (requestEpoch !== overlayRequestEpoch
+        || current?.observation_version !== observationVersion
+        || selectedIds().length !== 1
+        || selectedIds()[0] !== unitId) return;
+    tacticalOverlayCache.set(cacheKey, result);
+    tacticalOverlay = result;
+    lastError = null;
+  } catch (error) {
+    if (requestEpoch !== overlayRequestEpoch) return;
+    lastError = `无法读取战术覆盖：${error.message}`;
+  }
+  render();
+}
+
+async function toggleTacticalOverlay(kind) {
+  if (selectedUnitIds.size !== 1) return;
+  if (kind === "visibility") {
+    visibilityOverlayEnabled = !visibilityOverlayEnabled;
+  } else {
+    weaponEnvelopeEnabled = !weaponEnvelopeEnabled;
+  }
+  if (!visibilityOverlayEnabled && !weaponEnvelopeEnabled) {
+    invalidateTacticalOverlay();
+    render();
+    return;
+  }
+  await loadTacticalOverlay();
+}
+
 async function handleUnitSelection(operatorId, modifiers = {}) {
   const unit = unitById(operatorId);
+  if (activeTool === "MOVE" && Number.isInteger(unit?.current_hex)) {
+    targetHex = Number(unit.current_hex);
+    advanceInteractionEpoch();
+    await previewOperation("MOVE", { destination_hex: targetHex });
+    return;
+  }
   if (activeTool === "SHOOT" && !isFriendlySelectable(unit)) {
     if ((capabilities?.shoot_target_ids || []).map(String).includes(String(operatorId))) {
       targetUnitId = Number(operatorId);
+      advanceInteractionEpoch();
       await previewOperation("SHOOT", { target_id: targetUnitId });
     }
     return;
@@ -344,20 +487,19 @@ async function handleUnitSelection(operatorId, modifiers = {}) {
     selectedUnitIds.clear();
     selectedUnitIds.add(key);
   }
+  invalidateTacticalOverlay();
   clearOperation();
   await loadCapabilities();
+  await loadTacticalOverlay();
 }
 
 async function handleHexSelection(value) {
   renderHexInfo(value);
   if (activeTool === "MOVE") {
     targetHex = Number(value.position_id);
+    advanceInteractionEpoch();
     await previewOperation("MOVE", { destination_hex: targetHex });
     return;
-  }
-  if (!activeTool) {
-    selectedUnitIds.clear();
-    await loadCapabilities();
   }
 }
 
@@ -370,6 +512,7 @@ async function activateTool(kind) {
   targetHex = null;
   targetUnitId = null;
   activeTool = kind;
+  advanceInteractionEpoch();
   if (kind === "MOVE") {
     $("tool-instruction").textContent = "请在地图上点击目的六边形。";
   } else if (kind === "SHOOT") {
@@ -388,13 +531,14 @@ async function activateTool(kind) {
 
 async function previewOperation(kind, extra = {}) {
   if (isPlanning || isExecuting) return;
+  const previewEpoch = interactionEpoch;
   isPlanning = true;
   lastError = null;
   lastNotice = null;
   operationPreview = null;
   render();
   try {
-    operationPreview = await requestJson("/api/product/preview", {
+    const nextPreview = await requestJson("/api/product/preview", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -409,11 +553,14 @@ async function previewOperation(kind, extra = {}) {
         ...extra,
       }),
     });
+    if (previewEpoch !== interactionEpoch) return;
+    operationPreview = nextPreview;
     executeRequestId = nextRequestId("execute");
     $("tool-instruction").textContent = operationPreview.can_execute
       ? "请检查逐单位结果，然后点击执行。"
       : "当前没有单位可以执行该操作。";
   } catch (error) {
+    if (previewEpoch !== interactionEpoch) return;
     lastError = error.message;
   } finally {
     isPlanning = false;
@@ -447,6 +594,8 @@ async function executeOperation() {
     activeTool = null;
     targetHex = null;
     targetUnitId = null;
+    executeRequestId = null;
+    advanceInteractionEpoch();
     if (current?.control_mode === "realtime" && result.accepted) {
       lastNotice = `命令已接纳，将在 Tick ${result.target_tick} 应用；无需等待对方。`;
     } else if (result.product_state === "WAITING_OPPONENT") {
@@ -463,6 +612,7 @@ async function executeOperation() {
 
 async function refresh() {
   if (isRefreshing) return;
+  const refreshEpoch = interactionEpoch;
   isRefreshing = true;
   try {
     let next;
@@ -495,19 +645,17 @@ async function refresh() {
     const retained = selectedIds().filter((unitId) => (
       isFriendlySelectable(unitById(unitId))
     ));
-    selectedUnitIds.clear();
-    retained.forEach((unitId) => selectedUnitIds.add(unitId));
-    if (current.product_status.terminal) {
-      selectedUnitIds.clear();
-      clearOperation();
-    } else if (frameChanged) {
+    const selectionInvalidated = retained.length !== selectedUnitIds.size;
+    if (selectionInvalidated) reconcileInteractionDraft();
+    if (frameChanged) {
       lastNotice = null;
-      activeTool = null;
-      targetHex = null;
-      targetUnitId = null;
-      operationPreview = null;
-      executeRequestId = null;
-      await loadCapabilities();
+      invalidateTacticalOverlay({ clearCache: true });
+      if (refreshEpoch === interactionEpoch && !selectionInvalidated) {
+        await loadCapabilities({ expectedEpoch: interactionEpoch });
+      } else {
+        render();
+      }
+      await loadTacticalOverlay({ force: true });
     } else {
       render();
     }
@@ -529,6 +677,12 @@ $("cancel-operation").addEventListener("click", () => clearOperation());
 $("execute-operation").addEventListener("click", executeOperation);
 $("confirm-partial").addEventListener("change", renderToolbar);
 $("reset-map-view").addEventListener("click", () => mapRenderer?.resetView());
+$("toggle-visibility-overlay").addEventListener(
+  "click", () => toggleTacticalOverlay("visibility"),
+);
+$("toggle-weapon-envelope").addEventListener(
+  "click", () => toggleTacticalOverlay("weapon"),
+);
 window.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
   if (activeTool || operationPreview) clearOperation();

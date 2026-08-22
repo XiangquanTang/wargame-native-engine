@@ -23,6 +23,7 @@ from wargame_native_engine.agents.protocol import (
 )
 from wargame_native_engine.core.action import EngineAction, ValidAction
 from wargame_native_engine.core.observation import SideObservation
+from wargame_native_engine.core.tactical_overlay import UnitTacticalOverlay
 from wargame_native_engine.gateway.models import (
     CommandGatewayError,
     ControllerView,
@@ -207,6 +208,25 @@ class SessionManager:
             ) != state_hash:
                 raise RuntimeError("move_planning_modified_world_state")
             return deepcopy(route), state_hash
+
+    def query_unit_tactical_overlay(
+        self,
+        session_id: str,
+        side: str,
+        unit_id: int,
+    ) -> UnitTacticalOverlay:
+        """Run one detached, mutation-guarded tactical-space query."""
+
+        managed = self._managed(session_id)
+        with managed.lock:
+            self._require_usable(managed)
+            _require_side(managed, side)
+            session = managed.environment.session
+            before = deepcopy(session.snapshot())
+            result = session.query_unit_tactical_overlay(side, unit_id)
+            if session.snapshot() != before:
+                raise RuntimeError("tactical_overlay_query_modified_engine_state")
+            return deepcopy(result)
 
     def agent_reset_context(
         self,
