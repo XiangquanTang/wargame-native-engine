@@ -1,0 +1,19 @@
+{
+  "schema": "native-demo-expected/1.0",
+  "demo_id": "drone_basic",
+  "seed": 42,
+  "side": "red",
+  "actors": {
+    "drone_id": 1,
+    "observed_target_id": 2,
+    "destination_hex": 102
+  },
+  "outcome": {
+    "canonical_identity": "DRONE",
+    "movement_duration_ms": 8000,
+    "visibility_refreshed": true,
+    "no_limited_lifecycle": true,
+    "no_attack_capability": true,
+    "strict_replay_matches": true
+  }
+}

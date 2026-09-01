@@ -1,0 +1,151 @@
+{
+  "schema_version": "native-scenario/1.0",
+  "scenario_id": "boarding-basic",
+  "initial_stage": "combat",
+  "map": {
+    "map_id": "boarding-basic-two-hex",
+    "width": 2,
+    "height": 2,
+    "distance_unit": "hex",
+    "blocked_positions": [],
+    "hex_size_m": 200,
+    "elevation_unit_m": 20,
+    "elevation_kind": "LEVEL",
+    "roadblocks": [],
+    "hexes": [
+      {
+        "pos": 101,
+        "elev": 0,
+        "cond": 0,
+        "neighbors": [102, -1, -1, -1, -1, -1],
+        "roads": [0, 0, 0, 0, 0, 0],
+        "rivers": [0, 0, 0, 0, 0, 0]
+      },
+      {
+        "pos": 102,
+        "elev": 0,
+        "cond": 0,
+        "neighbors": [-1, -1, -1, 101, -1, -1],
+        "roads": [0, 0, 0, 0, 0, 0],
+        "rivers": [0, 0, 0, 0, 0, 0]
+      }
+    ]
+  },
+  "sides": ["red", "blue"],
+  "operators": [
+    {
+      "operator_id": 101,
+      "side": "red",
+      "operator_type": "PERSONNEL",
+      "subtype": "boarding-fixture-passenger",
+      "x": 1,
+      "y": 1,
+      "altitude": 0,
+      "heading": 0,
+      "health": 100,
+      "max_health": 100,
+      "blood": 1,
+      "max_blood": 1,
+      "speed": 0,
+      "max_speed": 5,
+      "basic_speed": 5,
+      "move_range": 0,
+      "sensor_range": 8,
+      "state": "STOPPED",
+      "alive": true,
+      "deployed": true,
+      "weapon_ids": [],
+      "current_hex": 101,
+      "movement_mode": "NORMAL",
+      "stopped": true,
+      "raw_attributes": {
+        "armor_class": "UNARMORED",
+        "ammunition": {}
+      }
+    },
+    {
+      "operator_id": 102,
+      "side": "red",
+      "operator_type": "VEHICLE",
+      "subtype": "boarding-fixture-carrier",
+      "x": 1,
+      "y": 1,
+      "altitude": 0,
+      "heading": 0,
+      "health": 100,
+      "max_health": 100,
+      "blood": 1,
+      "max_blood": 1,
+      "speed": 0,
+      "max_speed": 36,
+      "basic_speed": 36,
+      "move_range": 0,
+      "sensor_range": 8,
+      "state": "STOPPED",
+      "alive": true,
+      "deployed": true,
+      "weapon_ids": [],
+      "current_hex": 101,
+      "movement_mode": "NORMAL",
+      "stopped": true,
+      "boarding_profile_id": "GROUND_PERSONNEL_SINGLE_V1",
+      "raw_attributes": {
+        "armor_class": "LIGHT",
+        "ammunition": {}
+      }
+    },
+    {
+      "operator_id": 201,
+      "side": "blue",
+      "operator_type": "VEHICLE",
+      "subtype": "boarding-fixture-opponent",
+      "x": 2,
+      "y": 1,
+      "altitude": 0,
+      "heading": 0,
+      "health": 100,
+      "max_health": 100,
+      "blood": 1,
+      "max_blood": 1,
+      "speed": 0,
+      "max_speed": 36,
+      "basic_speed": 36,
+      "move_range": 0,
+      "sensor_range": 8,
+      "state": "STOPPED",
+      "alive": true,
+      "deployed": true,
+      "weapon_ids": [],
+      "current_hex": 102,
+      "movement_mode": "NORMAL",
+      "stopped": true,
+      "raw_attributes": {
+        "armor_class": "LIGHT",
+        "ammunition": {}
+      }
+    }
+  ],
+  "objectives": [],
+  "deployment": {
+    "positions": {
+      "red": {
+        "101": [1, 1],
+        "102": [1, 1]
+      },
+      "blue": {
+        "201": [2, 1]
+      }
+    }
+  },
+  "terminal_rules": {
+    "max_ticks": 300,
+    "elimination": true,
+    "objective_score_to_win": null
+  },
+  "metadata": {
+    "fixture_type": "project_authored_boarding_basic",
+    "source_compatible": {
+      "weapons": {}
+    }
+  }
+}

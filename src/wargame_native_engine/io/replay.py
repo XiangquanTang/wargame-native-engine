@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
 import warnings
 
 from wargame_native_engine.core.action import EngineAction
@@ -16,6 +16,15 @@ from wargame_native_engine.io.serialization import (
     canonical_hash, file_sha256, json_clone,
 )
 from wargame_native_engine.rules.config import Ruleset, load_ruleset
+from wargame_native_engine.rules.indirect_fire import (
+    load_indirect_fire_replay_identity,
+)
+from wargame_native_engine.rules.operator_lifecycle import (
+    load_operator_lifecycle_authority,
+)
+from wargame_native_engine.rules.loitering_munition import (
+    load_loitering_munition_attack_authority,
+)
 from wargame_native_engine.version import (
     ADJUDICATION_SEMANTICS_VERSION,
     ENGINE_VERSION,
@@ -32,6 +41,48 @@ class UnsupportedReplaySemanticsError(ValueError):
     """The archive requires adjudication semantics this engine cannot run."""
 
 
+def _ordered_snapshot_paths(root: Path) -> list[Path]:
+    """Return snapshots in archive order for current and legacy layouts.
+
+    Snapshot storage identity is deliberately separate from ``WorldState.tick``.
+    New archives use a monotonic replay-local step sequence.  Legacy archives
+    used the integer-second tick projection and remain readable when their
+    filenames are unambiguous.  A mixed layout is rejected instead of being
+    silently reinterpreted.
+    """
+
+    paths = sorted(root.glob("*.json"))
+    if not paths:
+        return []
+    step_paths = [path for path in paths if path.name.startswith("step-")]
+    tick_paths = [path for path in paths if path.name.startswith("tick-")]
+    if step_paths:
+        if len(step_paths) != len(paths):
+            raise ValueError("mixed replay snapshot filename layouts")
+        return sorted(
+            step_paths,
+            key=lambda path: _snapshot_filename_sequence(path, "step-"),
+        )
+    if tick_paths:
+        if len(tick_paths) != len(paths):
+            raise ValueError("mixed replay snapshot filename layouts")
+        return sorted(
+            tick_paths,
+            key=lambda path: _snapshot_filename_sequence(path, "tick-"),
+        )
+    # Preserve support for archives produced before snapshot naming became a
+    # declared storage contract.  Lexical ordering was their existing reader
+    # behavior and remains deterministic.
+    return paths
+
+
+def _snapshot_filename_sequence(path: Path, prefix: str) -> int:
+    value = path.stem.removeprefix(prefix)
+    if not value.isdigit():
+        raise ValueError(f"invalid replay snapshot filename: {path.name}")
+    return int(value)
+
+
 class ReplayWriter:
     def __init__(self, root: str | Path, *, run_id: str,
                  scenario: NativeScenario, seed: int,
@@ -44,6 +95,7 @@ class ReplayWriter:
             raise FileExistsError(f"refusing to overwrite non-empty replay: {self.root}")
         self.root.mkdir(parents=True, exist_ok=True)
         (self.root / "snapshots").mkdir()
+        self._snapshot_sequence = 0
         for name in ("actions.jsonl", "events.jsonl", "steps.jsonl"):
             (self.root / name).write_text("", encoding="utf-8")
         self.manifest: dict[str, Any] = {
@@ -70,11 +122,18 @@ class ReplayWriter:
         self._write_json("manifest.json", self.manifest)
 
     def record_initial_state(self, snapshot: Mapping[str, Any]) -> None:
+        if _snapshot_uses_operator_lifecycle(snapshot):
+            self.manifest.update(_operator_lifecycle_replay_identity())
+        if _snapshot_uses_loitering_attack_authority(snapshot):
+            self.manifest.update(_loitering_attack_replay_identity())
+        self._write_json("manifest.json", self.manifest)
         self._write_json("initial_state.json", snapshot)
         self.record_snapshot(snapshot)
 
     def record_step(self, result: StepResult,
                     snapshot: Mapping[str, Any]) -> None:
+        if any(_is_indirect_fire_action(item.to_dict()) for item in result.actions):
+            self.manifest.update(load_indirect_fire_replay_identity())
         decisions: dict[str, list[Any]] = {}
         for item in result.decisions:
             decisions.setdefault(item.action_id, []).append(item)
@@ -108,8 +167,9 @@ class ReplayWriter:
         })
 
     def record_snapshot(self, snapshot: Mapping[str, Any]) -> None:
-        tick = int(snapshot["world"]["tick"])
-        self._write_json(f"snapshots/tick-{tick:08d}.json", snapshot)
+        sequence = self._snapshot_sequence
+        self._snapshot_sequence += 1
+        self._write_json(f"snapshots/step-{sequence:08d}.json", snapshot)
 
     def finalize(self, summary: Mapping[str, Any], *, status: str) -> None:
         self._write_json("episode_summary.json", summary)
@@ -120,7 +180,7 @@ class ReplayWriter:
             "steps.jsonl": file_sha256(self.root / "steps.jsonl"),
             "episode_summary.json": file_sha256(self.root / "episode_summary.json"),
         }
-        snapshots = sorted((self.root / "snapshots").glob("*.json"))
+        snapshots = _ordered_snapshot_paths(self.root / "snapshots")
         collections.update({str(path.relative_to(self.root)): file_sha256(path)
                             for path in snapshots})
         self.manifest.update({"status": status,
@@ -159,8 +219,8 @@ class ReplayReader:
             raise ValueError("replay result hash mismatch")
         return {"manifest": manifest,
                 "initial_state": self._json(path / "initial_state.json"),
-                "snapshots": [self._json(item) for item in sorted(
-                    (path / "snapshots").glob("*.json")
+                "snapshots": [self._json(item) for item in (
+                    _ordered_snapshot_paths(path / "snapshots")
                 )],
                 "actions": self._jsonl(path / "actions.jsonl"),
                 "events": self._jsonl(path / "events.jsonl"),
@@ -198,6 +258,26 @@ def replay_actions(scenario: NativeScenario, root: str | Path, *,
                       else load_ruleset(ruleset))
     manifest = bundle["manifest"]
     _check_adjudication_semantics(manifest, strict=strict, kind="replay")
+    _check_operator_lifecycle_semantics(
+        manifest,
+        required=_snapshot_uses_operator_lifecycle(bundle["initial_state"]),
+        strict=strict,
+        kind="replay",
+    )
+    _check_loitering_attack_semantics(
+        manifest,
+        required=_snapshot_uses_loitering_attack_authority(
+            bundle["initial_state"]
+        ),
+        strict=strict,
+        kind="replay",
+    )
+    _check_indirect_fire_semantics(
+        manifest,
+        _classic_replay_actions(bundle),
+        strict=strict,
+        kind="replay",
+    )
     mismatches: list[str] = []
     expected = {
         "scenario_hash": scenario.scenario_hash,
@@ -319,6 +399,31 @@ def replay_source_archive(scenario: NativeScenario, source: str | Path, *,
     manifest = archive.manifest
     _check_adjudication_semantics(
         manifest, strict=strict, kind="source replay")
+    _check_operator_lifecycle_semantics(
+        manifest,
+        required=any(
+            operator.lifecycle_profile_id is not None
+            for operator in scenario.operators
+        ),
+        strict=strict,
+        kind="source replay",
+    )
+    _check_loitering_attack_semantics(
+        manifest,
+        required=_scenario_uses_loitering_attack_authority(scenario),
+        strict=strict,
+        kind="source replay",
+    )
+    _check_indirect_fire_semantics(
+        manifest,
+        tuple(
+            action
+            for step in archive.steps
+            for action in step.get("ordered_actions", [])
+        ),
+        strict=strict,
+        kind="source replay",
+    )
     active_ruleset = (ruleset if isinstance(ruleset, Ruleset)
                       else load_ruleset(ruleset))
     expected = {
@@ -463,6 +568,183 @@ def _check_adjudication_semantics(
         raise UnsupportedReplaySemanticsError(message)
     warnings.warn(message + "; continuing in non-strict mode", RuntimeWarning,
                   stacklevel=3)
+
+
+def _operator_lifecycle_replay_identity() -> dict[str, str]:
+    authority = load_operator_lifecycle_authority()
+    return {
+        "operator_lifecycle_authority_version": authority.authority_version,
+        "operator_lifecycle_authority_hash": authority.content_hash,
+    }
+
+
+def _loitering_attack_replay_identity() -> dict[str, str]:
+    authority = load_loitering_munition_attack_authority()
+    return {
+        "loitering_munition_attack_authority_version": (
+            authority.authority_version
+        ),
+        "loitering_munition_attack_authority_hash": authority.content_hash,
+    }
+
+
+def _snapshot_uses_operator_lifecycle(snapshot: Mapping[str, Any]) -> bool:
+    world = snapshot.get("world")
+    if not isinstance(world, Mapping):
+        return False
+    operators = world.get("operators")
+    if not isinstance(operators, Mapping):
+        return False
+    return any(
+        isinstance(value, Mapping)
+        and value.get("lifecycle_profile_id") is not None
+        for value in operators.values()
+    )
+
+
+def _snapshot_uses_loitering_attack_authority(
+    snapshot: Mapping[str, Any],
+) -> bool:
+    world = snapshot.get("world")
+    if not isinstance(world, Mapping):
+        return False
+    operators = world.get("operators")
+    if not isinstance(operators, Mapping):
+        return False
+    authority = load_loitering_munition_attack_authority()
+    for value in operators.values():
+        if not isinstance(value, Mapping):
+            continue
+        profile_id = value.get("lifecycle_profile_id")
+        weapon_ids = value.get("weapon_ids", ())
+        if not isinstance(weapon_ids, list):
+            continue
+        if any(
+            type(weapon_id) is int
+            and authority.policy_for(
+                lifecycle_profile_id=(
+                    None if profile_id is None else str(profile_id)
+                ),
+                weapon_id=weapon_id,
+            ) is not None
+            for weapon_id in weapon_ids
+        ):
+            return True
+    return False
+
+
+def _scenario_uses_loitering_attack_authority(scenario: NativeScenario) -> bool:
+    authority = load_loitering_munition_attack_authority()
+    return any(
+        authority.policy_for(
+            lifecycle_profile_id=operator.lifecycle_profile_id,
+            weapon_id=weapon_id,
+        ) is not None
+        for operator in scenario.operators
+        for weapon_id in operator.weapon_ids
+    )
+
+
+def _check_operator_lifecycle_semantics(
+    manifest: Mapping[str, Any],
+    *,
+    required: bool,
+    strict: bool,
+    kind: str,
+) -> None:
+    if not required:
+        return
+    expected = _operator_lifecycle_replay_identity()
+    mismatches = tuple(
+        key for key, value in expected.items() if manifest.get(key) != value
+    )
+    if not mismatches:
+        return
+    message = (
+        f"unsupported {kind} operator lifecycle authority: "
+        + ", ".join(mismatches)
+    )
+    if strict:
+        raise UnsupportedReplaySemanticsError(message)
+    warnings.warn(message + "; continuing in non-strict mode", RuntimeWarning,
+                  stacklevel=3)
+
+
+def _check_loitering_attack_semantics(
+    manifest: Mapping[str, Any],
+    *,
+    required: bool,
+    strict: bool,
+    kind: str,
+) -> None:
+    if not required:
+        return
+    expected = _loitering_attack_replay_identity()
+    mismatches = tuple(
+        key for key, value in expected.items() if manifest.get(key) != value
+    )
+    if not mismatches:
+        return
+    message = (
+        f"unsupported {kind} loitering-munition attack authority: "
+        + ", ".join(mismatches)
+    )
+    if strict:
+        raise UnsupportedReplaySemanticsError(message)
+    warnings.warn(message + "; continuing in non-strict mode", RuntimeWarning,
+                  stacklevel=3)
+
+
+def _check_indirect_fire_semantics(
+    manifest: Mapping[str, Any],
+    actions: Sequence[Mapping[str, Any]],
+    *,
+    strict: bool,
+    kind: str,
+) -> None:
+    if not any(_is_indirect_fire_action(value) for value in actions):
+        return
+    expected = load_indirect_fire_replay_identity()
+    mismatches = tuple(
+        key for key, value in expected.items()
+        if manifest.get(key) != value
+    )
+    if not mismatches:
+        return
+    message = (
+        f"unsupported {kind} indirect-fire authority: "
+        + ", ".join(mismatches)
+    )
+    if strict:
+        raise UnsupportedReplaySemanticsError(message)
+    warnings.warn(message + "; continuing in non-strict mode", RuntimeWarning,
+                  stacklevel=3)
+
+
+def _classic_replay_actions(
+    bundle: Mapping[str, Any],
+) -> tuple[Mapping[str, Any], ...]:
+    steps = bundle.get("steps", ())
+    if steps:
+        return tuple(
+            action
+            for step in steps
+            for action in step.get("ordered_actions", [])
+        )
+    return tuple(
+        record.get("action", {})
+        for record in bundle.get("actions", ())
+    )
+
+
+def _is_indirect_fire_action(value: Mapping[str, Any]) -> bool:
+    if not isinstance(value, Mapping) or value.get("action_type") != "FIRE":
+        return False
+    parameters = value.get("parameters")
+    return (
+        isinstance(parameters, Mapping)
+        and parameters.get("fire_mode") == "INDIRECT"
+    )
 
 
 def _validate_source_step_record(record: Mapping[str, Any], offset: int) -> None:

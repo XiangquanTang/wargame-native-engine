@@ -27,6 +27,7 @@ from wargame_native_engine.viewer.realtime_control_server import (
     RealtimeDualControlHTTPServer,
     create_realtime_dual_control_server,
 )
+from wargame_native_engine.viewer.human_capabilities import source_weapon_profiles
 
 
 SCENARIO = Path("examples/source_movement_scenario.json")
@@ -81,6 +82,9 @@ class Fixture:
             red_token="red-token-123",
             blue_token="blue-token-456",
             map_data=self.factory.bundle.render_map_record(),
+            weapon_profiles=source_weapon_profiles(
+                self.factory.bundle.scenario.metadata,
+            ),
             port=0,
         )
 
@@ -260,8 +264,23 @@ def test_public_river_valley_pages_expose_a_real_shoot_command(
             )
             assert status == 200
             capabilities = decoded(payload)
+            assert capabilities["schema"] == "human-command-capabilities/1.0"
             assert capabilities["operations"]["SHOOT"]["applicable_count"] == 1
             assert capabilities["shoot_target_ids"] == [202, 203]
+            direct_fire = next(
+                value for value in capabilities["capabilities"]
+                if value["capability_type"] == "DIRECT_FIRE"
+            )
+            assert direct_fire["metadata"] == {
+                "applicable_count": 1,
+                "unit_count": 1,
+                "weapon_count": 1,
+            }
+            weapon = capabilities["direct_fire"]["units"][0]["weapons"][0]
+            assert weapon["weapon_id"] == 36
+            assert weapon["display_name"] == "大号直瞄炮"
+            assert weapon["maximum_range"] == 10
+            assert weapon["legal_target_ids"] == [202, 203]
             assert capabilities["operations"]["WEAPON_UNFOLD"]["unavailable"] == [{
                 "code": "weapon_already_unfolded",
                 "message": "武器已经展开",
@@ -279,6 +298,7 @@ def test_public_river_valley_pages_expose_a_real_shoot_command(
                     "actor_ids": [103],
                     "operation_type": "SHOOT",
                     "target_id": 203,
+                    "weapon_choices": {"103": 36},
                 },
             )
             assert status == 200

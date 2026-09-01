@@ -14,6 +14,7 @@ from wargame_native_engine.operations import WargameFacade
 from wargame_native_engine.viewer.dual_control_server import (
     create_dual_side_control_server,
 )
+from wargame_native_engine.viewer.human_capabilities import source_weapon_profiles
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -77,6 +78,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             red_token=args.red_token,
             blue_token=args.blue_token,
             map_data=match.map_record,
+            weapon_profiles=source_weapon_profiles(bundle.scenario.metadata),
             output_dir=args.output_dir,
             host=args.host,
             port=args.port,

@@ -80,7 +80,31 @@
         "raw_attributes": {"type": "object"},
         "attack_range": {"type": "number", "minimum": 0},
         "attack_damage": {"type": "number", "minimum": 0},
-        "deployed": {"type": "boolean"}
+        "deployed": {"type": "boolean"},
+        "movement_task_pause_reason": {
+          "type": ["string", "null"],
+          "enum": ["SUPPRESSION", null]
+        },
+        "guidance_profile_id": {"type": ["string", "null"]},
+        "guidance_affiliation_id": {"type": ["integer", "null"], "minimum": 0},
+        "guided_fire_recovery_remaining_ms": {"type": "integer", "minimum": 0},
+        "indirect_fire_planned_cooldown_remaining_ms": {"type": "integer", "minimum": 0},
+        "boarding_profile_id": {"type": ["string", "null"], "minLength": 1},
+        "mounted_on": {"type": ["integer", "null"], "minimum": 0},
+        "passenger_id": {"type": ["integer", "null"], "minimum": 0},
+        "movement_locked": {"type": "boolean"},
+        "lifecycle_profile_id": {"type": ["string", "null"], "minLength": 1},
+        "lifecycle_remaining_ms": {"type": ["integer", "null"], "minimum": 0},
+        "guidance_affiliation_evidence": {
+          "type": ["object", "null"],
+          "properties": {
+            "source_field": {"type": "string", "minLength": 1},
+            "source_value": {"type": ["integer", "string"]},
+            "mapping_version": {"type": "string", "minLength": 1}
+          },
+          "required": ["source_field", "source_value", "mapping_version"],
+          "additionalProperties": false
+        }
       },
       "additionalProperties": true
     },

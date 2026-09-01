@@ -1,0 +1,29 @@
+{
+  "schema_version": "native-indirect-fire-damage-policy/1.0",
+  "policy_id": "native-indirect-fire-damage-policy",
+  "version": "1.0.0",
+  "authority_status": "EXECUTABLE_AUTHORITY_READY",
+  "unarmored_target_modifier": {
+    "value": 0,
+    "application": "EXPLICIT_VALUE",
+    "authority_basis": "NATIVE_SIMPLIFIED_CONVENTION"
+  },
+  "unknown_armor_policy": "REJECT",
+  "numeric_result_correction": {
+    "application": "ADD_AND_CLAMP_TO_TARGET_STRENGTH",
+    "zero_policy": "PRESERVE_BASE_RESULT"
+  },
+  "symbolic_result_correction": {
+    "application": "SHIFT_ORDERED_LADDER_AND_CLAMP",
+    "ordered_results": [
+      "NO_EFFECT",
+      "SUPPRESS",
+      "LOSS_1",
+      "LOSS_2",
+      "LOSS_3",
+      "LOSS_4"
+    ],
+    "zero_policy": "PRESERVE_BASE_RESULT",
+    "authority_basis": "NATIVE_IMPLEMENTATION_CONVENTION"
+  }
+}

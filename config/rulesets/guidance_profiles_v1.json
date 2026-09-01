@@ -1,0 +1,41 @@
+{
+  "schema_version": "native-guidance-profiles/1.0",
+  "config_id": "native-guidance-authority",
+  "config_version": "1.0.0",
+  "mapping_version": "source-guidance-authority/1.0",
+  "unknown_policy": "UNKNOWN",
+  "profiles": {
+    "AIR_SIDE_GUIDER": {
+      "guidance_scope": "SIDE_WIDE",
+      "requires_stopped": null,
+      "requires_unfolded": null,
+      "prohibited_while_suppressed": null,
+      "recovery_seconds": 75
+    },
+    "GROUND_AFFILIATED_GUIDER": {
+      "guidance_scope": "AFFILIATED_SHOOTER",
+      "requires_stopped": true,
+      "requires_unfolded": true,
+      "prohibited_while_suppressed": true,
+      "recovery_seconds": 75
+    },
+    "PERSONNEL_AFFILIATED_GUIDER": {
+      "guidance_scope": "AFFILIATED_SHOOTER",
+      "requires_stopped": true,
+      "requires_unfolded": true,
+      "prohibited_while_suppressed": true,
+      "recovery_seconds": 75
+    }
+  },
+  "source_operator_profiles": {
+    "1_2": "PERSONNEL_AFFILIATED_GUIDER",
+    "2_4": "GROUND_AFFILIATED_GUIDER",
+    "3_5": "AIR_SIDE_GUIDER"
+  },
+  "weapon_fire_modes": {
+    "73": [
+      "DIRECT",
+      "GUIDED"
+    ]
+  }
+}

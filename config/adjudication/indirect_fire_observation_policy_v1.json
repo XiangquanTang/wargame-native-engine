@@ -1,0 +1,11 @@
+{
+  "schema_version": "native-indirect-fire-observation-policy/1.0",
+  "policy_id": "native-indirect-fire-observation-policy",
+  "version": "1.0.0",
+  "authority_status": "EXECUTABLE_AUTHORITY_READY",
+  "impact_observation_policy": "UNOBSERVED",
+  "requires_observer": false,
+  "correction_level_policy": "FIXED_UNOBSERVED",
+  "dispersion_table_id": "indirect_fire.unobserved_dispersion",
+  "authority_basis": "NATIVE_SIMPLIFIED_V1_UNOBSERVED"
+}

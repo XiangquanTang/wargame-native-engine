@@ -1,0 +1,42 @@
+{
+  "schema_version": "native-eight-factor-reward-shaping-policy/1.0",
+  "policy_id": "native-eight-factor-reward-shaping",
+  "policy_version": "1.0.0",
+  "enabled": true,
+  "component": {
+    "namespace": "shaping",
+    "code": "EIGHT_FACTOR_POTENTIAL",
+    "units": "dimensionless"
+  },
+  "potential": {
+    "source": "ANALYZER_NORMALIZED_RELATIVE_ADVANTAGE",
+    "canonical_side": "RED",
+    "blue_projection": "NEGATE_CANONICAL_RED",
+    "transform": "IDENTITY",
+    "range": [-1.0, 1.0]
+  },
+  "lambda": 0.03,
+  "discount_reference": {
+    "config_id": "native-training-discount",
+    "config_version": "1.0.0",
+    "config_hash": "f35a748f9d0232506135b7e2438fa64f5bcc601a7aeb1fc631b182f396e4f06e"
+  },
+  "formula": "LAMBDA_TIMES_GAMMA_PHI_NEXT_MINUS_PHI_BEFORE",
+  "terminal_handling": "ABSORBING_PHI_NEXT_ZERO",
+  "truncation_handling": "ANALYZE_COMMITTED_POST_STATE",
+  "zero_force_policy": "NORMALIZED_EXPLICIT_ZERO_TOTAL",
+  "missing_analysis_policy": "FAIL_CLOSED",
+  "coverage_policy": "REQUIRE_COMPLETE_NONEMPTY_SIDES",
+  "confidence_policy": "IGNORE_UNAVAILABLE_CONFIDENCE_V1",
+  "analyzer": {
+    "analysis_schema_version": "native-eight-factor-frame-analysis/1.0",
+    "model_id": "native-eight-factor",
+    "model_version": "0.1.0-contract",
+    "model_hash": "77e0113c896c813033528d43bc6c132e296cb91eacf9a153d436cb9fe20bc577"
+  },
+  "privileged_supervision_used": true,
+  "supervision_source": "GREEN_EIGHT_FACTOR_ANALYZER",
+  "future_information": "FORBIDDEN",
+  "reward_clipping": "NONE",
+  "reward_normalization": "NONE"
+}

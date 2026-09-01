@@ -6,7 +6,11 @@ from typing import Any, Mapping
 from wargame_native_engine.adjudication.dice import DiceRecord, DiceSource
 from wargame_native_engine.adjudication.modifiers import roll_modifiers
 from wargame_native_engine.adjudication.outcome import CombatOutcome
-from wargame_native_engine.adjudication.request import ActionLegalityResult, DirectFireRequest
+from wargame_native_engine.adjudication.request import (
+    ActionLegalityResult,
+    DirectFireRequest,
+    DirectFireResourcePolicy,
+)
 from wargame_native_engine.adjudication.table_loader import (
     AdjudicationTableSet, TableLookup, UnresolvedTableCellError,
 )
@@ -21,7 +25,7 @@ class DirectFireResolution:
     legality: ActionLegalityResult
     outcome: CombatOutcome | None
     events: tuple[EngineEvent, ...]
-    ammunition_after: int
+    ammunition_after: int | None
     cooldown_after: int
     error: str | None = None
 
@@ -47,7 +51,7 @@ class DirectFireAdjudicator:
              "target must be an enemy"),
             ("weapon_carried", self._weapon_is_carried(request),
              "weapon must belong to attacker"),
-            ("ammunition_available", request.ammunition_before > 0,
+            ("ammunition_available", self._attack_resource_available(request),
              "ammunition must be available"),
             ("target_domain_supported", request.target_domain in request.weapon.target_domains,
              "weapon must support target category"),
@@ -98,6 +102,10 @@ class DirectFireAdjudicator:
             "air_unit_hovering": "AIR_UNIT_MUST_HOVER",
             "external_close_combat_clear": "TARGET_IN_CLOSE_COMBAT",
         }
+        if request.resource_policy is not DirectFireResourcePolicy.AMMUNITION_KEY:
+            evidence["weapon_evidence"]["resource_policy"] = (
+                request.resource_policy.value
+            )
         for name, passed, description in checks:
             evidence["checks"][name] = passed
             if not passed:
@@ -120,14 +128,19 @@ class DirectFireAdjudicator:
 
     def _resolve(self, request: DirectFireRequest, *,
                  apply_outcome: bool) -> DirectFireResolution:
-        adjudication_id = "adjudication-" + canonical_hash({
+        adjudication_identity = {
             "tick": request.tick, "action_id": request.action_id,
             "attacker_id": request.attacker.operator_id,
             "target_id": request.target.operator_id,
             "weapon_id": request.weapon.weapon_id,
             "episode_seed": request.episode_seed,
             "table_set_hash": self.tables.content_hash,
-        })[:24]
+        }
+        if request.resource_policy is not DirectFireResourcePolicy.AMMUNITION_KEY:
+            adjudication_identity["resource_policy"] = request.resource_policy.value
+        adjudication_id = "adjudication-" + canonical_hash(
+            adjudication_identity
+        )[:24]
         events = [self._event(request, EventType.DIRECT_FIRE_REQUESTED,
                               {"adjudication_id": adjudication_id})]
         legality = self.validate(request)
@@ -164,17 +177,23 @@ class DirectFireAdjudicator:
             outcome, application_events = self._apply_outcome(
                 request, outcome, adjudication_id)
             events.extend(application_events)
-        ammunition_after = request.ammunition_before - 1
-        cooldown_after = (self.tables.timing("direct_fire_cooldown_seconds")
-                          if request.weapon.cooldown_ticks is None
-                          else int(request.weapon.cooldown_ticks))
-        events.append(self._event(request, EventType.AMMUNITION_CONSUMED, {
-            "before": request.ammunition_before, "after": ammunition_after,
-            "ammunition_key": request.weapon.ammunition_key,
-        }))
-        events.append(self._event(request, EventType.WEAPON_COOLDOWN_STARTED, {
-            "before": request.weapon_cooldown_before, "after": cooldown_after,
-        }))
+        if request.resource_policy is DirectFireResourcePolicy.AMMUNITION_KEY:
+            if request.ammunition_before is None:
+                raise RuntimeError("ammunition resource lacks a pre-state value")
+            ammunition_after = request.ammunition_before - 1
+            cooldown_after = (self.tables.timing("direct_fire_cooldown_seconds")
+                              if request.weapon.cooldown_ticks is None
+                              else int(request.weapon.cooldown_ticks))
+            events.append(self._event(request, EventType.AMMUNITION_CONSUMED, {
+                "before": request.ammunition_before, "after": ammunition_after,
+                "ammunition_key": request.weapon.ammunition_key,
+            }))
+            events.append(self._event(request, EventType.WEAPON_COOLDOWN_STARTED, {
+                "before": request.weapon_cooldown_before, "after": cooldown_after,
+            }))
+        else:
+            ammunition_after = None
+            cooldown_after = request.weapon_cooldown_before
         return DirectFireResolution(adjudication_id, legality, outcome,
                                     tuple(sorted(events, key=event_sort_key)),
                                     ammunition_after, cooldown_after)
@@ -376,6 +395,23 @@ class DirectFireAdjudicator:
         expected = str(request.weapon.weapon_id)
         return expected in {str(item) for item in request.attacker.weapon_ids}
 
+    @staticmethod
+    def _attack_resource_available(request: DirectFireRequest) -> bool:
+        if request.resource_policy is DirectFireResourcePolicy.AMMUNITION_KEY:
+            return (
+                isinstance(request.weapon.ammunition_key, str)
+                and bool(request.weapon.ammunition_key)
+                and type(request.ammunition_before) is int
+                and request.ammunition_before > 0
+            )
+        if request.resource_policy is DirectFireResourcePolicy.SELF_AS_MUNITION:
+            return (
+                request.weapon.ammunition_key is None
+                and request.ammunition_before is None
+                and request.attacker.alive
+            )
+        return False
+
     def _event(self, request: DirectFireRequest, event_type: EventType,
                data: Mapping[str, Any]) -> EngineEvent:
         common = {
@@ -395,6 +431,8 @@ class DirectFireAdjudicator:
                                 "schema_version": self.tables.schema_version,
                                 "source_document_hash": self.tables.source_document_hash},
         }
+        if request.resource_policy is not DirectFireResourcePolicy.AMMUNITION_KEY:
+            common["resource_policy"] = request.resource_policy.value
         common.update(data)
         return EngineEvent(request.tick, event_type, request.attacker.side,
                            request.attacker.operator_id, request.target.operator_id,

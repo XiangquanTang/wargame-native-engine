@@ -294,6 +294,8 @@ class RealtimeLocalAgentRunner:
                     view.sim_time_ms,
                     deepcopy(view.observation),
                     deepcopy(view.capabilities),
+                    deepcopy(view.decision_semantic),
+                    deepcopy(view.action_catalog),
                 )
                 inference_started = monotonic_ns()
                 decision = agent.act(context=deepcopy(context))

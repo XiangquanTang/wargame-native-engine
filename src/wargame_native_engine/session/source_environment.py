@@ -99,7 +99,11 @@ class SourceCompatibleEnvironment:
                      "dice_rolled", "roll_modifiers_applied",
                      "combat_result_looked_up", "losses_applied",
                      "suppression_applied", "unit_destroyed",
-                     "weapon_cooldown_started", "ammunition_consumed"}]
+                     "weapon_cooldown_started", "ammunition_consumed",
+                     "guided_fire_resolved", "indirect_fire_resolved",
+                     "board_started", "board_completed",
+                     "unload_started", "unload_completed",
+                     "unit_concealed", "unit_exposed"}]
         action_records = []
         for action, decision in zip(result.actions, result.decisions):
             record = action.to_dict()
@@ -189,4 +193,20 @@ class SourceCompatibleEnvironment:
         }
         if "map_runtime_data" in snapshot:
             value["map_runtime_data"] = json_clone(snapshot["map_runtime_data"])
+        if "operator_lifecycle_authority" in snapshot:
+            lifecycle = snapshot["operator_lifecycle_authority"]
+            value["operator_lifecycle_authority_version"] = lifecycle[
+                "authority_version"
+            ]
+            value["operator_lifecycle_authority_hash"] = lifecycle[
+                "authority_hash"
+            ]
+        if "loitering_munition_attack_authority" in snapshot:
+            attack = snapshot["loitering_munition_attack_authority"]
+            value["loitering_munition_attack_authority_version"] = attack[
+                "authority_version"
+            ]
+            value["loitering_munition_attack_authority_hash"] = attack[
+                "authority_hash"
+            ]
         return value

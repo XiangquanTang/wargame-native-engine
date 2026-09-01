@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Native EightFactor Reward Shaping Policy",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "policy_id",
+    "policy_version",
+    "enabled",
+    "component",
+    "potential",
+    "lambda",
+    "discount_reference",
+    "formula",
+    "terminal_handling",
+    "truncation_handling",
+    "zero_force_policy",
+    "missing_analysis_policy",
+    "coverage_policy",
+    "confidence_policy",
+    "analyzer",
+    "privileged_supervision_used",
+    "supervision_source",
+    "future_information",
+    "reward_clipping",
+    "reward_normalization"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "native-eight-factor-reward-shaping-policy/1.0"
+    },
+    "policy_id": {"const": "native-eight-factor-reward-shaping"},
+    "policy_version": {"const": "1.0.0"},
+    "enabled": {"const": true},
+    "component": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["namespace", "code", "units"],
+      "properties": {
+        "namespace": {"const": "shaping"},
+        "code": {"const": "EIGHT_FACTOR_POTENTIAL"},
+        "units": {"const": "dimensionless"}
+      }
+    },
+    "potential": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source", "canonical_side", "blue_projection", "transform", "range"
+      ],
+      "properties": {
+        "source": {"const": "ANALYZER_NORMALIZED_RELATIVE_ADVANTAGE"},
+        "canonical_side": {"const": "RED"},
+        "blue_projection": {"const": "NEGATE_CANONICAL_RED"},
+        "transform": {"const": "IDENTITY"},
+        "range": {
+          "type": "array",
+          "prefixItems": [{"const": -1.0}, {"const": 1.0}],
+          "minItems": 2,
+          "maxItems": 2
+        }
+      }
+    },
+    "lambda": {"type": "number", "minimum": 0.0},
+    "discount_reference": {"$ref": "#/$defs/identity"},
+    "formula": {"const": "LAMBDA_TIMES_GAMMA_PHI_NEXT_MINUS_PHI_BEFORE"},
+    "terminal_handling": {"const": "ABSORBING_PHI_NEXT_ZERO"},
+    "truncation_handling": {"const": "ANALYZE_COMMITTED_POST_STATE"},
+    "zero_force_policy": {"const": "NORMALIZED_EXPLICIT_ZERO_TOTAL"},
+    "missing_analysis_policy": {"const": "FAIL_CLOSED"},
+    "coverage_policy": {"const": "REQUIRE_COMPLETE_NONEMPTY_SIDES"},
+    "confidence_policy": {"const": "IGNORE_UNAVAILABLE_CONFIDENCE_V1"},
+    "analyzer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "analysis_schema_version", "model_id", "model_version", "model_hash"
+      ],
+      "properties": {
+        "analysis_schema_version": {
+          "const": "native-eight-factor-frame-analysis/1.0"
+        },
+        "model_id": {"const": "native-eight-factor"},
+        "model_version": {"const": "0.1.0-contract"},
+        "model_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "privileged_supervision_used": {"const": true},
+    "supervision_source": {"const": "GREEN_EIGHT_FACTOR_ANALYZER"},
+    "future_information": {"const": "FORBIDDEN"},
+    "reward_clipping": {"const": "NONE"},
+    "reward_normalization": {"const": "NONE"}
+  },
+  "$defs": {
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["config_id", "config_version", "config_hash"],
+      "properties": {
+        "config_id": {"type": "string", "minLength": 1},
+        "config_version": {"type": "string", "minLength": 1},
+        "config_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    }
+  }
+}

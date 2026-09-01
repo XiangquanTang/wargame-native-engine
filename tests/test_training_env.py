@@ -131,6 +131,7 @@ def _training_env(
     factory: EnvironmentFactory | None = None,
     decision_interval_ms: int | None = None,
     frame_interval_ms: int | None = None,
+    training_interface_version: str = "decision-v1",
 ):
     factory = factory or EnvironmentFactory()
     agent = opponent or RecordingNoOpAgent()
@@ -144,8 +145,77 @@ def _training_env(
         delta_time_seconds=20,
         decision_interval_ms=decision_interval_ms,
         frame_interval_ms=frame_interval_ms,
+        training_interface_version=training_interface_version,
     )
     return environment, factory, agent
+
+
+def test_decision_v1_is_default_and_legacy_encoder_is_explicit(tmp_path: Path) -> None:
+    current, _, _ = _training_env(tmp_path / "current")
+    legacy, _, _ = _training_env(
+        tmp_path / "legacy",
+        training_interface_version="legacy-side-observation",
+    )
+    try:
+        decision = current.reset(42)
+        old = legacy.reset(42)
+        assert current.training_interface_version == "decision-v1"
+        assert current.observation_space.contains(decision.observation)
+        assert "snapshot_features" in decision.observation
+        assert "friendly_operators" not in decision.observation
+        assert old.observation["side"] == "red"
+        assert "friendly_operators" in old.observation
+    finally:
+        current.close()
+        legacy.close()
+
+
+def test_decision_v1_observation_catalog_pair_rejects_external_window_drift(
+    tmp_path: Path,
+) -> None:
+    environment, factory, opponent = _training_env(tmp_path)
+    try:
+        initial = environment.reset(42)
+        session_id = environment._session_id  # noqa: SLF001 - boundary probe
+        assert session_id is not None
+        environment._gateway.submit_batch(  # noqa: SLF001
+            session_id,
+            "native-training-red",
+            request_id="external-red",
+            expected_window=0,
+            ordered_action_ids=(),
+        )
+        environment._gateway.submit_batch(  # noqa: SLF001
+            session_id,
+            "native-training-blue",
+            request_id="external-blue",
+            expected_window=0,
+            ordered_action_ids=(),
+        )
+        with pytest.raises(NativeTrainingError, match="snapshot_stale"):
+            environment.step(None)
+        assert not opponent.observations
+        assert environment.reward_records == ()
+        assert initial.action_space.decision_window_index == 0
+        assert factory.environments[0].session.snapshot()["world"]["tick"] > 0
+    finally:
+        environment.close()
+
+
+def test_decision_v1_parallel_env_catalogs_are_isolated(tmp_path: Path) -> None:
+    first, _, _ = _training_env(tmp_path / "first")
+    second, _, _ = _training_env(tmp_path / "second")
+    try:
+        first_reset = first.reset(42)
+        second_reset = second.reset(43)
+        first.step(None)
+        assert first.current_action_space.decision_window_index == 1
+        assert second.current_action_space.decision_window_index == 0
+        assert second.current_action_space == second_reset.action_space
+        assert first_reset.action_space is not second_reset.action_space
+    finally:
+        first.close()
+        second.close()
 
 
 @pytest.mark.parametrize("side", ["red", "blue"])
@@ -159,7 +229,9 @@ def test_reset_returns_only_controlled_side_and_exact_valid_action_mask(
         session = factory.environments[0].session
         expected = tuple(item.to_dict() for item in session.valid_actions(side))
 
-        assert result.observation["side"] == side
+        assert result.observation["snapshot_features"][0] == (
+            1.0 if side == "red" else 2.0
+        )
         assert "green" not in result.observation
         assert "frame_analysis" not in result.observation
         assert result.info["perspective"] == side.upper()
@@ -183,12 +255,12 @@ def test_observation_action_and_opponent_inputs_are_deeply_detached(
     environment, factory, opponent = _training_env(tmp_path)
     try:
         initial = environment.reset()
-        initial.observation["mission"]["mutated"] = True
+        initial.observation["snapshot_features"][0] = 99.0
         initial.action_space.actions[0]["action"]["parameters"]["mutated"] = True
 
         result = environment.step(None)
 
-        assert "mutated" not in result.observation["mission"]
+        assert result.observation["snapshot_features"][0] == 1.0
         current = factory.environments[0].session.valid_actions("red")
         assert all(
             "mutated" not in item.action.parameters for item in current
@@ -214,9 +286,14 @@ def test_each_training_step_calls_opponent_and_underlying_step_once(
         assert len(opponent.observations) == 1
         assert result.info["step_index"] == 1
         assert result.reward == 0.0
+        assert result.reward_record.total_reward == result.reward
+        assert result.info["training_supervision"]["reward_record_hash"] == (
+            result.reward_record.semantic_hash
+        )
+        assert environment.episode_return == result.reward
         assert result.terminated is False
         assert result.truncated is False
-        assert result.observation["side"] == "red"
+        assert result.observation["snapshot_features"][0] == 1.0
     finally:
         environment.close()
 
@@ -245,7 +322,7 @@ def test_training_destination_adapter_reuses_server_proposal_and_side_controller
         assert factory.environments[0].last_step_record[
             "ordered_actions"
         ][0]["parameters"]["path"] == list(proposal.ordered_path)
-        assert result.observation["side"] == "red"
+        assert result.observation["snapshot_features"][0] == 1.0
         assert "green" not in result.observation
     finally:
         environment.close()
@@ -259,9 +336,10 @@ def test_invalid_action_index_is_rejected_before_opponent_or_environment(
     environment, factory, opponent = _training_env(tmp_path)
     try:
         environment.reset()
-        with pytest.raises((TypeError, ValueError), match="action_id"):
+        with pytest.raises((TypeError, ValueError), match="action_(?:id|index|indices)"):
             environment.step(invalid)
         assert not opponent.observations
+        assert environment.reward_records == ()
         assert factory.environments[0].session.step.call_count == 0  # type: ignore[attr-defined]
     finally:
         environment.close()
@@ -303,6 +381,9 @@ def test_max_steps_is_training_truncation_not_native_terminal_and_can_publish(
 
         assert result.terminated is False
         assert result.truncated is True
+        assert result.reward_record.truncated is True
+        assert result.reward_record.truncation.limit_kind == "max_steps"
+        assert result.reward_record.truncation.configured_limit == 1
         assert result.info["winner"] is None
         assert result.info["truncation_source"] == "training_max_steps"
         assert factory.environments[0].session.is_terminal() is False
@@ -339,6 +420,7 @@ def test_native_max_ticks_is_truncated_not_terminated_and_reset_recovers(
         assert result.terminated is False
         assert result.truncated is True
         assert result.reward == 0.0
+        assert result.reward_record.truncation.source.value == "NATIVE_MAX_TICKS"
         assert result.info["outcome"] == "truncated"
         assert result.info["truncation_source"] == "native"
         native = factory.environments[0].session.result()
@@ -388,6 +470,10 @@ def test_native_terminal_wins_over_coincident_training_limit(
         assert result.terminated is True
         assert result.truncated is False
         assert result.reward == 1.0
+        assert result.reward_record.total_reward == 1.0
+        assert result.reward_record.privileged_supervision_used is True
+        assert result.observation["snapshot_features"][3] == 1.0
+        assert not any(result.action_space.mask)
         assert result.info["winner"] == winning_side
         assert result.info["truncation_source"] is None
         native = factory.environments[0].session.result()

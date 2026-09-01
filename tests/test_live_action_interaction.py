@@ -53,6 +53,10 @@ def test_dual_control_uses_shared_renderer_and_server_planning_only() -> None:
     assert '"/api/batch/submit"' not in source
     assert "destination_hex" in source
     assert "result.path" in source
+    assert "setIndirectFireAreas" in source
+    assert "indirect_fire_active_areas" in source
+    assert "_drawTacticalOverlays" in renderer
+    assert "active_remaining_seconds" in renderer
     assert "new EngineAction" not in source
     assert "pathfind" not in source.lower()
     assert "lineOfSight" not in source
@@ -75,10 +79,12 @@ def test_product_page_hides_internal_control_panels_and_supports_multiselect() -
     assert '<details id="advanced-debug"' in page
     assert '<details id="advanced-debug" class="advanced-debug" open' not in page
     for identifier in (
-        "tool-move", "tool-shoot", "tool-stop", "tool-unfold",
-        "tool-lock", "tool-wait", "cancel-operation", "execute-operation",
+        "capability-panel", "direct-fire-panel", "weapon-choices",
+        "cancel-operation", "execute-operation",
     ):
         assert f'id="{identifier}"' in page
+    assert "data-operation=" not in page
+    assert '<script src="/static/capability_ui.js"></script>' in page
     assert "const selectedUnitIds = new Set()" in source
     assert "modifiers.ctrlKey || modifiers.metaKey" in source
     assert "modifiers.shiftKey" in source
@@ -93,11 +99,11 @@ def test_realtime_tick_refresh_preserves_the_interaction_draft() -> None:
     source = (STATIC / "dual_control.js").read_text(encoding="utf-8")
     refresh = source[
         source.index("async function refresh()"):
-        source.index("operationButtons.forEach")
+        source.index('$("capability-panel").addEventListener')
     ]
     hex_selection = source[
         source.index("async function handleHexSelection"):
-        source.index("async function activateTool")
+        source.index("async function selectDirectFireWeapon")
     ]
 
     assert "const refreshEpoch = interactionEpoch" in refresh
@@ -144,14 +150,26 @@ def test_product_toolbar_surfaces_rule_reasons_for_disabled_actions() -> None:
         source.index("function renderToolbar")
     ]
     toolbar = source[
-        source.index("function renderToolbar"):
-        source.index("function renderPreview")
+        source.index("function renderCapabilityPanel"):
+        source.index("function renderDirectFirePanel")
     ]
 
     assert "unavailable[0].message" in operation_count
     assert "function operationHint" in operation_count
     assert "new Set" in operation_count
-    assert "button.title = operationHint(kind)" in toolbar
+    assert "button.title = operationHint(capability.operation_type)" in toolbar
+
+
+def test_human_command_ui_is_capability_driven_and_weapon_specific() -> None:
+    source = (STATIC / "dual_control.js").read_text(encoding="utf-8")
+
+    assert "let selectedCapability = null" in source
+    assert "let selectedWeaponId = null" in source
+    assert "function renderCapabilityPanel" in source
+    assert "function renderDirectFirePanel" in source
+    assert "activeShootTargetIds" in source
+    assert "weaponEnvelopeHexes(tacticalOverlay, selectedWeaponId)" in source
+    assert "weapon_choices: { [unitIds[0]]: selectedWeaponId }" in source
 
 
 def test_live_action_index_pure_functions_when_node_is_available() -> None:

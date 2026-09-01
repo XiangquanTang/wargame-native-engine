@@ -1,0 +1,36 @@
+{
+  "schema_version": "native-ppo-vector-runner-config/1.0",
+  "runner_id": "native-synchronous-vector-ppo-runner",
+  "runner_version": "1.0.0",
+  "purpose": "BASELINE_V1",
+  "base_runner_config_ref": {
+    "id": "native-single-seat-ppo-runner",
+    "version": "1.0.0",
+    "hash": "e024f1d0c0db62ec87f042bdc6d284ec224bb777025f2c838025e8d2c3194141"
+  },
+  "num_envs": 4,
+  "trained_side": "RED",
+  "reward_mode": "BASE_ONLY",
+  "ppo_config_ref": {
+    "id": "native-masked-ppo",
+    "version": "1.0.0",
+    "hash": "d0b08a8295b22b316d8082272fa3763f491961d07934f2ac2c2b84c951fa622d"
+  },
+  "seed_config_ref": {
+    "id": "native-training-seeds",
+    "version": "1.0.0",
+    "hash": "0bf9ddec709ab6048855f6bf86e2338fe5f3b8ef15fdca99a98e9fdf092aa1f3"
+  },
+  "rollout_target": {
+    "source": "PPO_CONFIG",
+    "semantics": "TOTAL_TRANSITIONS_PER_UPDATE",
+    "transitions_per_update": 2048
+  },
+  "collection_mode": "SYNCHRONOUS",
+  "reset_policy": "AUTO_RESET_COMPLETED_ENV",
+  "scenario_assignment": "SAME_SCENARIO_PER_ENV_DIFFERENT_DERIVED_SEEDS",
+  "flatten_order": "ENV_MAJOR_THEN_COLLECTION_ORDER",
+  "error_policy": "FAIL_WHOLE_VECTOR",
+  "reward_verification": "VERIFY_EVERY_COMPLETED_EPISODE",
+  "device": "CPU"
+}

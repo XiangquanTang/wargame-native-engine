@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "native-capability-registry/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "capabilities"],
+  "properties": {
+    "schema": {"const": "native-capability-registry/v1"},
+    "capabilities": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "capability_id", "category", "engine_status", "demo_status",
+          "demo_id", "demo_feature", "replay_support", "replay_evidence",
+          "human_support", "agent_support", "implementation_refs",
+          "rule_refs", "test_refs", "notes"
+        ],
+        "properties": {
+          "capability_id": {"type": "string", "minLength": 1},
+          "category": {"enum": ["COMBAT", "MOBILITY", "OBJECTIVE", "OBSERVATION"]},
+          "engine_status": {"enum": ["IMPLEMENTED", "SIMPLIFIED_IMPLEMENTATION", "NOT_IMPLEMENTED"]},
+          "demo_status": {"enum": ["PASS", "PENDING"]},
+          "demo_id": {"type": "string", "minLength": 1},
+          "demo_feature": {"type": "string", "minLength": 1},
+          "replay_support": {"type": "boolean"},
+          "replay_evidence": {"type": "string", "minLength": 1},
+          "human_support": {"type": "boolean"},
+          "agent_support": {"type": "boolean"},
+          "implementation_refs": {"type": "array", "items": {"type": "string"}},
+          "rule_refs": {"type": "array", "items": {"type": "string"}},
+          "test_refs": {"type": "array", "items": {"type": "string"}},
+          "notes": {"type": "string", "minLength": 1}
+        }
+      }
+    }
+  }
+}

@@ -19,6 +19,9 @@ from wargame_native_engine.compat.source_frame.serialization import (
     canonical_source_json,
 )
 from wargame_native_engine.io.serialization import canonical_hash, file_sha256, json_clone
+from wargame_native_engine.rules.indirect_fire import (
+    load_indirect_fire_replay_identity,
+)
 from wargame_native_engine.version import ADJUDICATION_SEMANTICS_VERSION
 
 
@@ -85,6 +88,16 @@ class SourceFrameRecorder:
         missing = sorted(required - set(record))
         if missing:
             raise ValueError(f"step record missing fields: {missing}")
+        ordered_actions = record["ordered_actions"]
+        if (
+            isinstance(ordered_actions, Sequence)
+            and not isinstance(ordered_actions, (str, bytes))
+            and any(
+                _is_indirect_fire_action(value)
+                for value in ordered_actions
+            )
+        ):
+            self._metadata.update(load_indirect_fire_replay_identity())
         self._record_frame(green_frame)
         self._append_jsonl(self.root / "steps.jsonl", record)
 
@@ -222,6 +235,16 @@ class SourceFrameRecorder:
 
 def _canonical_json(value: Any) -> str:
     return canonical_source_json(value)
+
+
+def _is_indirect_fire_action(value: Mapping[str, Any]) -> bool:
+    if not isinstance(value, Mapping) or value.get("action_type") != "FIRE":
+        return False
+    parameters = value.get("parameters")
+    return (
+        isinstance(parameters, Mapping)
+        and parameters.get("fire_mode") == "INDIRECT"
+    )
 
 
 def _read_jsonl(path: Path) -> list[Mapping[str, Any]]:

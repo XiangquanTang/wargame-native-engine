@@ -1,0 +1,37 @@
+{
+  "schema_version": "native-ppo-parallel-runner-config/1.0",
+  "runner_id": "native-parallel-ppo-runner",
+  "runner_version": "1.0.0",
+  "purpose": "BASELINE_V1",
+  "base_vector_runner_ref": {
+    "id": "native-synchronous-vector-ppo-runner",
+    "version": "1.0.0",
+    "hash": "b95c355a38a854b9426c971e07501b4529b801f782d1f32ed30016425e0a7a34"
+  },
+  "worker_protocol_ref": {
+    "id": "native-ppo-parallel-worker-protocol",
+    "version": "1.0.0",
+    "hash": "fa0094258b5b41b1df0001071f073d36ae66a697d3e84d7a884f8b56c0463c32"
+  },
+  "num_envs": 4,
+  "num_workers": 4,
+  "execution_mode": "SYNCHRONOUS_MULTIPROCESS",
+  "start_method": "SPAWN",
+  "trained_side": "RED",
+  "reward_mode": "BASE_ONLY",
+  "ppo_config_ref": {
+    "id": "native-masked-ppo",
+    "version": "1.0.0",
+    "hash": "d0b08a8295b22b316d8082272fa3763f491961d07934f2ac2c2b84c951fa622d"
+  },
+  "seed_config_ref": {
+    "id": "native-training-seeds",
+    "version": "1.0.0",
+    "hash": "0bf9ddec709ab6048855f6bf86e2338fe5f3b8ef15fdca99a98e9fdf092aa1f3"
+  },
+  "rollout_target_semantics": "TOTAL_TRANSITIONS_PER_UPDATE",
+  "aggregation_order": "STABLE_ENV_INDEX",
+  "failure_policy": "FAIL_WHOLE_ROLLOUT",
+  "auto_restart": false,
+  "operational": {"worker_timeout_seconds": 30.0}
+}

@@ -6,6 +6,16 @@ from typing import Any, Mapping
 
 from wargame_native_engine.io.serialization import json_clone
 
+from wargame_native_engine.core.indirect_fire import (
+    FireMission,
+    fire_mission_sort_key,
+    normalize_fire_missions,
+)
+from wargame_native_engine.core.boarding import (
+    BoardingTransition,
+    boarding_transition_sort_key,
+    normalize_boarding_transitions,
+)
 from wargame_native_engine.core.operator import OperatorState
 
 
@@ -59,6 +69,16 @@ class WorldState:
     movement_evidence: list[dict[str, Any]] = field(default_factory=list)
     last_actions: list[dict[str, Any]] = field(default_factory=list)
     last_judge_info: list[dict[str, Any]] = field(default_factory=list)
+    indirect_fire_missions: tuple[FireMission, ...] = ()
+    boarding_transitions: tuple[BoardingTransition, ...] = ()
+
+    def __post_init__(self) -> None:
+        self.indirect_fire_missions = normalize_fire_missions(
+            self.indirect_fire_missions
+        )
+        self.boarding_transitions = normalize_boarding_transitions(
+            self.boarding_transitions
+        )
 
     @property
     def done(self) -> bool:
@@ -87,6 +107,22 @@ class WorldState:
                 "last_actions": json_clone(self.last_actions),
                 "last_judge_info": json_clone(self.last_judge_info),
             })
+        if self.indirect_fire_missions:
+            value["indirect_fire_missions"] = [
+                item.to_dict()
+                for item in sorted(
+                    self.indirect_fire_missions,
+                    key=fire_mission_sort_key,
+                )
+            ]
+        if self.boarding_transitions:
+            value["boarding_transitions"] = [
+                item.to_dict()
+                for item in sorted(
+                    self.boarding_transitions,
+                    key=boarding_transition_sort_key,
+                )
+            ]
         return value
 
     @classmethod
@@ -113,4 +149,18 @@ class WorldState:
                    int(value.get("next_event_sequence", 0)),
                    json_clone(value.get("movement_evidence", [])),
                    json_clone(value.get("last_actions", [])),
-                   json_clone(value.get("last_judge_info", [])))
+                   json_clone(value.get("last_judge_info", [])),
+                   tuple(sorted(
+                       (
+                           FireMission.from_dict(item)
+                           for item in value.get("indirect_fire_missions", [])
+                       ),
+                       key=fire_mission_sort_key,
+                   )),
+                   tuple(sorted(
+                       (
+                           BoardingTransition.from_dict(item)
+                           for item in value.get("boarding_transitions", [])
+                       ),
+                       key=boarding_transition_sort_key,
+                   )))

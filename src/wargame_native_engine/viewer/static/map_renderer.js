@@ -15,6 +15,8 @@
   const DIRECTION_LABELS = ["E", "NE", "NW", "W", "SW", "SE"];
   const SELECTED_UNIT_SCREEN_RADIUS = 19;
   const MAX_STACK_SCREEN_SPREAD = 30;
+  const UNIT_SYMBOL_SCREEN_SIZE = 34;
+  const SELECTED_UNIT_SYMBOL_SCREEN_SIZE = 40;
 
   function hexToPixel(row, column, hexSize) {
     if (!Number.isInteger(row) || !Number.isInteger(column) || row < 0 || column < 0) {
@@ -293,7 +295,36 @@
         weaponEnvelopeHexIds: new Set(),
         confirmedContactHexIds: new Set(),
       };
+      this.indirectFireAreas = [];
+      this.unitSymbolResolver = globalObject.UnitSymbolResolver || null;
+      this.unitSymbolRenderer = globalObject.UnitSymbolRenderer
+        && typeof globalObject.UnitSymbolRenderer.create === "function"
+        ? globalObject.UnitSymbolRenderer.create({
+          onReady: () => this._scheduleSymbolRender(),
+        })
+        : null;
+      this.symbolRenderScheduled = false;
+      if (this.unitSymbolResolver
+          && typeof this.unitSymbolResolver.loadRegistry === "function") {
+        this.unitSymbolResolver.loadRegistry()
+          .then(() => this._scheduleSymbolRender())
+          .catch(() => {
+            // The existing Canvas shape remains the authoritative fallback.
+          });
+      }
       this._bindEvents();
+    }
+
+    _scheduleSymbolRender() {
+      if (this.symbolRenderScheduled || !this.frame) return;
+      this.symbolRenderScheduled = true;
+      const schedule = typeof globalObject.requestAnimationFrame === "function"
+        ? globalObject.requestAnimationFrame.bind(globalObject)
+        : (callback) => globalObject.setTimeout(callback, 0);
+      schedule(() => {
+        this.symbolRenderScheduled = false;
+        if (this.frame) this.render(this.frame, Array.from(this.selectedUnitIds));
+      });
     }
 
     setMap(map) {
@@ -357,6 +388,22 @@
         weaponEnvelopeHexIds: normalized(weaponEnvelopeHexIds),
         confirmedContactHexIds: normalized(confirmedContactHexIds),
       };
+    }
+
+    setIndirectFireAreas(values = []) {
+      this.indirectFireAreas = (Array.isArray(values) ? values : [])
+        .filter((value) => Number.isInteger(value?.impact_hex)
+          && value.impact_hex >= 0
+          && Number.isInteger(value?.active_remaining_seconds)
+          && value.active_remaining_seconds > 0)
+        .map((value) => ({
+          missionId: String(value.mission_id || ""),
+          impactHex: Number(value.impact_hex),
+          remainingSeconds: Number(value.active_remaining_seconds),
+          affectedCount: Array.isArray(value.affected_operator_ids)
+            ? value.affected_operator_ids.length : 0,
+        }))
+        .sort((left, right) => left.missionId.localeCompare(right.missionId));
     }
 
     render(frame, selectedUnitId) {
@@ -763,6 +810,38 @@
       draw(this.tacticalOverlay.visibilityHexIds, colors.visibility);
       draw(this.tacticalOverlay.weaponEnvelopeHexIds, colors.weapon);
       context.save();
+      context.strokeStyle = "rgba(255,145,45,0.95)";
+      context.fillStyle = "rgba(255,110,35,0.22)";
+      context.lineWidth = 3;
+      context.setLineDash([7, 4]);
+      for (const area of this.indirectFireAreas) {
+        const row = Math.floor(area.impactHex / 100);
+        const column = area.impactHex % 100;
+        if (this.cellByKey.size && !this.cellByKey.has(`${row}:${column}`)) continue;
+        const vertices = hexVertices(row, column, this.map.hex_size)
+          .map((point) => this._screen(point));
+        context.beginPath();
+        vertices.forEach((point, index) => index
+          ? context.lineTo(point.x, point.y)
+          : context.moveTo(point.x, point.y));
+        context.closePath();
+        context.fill();
+        context.stroke();
+        const center = this._screen(hexToPixel(row, column, this.map.hex_size));
+        context.setLineDash([]);
+        context.font = "bold 11px sans-serif";
+        context.textAlign = "center";
+        context.fillStyle = "#ffe1a6";
+        context.fillText(
+          `${area.remainingSeconds}s / 已影响${area.affectedCount}`,
+          center.x,
+          center.y + 4,
+        );
+        context.fillStyle = "rgba(255,110,35,0.22)";
+        context.setLineDash([7, 4]);
+      }
+      context.restore();
+      context.save();
       context.strokeStyle = "#ffd84d";
       context.lineWidth = 3;
       for (const hexId of this.tacticalOverlay.confirmedContactHexIds) {
@@ -882,8 +961,33 @@
       context.save(); context.translate(x, y);
       context.fillStyle = color; context.strokeStyle = selected ? "#ffe15a" : "#ffffff";
       context.lineWidth = selected ? 3 : 1.5;
-      this._unitShape(context, unit.icon_key, radius);
-      context.fill(); context.stroke();
+      const symbol = this._resolveUnitSymbol(unit);
+      const svgDrawn = Boolean(symbol && this.unitSymbolRenderer
+        && this.unitSymbolRenderer.drawUnitSymbol(
+          context,
+          0,
+          0,
+          {
+            ...symbol,
+            side: unit.side,
+            status: unit.destroyed ? "destroyed" : "alive",
+          },
+          selected
+            ? SELECTED_UNIT_SYMBOL_SCREEN_SIZE
+            : UNIT_SYMBOL_SCREEN_SIZE,
+        ));
+      if (!svgDrawn) {
+        const fallbackKind = symbol?.status === "UNKNOWN"
+          ? symbol.base_symbol === "unknown_vehicle"
+            ? "armored_vehicle"
+            : (symbol.base_symbol === "infantry" ? "infantry" : "unknown")
+          : unit.icon_key;
+        this._unitShape(context, fallbackKind, radius);
+        context.fill(); context.stroke();
+      } else if (selected) {
+        context.beginPath(); context.arc(0, 0, radius + 2, 0, Math.PI * 2);
+        context.strokeStyle = "#ffe15a"; context.lineWidth = 3; context.stroke();
+      }
       if (unit.category === "passenger") {
         context.beginPath(); context.arc(0, 0, radius + 3, 0, Math.PI * 2);
         context.strokeStyle = "#ffc857"; context.lineWidth = 2.5; context.stroke();
@@ -917,6 +1021,18 @@
       context.textAlign = "left"; context.fillText(String(unit.operator_id), radius + 4, 4);
       context.restore();
       this.hitTargets.push({ x, y, radius: radius + 7, operatorId: unit.operator_id });
+    }
+
+    _resolveUnitSymbol(unit) {
+      if (!this.unitSymbolResolver
+          || typeof this.unitSymbolResolver.resolveOperator !== "function") {
+        return null;
+      }
+      try {
+        return this.unitSymbolResolver.resolveOperator(unit);
+      } catch (_error) {
+        return null;
+      }
     }
 
     _unitShape(context, kind, radius) {

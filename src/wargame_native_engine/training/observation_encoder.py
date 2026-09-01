@@ -9,7 +9,7 @@ from wargame_native_engine.io.serialization import json_clone
 
 
 class SideObservationEncoder:
-    """Encode the existing detached controller observation as JSON values."""
+    """Legacy compatibility encoder for pre-Decision-v1 checkpoints."""
 
     def encode(self, view: ControllerView) -> Mapping[str, Any]:
         value = json_clone(view.observation)

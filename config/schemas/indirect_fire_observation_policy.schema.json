@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "native-indirect-fire-observation-policy/1.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "policy_id", "version", "authority_status", "impact_observation_policy", "requires_observer", "correction_level_policy", "dispersion_table_id", "authority_basis"],
+  "properties": {
+    "schema_version": {"const": "native-indirect-fire-observation-policy/1.0"},
+    "policy_id": {"type": "string", "minLength": 1},
+    "version": {"type": "string", "minLength": 1},
+    "authority_status": {"const": "EXECUTABLE_AUTHORITY_READY"},
+    "impact_observation_policy": {"const": "UNOBSERVED"},
+    "requires_observer": {"const": false},
+    "correction_level_policy": {"const": "FIXED_UNOBSERVED"},
+    "dispersion_table_id": {"const": "indirect_fire.unobserved_dispersion"},
+    "authority_basis": {"type": "string", "minLength": 1}
+  }
+}

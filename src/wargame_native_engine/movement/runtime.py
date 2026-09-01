@@ -4,7 +4,10 @@ from typing import Any
 
 from wargame_native_engine.adjudication.scheduler import EventQueue, ScheduledCommand
 from wargame_native_engine.core.event import EngineEvent, EventType
-from wargame_native_engine.core.operator import OperatorState
+from wargame_native_engine.core.operator import (
+    MovementTaskPauseReason,
+    OperatorState,
+)
 from wargame_native_engine.core.world import WorldState
 from wargame_native_engine.io.serialization import canonical_hash
 from wargame_native_engine.movement.models import MovementMode, SegmentPlan
@@ -29,6 +32,7 @@ class MovementRuntime:
         operator.movement_action_sequence = action_sequence
         operator.movement_stop_requested = False
         operator.movement_blocked_reason = None
+        operator.movement_task_pause_reason = None
         operator.stopped = False
         operator.state = mode.value if mode is MovementMode.MARCHING else "MOVING"
         self._start_next_segment(world, operator, world.elapsed_time_ms, events)
@@ -37,6 +41,7 @@ class MovementRuntime:
                      action_id: str, action_sequence: int,
                      events: list[EngineEvent]) -> None:
         operator.movement_stop_requested = True
+        operator.movement_task_pause_reason = None
         events.append(self._event(world, EventType.STOP_MOVE_REQUESTED, operator,
                                   action_sequence, {"action_id": action_id,
                                                     "reason_code": "ACCEPTED"}))
@@ -59,6 +64,8 @@ class MovementRuntime:
                     boundaries.append(operator.move_to_stop_remaining_ms)
                 if operator.transition_remaining_ms > 0:
                     boundaries.append(operator.transition_remaining_ms)
+                if operator.suppression_remaining_ms > 0:
+                    boundaries.append(operator.suppression_remaining_ms)
                 if operator.stopped and operator.fatigue_level > 0:
                     boundaries.append(self.policy.fatigue_recovery_ms
                                       - operator.fatigue_recovery_elapsed_ms)
@@ -79,10 +86,14 @@ class MovementRuntime:
                     // operator.segment_traversal_ms)
                 self._update_evidence(world, operator.segment_event_id,
                                       progress_after=operator.cur_pos)
-                if (operator.operator_type.upper() == "PERSONNEL"
-                        and (operator.suppression_remaining_ms > 0
-                             or operator.state == "SUPPRESSED")):
-                    operator.movement_stop_requested = True
+                if (
+                    operator.operator_type.upper() == "PERSONNEL"
+                    and operator.suppression_remaining_ms > 0
+                    and not operator.movement_stop_requested
+                ):
+                    operator.movement_task_pause_reason = (
+                        MovementTaskPauseReason.SUPPRESSION
+                    )
             if operator.move_to_stop_remaining_ms > 0:
                 operator.move_to_stop_remaining_ms = max(
                     0, operator.move_to_stop_remaining_ms - duration)
@@ -91,6 +102,14 @@ class MovementRuntime:
                     0, operator.transition_remaining_ms - duration)
             operator.weapon_cooldown_remaining_ms = max(
                 0, operator.weapon_cooldown_remaining_ms - duration)
+            operator.guided_fire_recovery_remaining_ms = max(
+                0,
+                operator.guided_fire_recovery_remaining_ms - duration,
+            )
+            operator.indirect_fire_planned_cooldown_remaining_ms = max(
+                0,
+                operator.indirect_fire_planned_cooldown_remaining_ms - duration,
+            )
             if operator.suppression_remaining_ms > 0:
                 operator.suppression_remaining_ms = max(
                     0, operator.suppression_remaining_ms - duration)
@@ -175,11 +194,22 @@ class MovementRuntime:
                  "movement_event_id": event_id,
                  "from_hex": from_hex, "to_hex": target,
                  "reason_code": "ARRIVED"}))
-            suppressed_stop = (operator.operator_type.upper() == "PERSONNEL"
-                               and operator.suppression_remaining_ms > 0)
-            if operator.movement_stop_requested or suppressed_stop:
+            suppression_pause = (
+                operator.movement_task_pause_reason
+                is MovementTaskPauseReason.SUPPRESSION
+            )
+            if operator.movement_stop_requested:
+                operator.movement_task_pause_reason = None
+                self._start_stopping(
+                    world,
+                    operator,
+                    action_sequence,
+                    events,
+                    preserve_path=False,
+                )
+            elif suppression_pause:
                 self._start_stopping(world, operator, action_sequence, events,
-                                     preserve_path=suppressed_stop)
+                                     preserve_path=True)
             elif operator.move_path:
                 self._start_next_segment(world, operator,
                                          world.elapsed_time_ms, events)
@@ -241,6 +271,46 @@ class MovementRuntime:
             if (operator.suppression_remaining_ms == 0
                     and operator.state == "SUPPRESSED" and operator.stopped):
                 operator.state = "STOPPED"
+            self._resume_suppression_paused_task(world, operator, events)
+
+    def _resume_suppression_paused_task(
+        self,
+        world: WorldState,
+        operator: OperatorState,
+        events: list[EngineEvent],
+    ) -> None:
+        if (
+            operator.movement_task_pause_reason
+            is not MovementTaskPauseReason.SUPPRESSION
+            or operator.suppression_remaining_ms > 0
+            or not operator.stopped
+            or operator.move_to_stop_remaining_ms > 0
+            or operator.transition_kind is not None
+        ):
+            return
+        if not operator.move_path:
+            operator.movement_task_pause_reason = None
+            return
+        if (
+            not operator.alive
+            or not operator.deployed
+            or operator.current_hex is None
+        ):
+            return
+        operator.movement_task_pause_reason = None
+        operator.movement_blocked_reason = None
+        operator.stopped = False
+        operator.state = (
+            MovementMode.MARCHING.value
+            if operator.movement_mode == MovementMode.MARCHING.value
+            else "MOVING"
+        )
+        self._start_next_segment(
+            world,
+            operator,
+            world.elapsed_time_ms,
+            events,
+        )
 
     def _start_next_segment(self, world: WorldState, operator: OperatorState,
                             event_time_ms: int,

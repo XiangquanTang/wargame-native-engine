@@ -1,0 +1,17 @@
+{
+  "schema": "native-demo-expected/1.0",
+  "demo_id": "loitering_munition_expiry",
+  "seed": 42,
+  "side": "red",
+  "mode": "EXPIRY",
+  "actors": {
+    "attacker_id": 1,
+    "weapon_id": 76
+  },
+  "outcome": {
+    "expiry_time_ms": 1200000,
+    "attacker_destroyed": true,
+    "destruction_reason_code": "LIFECYCLE_EXPIRED",
+    "strict_replay_matches": true
+  }
+}

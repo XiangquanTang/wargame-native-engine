@@ -73,7 +73,7 @@ def main(argv: list[str] | None = None) -> int:
             profile, observer_hex=attacker_hex, target_hex=target_hex,
             observer_domain=UnitDomain(attacker.operator_type),
             target_domain=UnitDomain(target.operator_type),
-            target_concealed=bool(target.raw_attributes.get("concealed", False)),
+            target_concealed=target.concealed,
             target_terrain=profile.cell(target_hex).terrain,
         )
         ammo = {str(key): int(value) for key, value in
@@ -93,7 +93,7 @@ def main(argv: list[str] | None = None) -> int:
             attacker_suppressed=attacker.state == "SUPPRESSED",
             attacker_moving=attacker.state == "MOVING",
             target_terrain=profile.cell(target_hex).terrain,
-            target_concealed=bool(target.raw_attributes.get("concealed", False)),
+            target_concealed=target.concealed,
             target_moving=target.state == "MOVING",
             target_stacked=bool(target.raw_attributes.get("stacked", False)),
             target_marching=target.state == "MARCHING",

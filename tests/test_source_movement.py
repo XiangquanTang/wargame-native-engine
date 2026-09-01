@@ -7,6 +7,7 @@ import pytest
 from wargame_native_engine.core.action import ActionType, EngineAction
 from wargame_native_engine.core.engine import NativeEngine
 from wargame_native_engine.core.event import EventType
+from wargame_native_engine.core.operator import MovementTaskPauseReason
 from wargame_native_engine.backends.native import NativeEngineBackend
 from wargame_native_engine.compat.source_frame.importer import SourceFrameImporter
 from wargame_native_engine.io.replay import ReplayWriter, replay_actions
@@ -389,6 +390,207 @@ def test_suppressed_personnel_finishes_segment_and_preserves_remaining_path() ->
     assert unit.current_hex == 102
     assert unit.move_path == [103]
     assert unit.state == "TRANSITIONING_TO_STOP"
+    assert unit.movement_task_pause_reason is (
+        MovementTaskPauseReason.SUPPRESSION
+    )
+
+
+def test_stationary_suppression_expires_without_creating_movement_task() -> None:
+    engine = _engine(mover_domain="PERSONNEL", mover_speed=20)
+    unit = _operator_state(engine)
+    unit.state = "SUPPRESSED"
+    unit.suppression_remaining_ms = 1_000
+
+    engine.step([], delta_time_ms=1_000)
+
+    assert unit.state == "STOPPED"
+    assert unit.stopped is True
+    assert unit.move_path == []
+    assert unit.movement_task_pause_reason is None
+    assert any(
+        item.action.action_type is ActionType.MOVE
+        and item.action.actor_id == unit.operator_id
+        for item in engine.valid_actions("red")
+    )
+
+
+def test_direct_suppression_resumes_exact_unfinished_personnel_task() -> None:
+    scenario = scenario_from_dict(_scenario_document(
+        mover_domain="PERSONNEL",
+        mover_speed=5,
+    ))
+    engine = NativeEngine(scenario)
+    engine.reset(3)
+    engine.step([_move([102, 103])], delta_time_ms=1_000)
+    shoot = EngineAction(
+        "blue",
+        2,
+        ActionType.SHOOT,
+        target_id=1,
+        parameters={"weapon_id": 36},
+    )
+
+    fired = engine.step([shoot], delta_time_ms=1_000)
+    unit = _operator_state(engine)
+    assert any(
+        item.event_type is EventType.SUPPRESSION_APPLIED
+        for item in fired.events
+    )
+    assert unit.movement_task_pause_reason is (
+        MovementTaskPauseReason.SUPPRESSION
+    )
+
+    engine.step([], delta_time_ms=142_000)
+    assert unit.current_hex == 102
+    assert unit.move_path == [103]
+    assert unit.state == "TRANSITIONING_TO_STOP"
+    assert unit.move_to_stop_remaining_ms == 75_000
+    assert unit.suppression_remaining_ms == 7_000
+
+    engine.step([], delta_time_ms=7_000)
+    assert unit.suppression_remaining_ms == 0
+    assert unit.move_to_stop_remaining_ms == 68_000
+    assert unit.movement_task_pause_reason is (
+        MovementTaskPauseReason.SUPPRESSION
+    )
+
+    resumed = engine.step([], delta_time_ms=68_000)
+    assert unit.state == "MOVING"
+    assert unit.segment_to_hex == 103
+    assert unit.segment_elapsed_ms == 0
+    assert unit.move_path == [103]
+    assert unit.movement_task_pause_reason is None
+    assert any(
+        item.event_type is EventType.MOVEMENT_STARTED
+        and item.actor_id == unit.operator_id
+        for item in resumed.events
+    )
+
+
+def test_suppression_at_segment_boundary_pauses_then_exactly_resumes() -> None:
+    scenario = scenario_from_dict(_scenario_document(
+        mover_domain="PERSONNEL",
+        mover_speed=20,
+    ))
+    engine = NativeEngine(scenario)
+    engine.reset(3)
+    engine.step([_move([102, 103])], delta_time_ms=1_000)
+    shoot = EngineAction(
+        "blue",
+        2,
+        ActionType.SHOOT,
+        target_id=1,
+        parameters={"weapon_id": 36},
+    )
+
+    boundary = engine.step([shoot], delta_time_ms=35_000)
+    unit = _operator_state(engine)
+    assert unit.current_hex == 102
+    assert unit.move_path == [103]
+    assert unit.move_to_stop_remaining_ms == 75_000
+    assert [
+        item.event_type
+        for item in boundary.events
+        if item.event_type in {
+            EventType.SUPPRESSION_APPLIED,
+            EventType.ARRIVED_HEX,
+            EventType.STOPPING_STARTED,
+        }
+    ] == [
+        EventType.SUPPRESSION_APPLIED,
+        EventType.ARRIVED_HEX,
+        EventType.STOPPING_STARTED,
+    ]
+
+    engine.step([], delta_time_ms=75_000)
+    assert unit.stopped is True
+    assert unit.state == "SUPPRESSED"
+    assert unit.suppression_remaining_ms == 40_000
+    available_types = {
+        item.action.action_type
+        for item in engine.valid_actions("red")
+        if item.action.actor_id == unit.operator_id
+    }
+    assert ActionType.MOVE not in available_types
+    assert ActionType.STOP_MOVE not in available_types
+    forged = engine.step([_move([103])], delta_time_ms=1_000)
+    assert forged.decisions[0].accepted is False
+    assert forged.decisions[0].code == "MOVE_TASK_ALREADY_ACTIVE"
+    assert unit.suppression_remaining_ms == 39_000
+
+    engine.step([], delta_time_ms=39_000)
+    assert unit.suppression_remaining_ms == 0
+    assert unit.state == "MOVING"
+    assert unit.segment_to_hex == 103
+    assert unit.segment_elapsed_ms == 0
+    assert unit.movement_task_pause_reason is None
+
+
+def test_suppression_expiry_overshoot_resumes_with_residual_delta() -> None:
+    engine = _engine(mover_domain="PERSONNEL", mover_speed=20)
+    unit = _operator_state(engine)
+    unit.state = "SUPPRESSED"
+    unit.stopped = True
+    unit.move_path = [102]
+    unit.movement_action_id = "paused-move"
+    unit.movement_action_sequence = 0
+    unit.movement_task_pause_reason = MovementTaskPauseReason.SUPPRESSION
+    unit.suppression_remaining_ms = 1_000
+
+    engine.step([], delta_time_ms=5_000)
+
+    assert unit.suppression_remaining_ms == 0
+    assert unit.state == "MOVING"
+    assert unit.segment_to_hex == 102
+    assert unit.segment_elapsed_ms == 4_000
+    assert unit.cur_pos_millionths == 111_111
+    assert unit.movement_task_pause_reason is None
+
+
+def test_suppression_pause_snapshot_restore_and_new_move_after_completion() -> None:
+    first = _engine(mover_domain="PERSONNEL", mover_speed=20)
+    unit = _operator_state(first)
+    unit.state = "SUPPRESSED"
+    unit.stopped = True
+    unit.move_path = [102]
+    unit.movement_action_id = "paused-move"
+    unit.movement_action_sequence = 0
+    unit.movement_task_pause_reason = MovementTaskPauseReason.SUPPRESSION
+    unit.suppression_remaining_ms = 1
+    snapshot = first.snapshot()
+    second = _engine(mover_domain="PERSONNEL", mover_speed=20)
+    second.restore(snapshot)
+
+    first.step([], delta_time_ms=112_000)
+    second.step([], delta_time_ms=112_000)
+
+    assert first.snapshot() == second.snapshot()
+    resumed = _operator_state(first)
+    assert resumed.current_hex == 102
+    assert resumed.move_path == []
+    assert resumed.stopped is True
+    assert resumed.movement_task_pause_reason is None
+    move = _move([103])
+    result = first.step([move], delta_time_ms=1_000)
+    assert result.decisions[0].accepted is True
+    assert _operator_state(first).segment_to_hex == 103
+
+
+def test_manual_stop_during_suppression_cancels_remaining_path() -> None:
+    engine = _engine(mover_domain="PERSONNEL", mover_speed=20)
+    engine.step([_move([102, 103])], delta_time_ms=1_000)
+    unit = _operator_state(engine)
+    unit.state = "SUPPRESSED"
+    unit.suppression_remaining_ms = 150_000
+    unit.movement_task_pause_reason = MovementTaskPauseReason.SUPPRESSION
+    stop = EngineAction("red", 1, ActionType.STOP_MOVE)
+
+    result = engine.step([stop], delta_time_ms=35_000)
+
+    assert result.decisions[0].accepted is True
+    assert unit.current_hex == 102
+    assert unit.move_path == []
+    assert unit.movement_task_pause_reason is None
 
 
 def test_simultaneous_stack_arrivals_follow_action_sequence() -> None:
@@ -625,6 +827,65 @@ def test_source_movement_strict_replay_round_trip(tmp_path) -> None:
     assert verification.matches
 
 
+@pytest.mark.parametrize(
+    "wait_deltas",
+    [
+        (142_000, 7_000, 68_000, 144_000, 75_000),
+        (436_000,),
+    ],
+)
+def test_suppression_movement_resume_strict_replay(
+    tmp_path,
+    wait_deltas: tuple[int, ...],
+) -> None:
+    scenario = scenario_from_dict(_scenario_document(
+        mover_domain="PERSONNEL",
+        mover_speed=5,
+    ))
+    engine = NativeEngine(scenario)
+    engine.reset(3)
+    output = tmp_path / ("suppression-resume-" + str(len(wait_deltas)))
+    writer = ReplayWriter(
+        output,
+        run_id="suppression-movement-resume",
+        scenario=scenario,
+        seed=3,
+        agents={"red": "test", "blue": "test"},
+        max_ticks=1000,
+        ruleset=engine.ruleset,
+        project_commit=None,
+    )
+    writer.record_initial_state(engine.snapshot())
+
+    result = engine.step([_move([102, 103])], delta_time_ms=1_000)
+    writer.record_step(result, engine.snapshot())
+    shoot = EngineAction(
+        "blue",
+        2,
+        ActionType.SHOOT,
+        target_id=1,
+        parameters={"weapon_id": 36},
+    )
+    result = engine.step([shoot], delta_time_ms=1_000)
+    writer.record_step(result, engine.snapshot())
+    for delta_time_ms in wait_deltas:
+        result = engine.step([], delta_time_ms=delta_time_ms)
+        writer.record_step(result, engine.snapshot())
+
+    unit = _operator_state(engine)
+    assert unit.current_hex == 103
+    assert unit.move_path == []
+    assert unit.stopped is True
+    assert unit.movement_task_pause_reason is None
+    expected = canonical_hash(engine.snapshot()["world"])
+    writer.finalize({"result": engine.result().to_dict()}, status="complete")
+
+    verification = replay_actions(scenario, output, strict=True)
+
+    assert verification.matches is True
+    assert verification.expected_world_hash == expected
+
+
 def test_action_sequence_and_state_hash_are_seed_reproducible() -> None:
     values = []
     for _ in range(2):
@@ -648,10 +909,11 @@ def test_move_cannot_bypass_side_control() -> None:
     assert result.decisions[0].code == "ACTOR_NOT_CONTROLLED"
 
 
-def test_air_unit_does_not_receive_ground_movement_rules() -> None:
+def test_air_unit_uses_explicit_speed_without_ground_movement_rules() -> None:
     engine = _engine(mover_domain="AIR", mover_speed=100)
     result = engine.step([_move([102])])
-    assert result.decisions[0].code == "AIR_MOVEMENT_UNSUPPORTED"
+    assert result.decisions[0].accepted is True
+    assert result.decisions[0].code == "accepted"
 
 
 def test_transitioning_unit_cannot_start_move() -> None:

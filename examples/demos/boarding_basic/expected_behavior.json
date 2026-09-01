@@ -1,0 +1,30 @@
+{
+  "schema": "native-demo-expected/1.0",
+  "demo_id": "boarding_basic",
+  "seed": 42,
+  "side": "red",
+  "actors": {
+    "passenger_id": 101,
+    "carrier_id": 102,
+    "profile_id": "GROUND_PERSONNEL_SINGLE_V1"
+  },
+  "preconditions": {
+    "same_hex": true,
+    "board_capability_available": true,
+    "explicit_profile_required": true
+  },
+  "outcome": {
+    "passenger_state_after_submit": "ON_BOARD",
+    "passenger_controllable_after_submit": false,
+    "carrier_movement_locked_after_submit": true,
+    "transition_duration_ms": 75000,
+    "damage_expected": false,
+    "events": [
+      "board_started",
+      "board_completed",
+      "unload_started",
+      "unload_completed"
+    ],
+    "strict_replay_matches": true
+  }
+}

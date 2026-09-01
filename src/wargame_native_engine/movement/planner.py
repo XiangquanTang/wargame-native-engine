@@ -96,8 +96,8 @@ class MovementPlanner:
         domain = operator.operator_type.upper()
         if domain == "AIR":
             if (
-                self.movement_costs is None
-                or not self.movement_costs.supports_mode(3)
+                self.movement_costs is not None
+                and not self.movement_costs.supports_mode(3)
             ):
                 return _illegal("AIR_MOVEMENT_UNSUPPORTED", evidence)
             if mode is not MovementMode.NORMAL:
@@ -205,6 +205,11 @@ class MovementPlanner:
                 slope_multiplier = configured_slope
             effective_milli = self.policy.multiply_speed(
                 base_speed, terrain_multiplier, slope_multiplier)
+        elif domain == "AIR":
+            # AIR traversal uses the explicitly configured platform speed and
+            # is not modified by ground terrain or ground slope.  Versioned
+            # MapRuntime mode 3 remains authoritative when it is available.
+            effective_milli = self.policy.multiply_speed(base_speed, (1, 1))
         else:
             if mode in {MovementMode.CHARGE_1, MovementMode.CHARGE_2}:
                 mode_multiplier = self.policy.mode_multiplier(mode)

@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Native Shared Training Discount Config",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "config_id",
+    "config_version",
+    "gamma",
+    "basis",
+    "reference_interval_ms"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "native-training-discount-config/1.0"
+    },
+    "config_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "config_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "gamma": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 1.0
+    },
+    "basis": {
+      "enum": [
+        "PER_DECISION_TRANSITION",
+        "PER_SIMULATION_TIME_REFERENCE"
+      ]
+    },
+    "reference_interval_ms": {
+      "oneOf": [
+        {"type": "null"},
+        {"type": "integer", "minimum": 1}
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "basis": {"const": "PER_DECISION_TRANSITION"}
+        }
+      },
+      "then": {
+        "properties": {
+          "reference_interval_ms": {"type": "null"}
+        }
+      },
+      "else": {
+        "properties": {
+          "reference_interval_ms": {"type": "integer", "minimum": 1}
+        }
+      }
+    }
+  ]
+}

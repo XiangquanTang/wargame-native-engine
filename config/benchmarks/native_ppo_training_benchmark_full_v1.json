@@ -1,0 +1,109 @@
+{
+  "schema_version": "native-ppo-training-benchmark/1.0",
+  "benchmark_id": "native-base-vs-eight-factor-ppo-full",
+  "benchmark_version": "1.0.1",
+  "stage": "FULL",
+  "scenario_suite": [
+    {
+      "scenario_id": "demo-direct-fire-basic",
+      "path": "examples/demos/direct_fire_basic/scenario.json",
+      "scenario_hash": "bcc4d11469480f7590af898465790a258bdeef75b3c87b733e3511b43cd4cb9b",
+      "map_id": "demo-direct-fire-map",
+      "max_ticks": 20,
+      "delta_time_seconds": 1
+    },
+    {
+      "scenario_id": "public-joint-fire-small",
+      "path": "examples/joint_fire_scenario.json",
+      "scenario_hash": "37fdccd6ad801c25c3d28648bc19402561be8d2b0dbcef20f109fda2899000f5",
+      "map_id": "public-joint-fire-map",
+      "max_ticks": 10,
+      "delta_time_seconds": 1
+    }
+  ],
+  "treatments": [
+    {
+      "treatment_id": "BASE_ONLY",
+      "reward_mode": "BASE_ONLY",
+      "reward_ref": {
+        "id": "native-sparse-terminal-zero-sum",
+        "version": "1.0.0",
+        "hash": "5653b7653eb46d3f091d5d0c5c04ab7dd5ce380236a4d2455214ab735a39b0cf"
+      },
+      "shaping_ref": null
+    },
+    {
+      "treatment_id": "EIGHT_FACTOR_SHAPING",
+      "reward_mode": "COMPOSITE_EIGHT_FACTOR",
+      "reward_ref": {
+        "id": "native-base-plus-eight-factor-potential",
+        "version": "1.0.0",
+        "hash": "46c7743809ad7511d49c79a7c97a5bd246eb0a4d79bbe9813cbfee7f923225a4"
+      },
+      "shaping_ref": {
+        "id": "native-eight-factor-potential-shaping",
+        "version": "1.0.0",
+        "hash": "bc21e92be00f9f9243b436741321f7d326f51a8bb734386a6de880dad37d7e81"
+      }
+    }
+  ],
+  "train_seed_indices": [0, 1, 2, 3, 4],
+  "trained_sides": ["RED"],
+  "opponent_ref": {
+    "id": "native-no-op-fixed-opponent-v1",
+    "version": "1.0.0",
+    "hash": "d82fd137d027c84408ca0bcb9cdda43caa590a7b1717ae578f1fc7b8596792a9"
+  },
+  "ppo_config_ref": {
+    "id": "native-masked-ppo",
+    "version": "1.0.0",
+    "hash": "d0b08a8295b22b316d8082272fa3763f491961d07934f2ac2c2b84c951fa622d"
+  },
+  "parallel_runner_ref": {
+    "id": "native-parallel-ppo-runner",
+    "version": "1.0.0",
+    "hash": "f2539a9ab2d284fe8228d87b8412a6857e81468bc182fe542754c3152a3be3ce"
+  },
+  "seed_config_ref": {
+    "id": "native-training-seeds",
+    "version": "1.0.0",
+    "hash": "0bf9ddec709ab6048855f6bf86e2338fe5f3b8ef15fdca99a98e9fdf092aa1f3"
+  },
+  "green_template_policy_ref": {
+    "id": "explicit-complete-eight-factor-supervision",
+    "version": "1.0.0",
+    "hash": "bc5a7ab3964652b96456804485db64e0018a5274afcfbd78958b3e03045807fd"
+  },
+  "training_budget": {
+    "unit": "COMMITTED_ENVIRONMENT_TRANSITIONS",
+    "transitions_per_run": 50000
+  },
+  "evaluation": {
+    "namespace": "EVALUATION",
+    "episode_indices": [100, 101, 102, 103, 104, 105, 106, 107],
+    "episodes_per_checkpoint": 30,
+    "cadence_transitions": [0, 10000, 20000, 30000, 40000, 50000],
+    "action_selection": "MASKED_ARGMAX",
+    "primary_metric": "WIN_RATE_ENGINE_OUTCOME"
+  },
+  "checkpoint": {
+    "cadence_transitions": 10000,
+    "primary_selection": "LAST_CHECKPOINT_ONLY"
+  },
+  "replay_verification": {
+    "reward": "EVERY_COMPLETED_EPISODE",
+    "engine": "FIRST_COMPLETED_EPISODE_PER_RUN"
+  },
+  "execution": {
+    "run_scheduling": "RUNS_SEQUENTIAL",
+    "num_envs": 4,
+    "num_workers": 4
+  },
+  "full_analysis": {
+    "bootstrap_resamples": 10000,
+    "bootstrap_seed": 20260901
+  },
+  "artifact_retention": {
+    "episode_packages": "FIRST_ENGINE_REPLAY_VERIFIED_ONLY"
+  }
+}

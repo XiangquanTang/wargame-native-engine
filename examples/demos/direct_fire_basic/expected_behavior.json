@@ -1,0 +1,21 @@
+{
+  "schema": "native-demo-expected/1.0",
+  "demo_id": "direct_fire_basic",
+  "seed": 42,
+  "side": "red",
+  "actors": {
+    "attacker_id": 1,
+    "target_id": 2,
+    "weapon_id": 36
+  },
+  "preconditions": {
+    "direct_fire_capability_available": true,
+    "target_observable": true
+  },
+  "outcome": {
+    "accepted": true,
+    "event_type": "losses_applied",
+    "target_state_changes": true,
+    "strict_replay_matches": true
+  }
+}

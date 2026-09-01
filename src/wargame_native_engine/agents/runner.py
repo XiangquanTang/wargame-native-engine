@@ -40,6 +40,13 @@ from wargame_native_engine.session.source_environment import (
     SourceCompatibleEnvironment,
 )
 from wargame_native_engine.version import ENGINE_VERSION
+from wargame_native_engine.gateway.controller_decision import (
+    build_controller_decision_core,
+)
+from wargame_native_engine.projection.decision_semantic import (
+    DecisionSide,
+    DecisionSnapshotIdentity,
+)
 
 
 MATCH_SUMMARY_SCHEMA = "native-local-agent-match-summary/1.0"
@@ -350,11 +357,40 @@ class LocalAgentMatchRunner:
             )
             called.append(agent.agent_id)
             try:
-                value = agent.act(
-                    observation=observation,
-                    valid_actions=valid_actions,
-                    context=deepcopy(context),
-                )
+                decision_act = getattr(agent, "act_decision", None)
+                if callable(decision_act):
+                    world = session.snapshot()["world"]
+                    if not isinstance(world, Mapping):
+                        raise RuntimeError("session snapshot lacks World record")
+                    sim_time = world.get("elapsed_time_ms", 0)
+                    if type(sim_time) is not int or sim_time < 0:
+                        raise RuntimeError("invalid authoritative simulation time")
+                    result = session.result()
+                    core = build_controller_decision_core(
+                        session=session,
+                        observation=observation,
+                        snapshot_identity=DecisionSnapshotIdentity(
+                            side=DecisionSide(side),
+                            decision_window_index=step_index,
+                            frame_index=step_index,
+                            sim_time_ms=sim_time,
+                            stage=observation.stage,
+                            terminated=result.terminal,
+                            truncated=result.truncated,
+                        ),
+                        frozen_valid_actions=current_valid_actions,
+                    )
+                    value = decision_act(
+                        decision_semantic=deepcopy(core.decision_semantic),
+                        action_catalog=deepcopy(core.action_catalog),
+                        context=deepcopy(context),
+                    )
+                else:
+                    value = agent.act(
+                        observation=observation,
+                        valid_actions=valid_actions,
+                        context=deepcopy(context),
+                    )
                 action = resolve_agent_selection(side, value, frozen_actions)
             except BaseException as exc:
                 if isinstance(exc, AgentExecutionError):
@@ -407,6 +443,14 @@ class LocalAgentMatchRunner:
         }
         if "map_runtime_data" in native:
             value["map_runtime_data"] = json_clone(native["map_runtime_data"])
+        for name in (
+            "operator_lifecycle_authority_version",
+            "operator_lifecycle_authority_hash",
+            "loitering_munition_attack_authority_version",
+            "loitering_munition_attack_authority_hash",
+        ):
+            if name in native:
+                value[name] = native[name]
         return value
 
     def _close_agents(self) -> None:

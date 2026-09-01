@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from threading import RLock
 
 from wargame_native_engine.core.action import (
@@ -240,6 +240,97 @@ class CommandGateway:
                 raise CommandGatewayError(exc.code, exc.message) from exc
             if valid is not None:
                 window.authorize_proposal(side, valid)
+            return registered
+
+    def plan_indirect_fire(
+        self,
+        session_id: str,
+        controller_id: str,
+        *,
+        request_id: str,
+        expected_window: int,
+        shooter_id: int,
+        weapon_id: int,
+        target_hex: int,
+    ) -> ActionProposal:
+        """Authorize one explicit Engine-generated FIRE/INDIRECT proposal."""
+
+        if not isinstance(request_id, str) or not request_id.strip():
+            raise CommandGatewayError(
+                "invalid_request_id", "request_id must be a non-empty string"
+            )
+        for name, value in (
+            ("expected_window", expected_window),
+            ("shooter_id", shooter_id),
+            ("weapon_id", weapon_id),
+            ("target_hex", target_hex),
+        ):
+            if type(value) is not int or value < 0:
+                raise CommandGatewayError(
+                    f"invalid_{name}", f"{name} must be a non-negative exact int"
+                )
+        gateway_session = self._gateway_session(session_id)
+        with gateway_session.lock:
+            side = _bound_side(gateway_session, controller_id)
+            window = gateway_session.window
+            if window.decision_window_index != expected_window:
+                raise CommandGatewayError(
+                    "stale_expected_step",
+                    f"expected {expected_window}, current "
+                    f"{window.decision_window_index}",
+                )
+            if window.lifecycle_state is not DecisionWindowState.OPEN:
+                raise CommandGatewayError(
+                    "decision_window_closed", window.lifecycle_state.value
+                )
+            signature = (
+                str(controller_id), expected_window, "INDIRECT_FIRE",
+                shooter_id, weapon_id, target_hex,
+            )
+            registry = gateway_session.proposals
+            if registry is None:
+                raise RuntimeError("active window lacks proposal registry")
+            try:
+                cached = registry.cached(request_id, signature)
+            except OperationError as exc:
+                raise CommandGatewayError(exc.code, exc.message) from exc
+            if cached is not None:
+                return cached
+            try:
+                action, state_hash = self.manager.plan_indirect_fire(
+                    session_id, side, shooter_id, weapon_id, target_hex
+                )
+            except (TypeError, ValueError) as exc:
+                code = str(exc) or "CAPABILITY_BLOCKED"
+                raise CommandGatewayError(
+                    "indirect_fire_plan_rejected", code
+                ) from exc
+            valid = ValidAction(
+                action,
+                ACTION_PRIORITY[ActionType.FIRE],
+                "operation_indirect_fire_proposal",
+            )
+            proposal = ActionProposal.from_indirect_fire(
+                session_id=session_id,
+                decision_window_index=expected_window,
+                side=side,
+                shooter_id=shooter_id,
+                target_hex=target_hex,
+                state_hash=state_hash,
+                action=action,
+            )
+            try:
+                registered = registry.register(
+                    request_id=request_id,
+                    signature=signature,
+                    proposal=proposal,
+                    valid_action=valid,
+                )
+            except OperationError as exc:
+                raise CommandGatewayError(exc.code, exc.message) from exc
+            window.authorize_proposal(
+                side, valid, engine_capability="INDIRECT_FIRE"
+            )
             return registered
 
     def query_unit_tactical_overlay(
@@ -747,11 +838,19 @@ class CommandGateway:
     def _controller_view(
         self, session_id: str, side: str, window: DecisionWindow,
     ) -> ControllerView:
-        view = self.manager.controller_view(session_id, side)
-        return replace(
-            view,
-            step_index=window.decision_window_index,
-            valid_actions=window.action_records(side),
+        descriptor = self.manager.descriptor(session_id)
+        actions = (
+            ()
+            if descriptor.terminal
+            else window.frozen_valid_actions(side)
+        )
+        return self.manager.controller_view(
+            session_id,
+            side,
+            decision_window_index=window.decision_window_index,
+            frozen_valid_actions=actions,
+            frame_index=descriptor.frame_index,
+            sim_time_ms=descriptor.sim_time_ms,
         )
 
     @staticmethod

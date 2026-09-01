@@ -1,0 +1,15 @@
+{
+  "schema_version": "native-indirect-fire-ammunition-mapping/1.0",
+  "mapping_id": "native-indirect-fire-ammunition-mapping",
+  "version": "1.0.0",
+  "authority_status": "EXECUTABLE_AUTHORITY_READY",
+  "authority_basis": "D2C0_USER_CONFIRMED_NATIVE_SIMPLIFIED_CONVENTION",
+  "mappings": [
+    {
+      "weapon_id": 72,
+      "ammunition_key": "0",
+      "ammo_cost_per_mission": 1,
+      "source_mapping": "config/source_scenario_conversion/scenarios/2201010105.native-supplement.json"
+    }
+  ]
+}

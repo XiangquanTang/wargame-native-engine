@@ -10,10 +10,11 @@ Native analysis candidate v1** formula — NOT an official rule.
 from __future__ import annotations
 
 from wargame_native_engine.analysis._numeric import require_finite_number
-from wargame_native_engine.analysis.eight_factor_contract import FACTOR_ORDER
+from wargame_native_engine.analysis.semantic_identity import (
+    EFFECTIVE_POWER_FORMULA_ID,
+    FACTOR_ORDER,
+)
 from wargame_native_engine.analysis.models import FactorValue
-
-EFFECTIVE_POWER_FORMULA_ID = "demo-compatible.unit-effective-power.v1"
 
 _EXPECTED_NAMES: frozenset[str] = frozenset(FACTOR_ORDER)
 

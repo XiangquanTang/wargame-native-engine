@@ -7,6 +7,14 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from wargame_native_engine.io.serialization import json_clone
+from wargame_native_engine.io.serialization import canonical_hash
+from wargame_native_engine.projection.decision_capability import (
+    ActionCatalogSnapshot,
+)
+from wargame_native_engine.projection.decision_semantic import (
+    DecisionProjectionContractError,
+    SideDecisionSemanticProjection,
+)
 
 
 class CommandGatewayError(RuntimeError):
@@ -97,13 +105,75 @@ class ControllerView:
     sim_time_ms: int = 0
     terminated: bool = False
     truncated: bool = False
+    decision_semantic: SideDecisionSemanticProjection | None = None
+    action_catalog: ActionCatalogSnapshot | None = None
 
     def __post_init__(self) -> None:
         _exact_bool(self.terminal, "terminal")
         _exact_bool(self.terminated, "terminated")
         _exact_bool(self.truncated, "truncated")
+        if (self.decision_semantic is None) != (self.action_catalog is None):
+            raise DecisionProjectionContractError(
+                "ControllerView decision core must be complete or legacy-only"
+            )
+        if self.decision_semantic is not None:
+            self._validate_decision_core()
+
+    @property
+    def has_decision_core(self) -> bool:
+        return self.decision_semantic is not None
+
+    def _validate_decision_core(self) -> None:
+        decision = self.decision_semantic
+        catalog = self.action_catalog
+        if type(decision) is not SideDecisionSemanticProjection:
+            raise TypeError("decision_semantic must be an exact Decision projection")
+        if type(catalog) is not ActionCatalogSnapshot:
+            raise TypeError("action_catalog must be an exact ActionCatalogSnapshot")
+        snapshot = decision.snapshot
+        if self.perspective.lower() != snapshot.side.value:
+            raise DecisionProjectionContractError("ControllerView side mismatch")
+        if self.step_index != snapshot.decision_window_index:
+            raise DecisionProjectionContractError("ControllerView window mismatch")
+        if self.frame_index != snapshot.frame_index:
+            raise DecisionProjectionContractError("ControllerView frame mismatch")
+        if self.sim_time_ms != snapshot.sim_time_ms:
+            raise DecisionProjectionContractError("ControllerView sim time mismatch")
+        if (
+            self.terminated != snapshot.terminated
+            or self.truncated != snapshot.truncated
+        ):
+            raise DecisionProjectionContractError("ControllerView terminal mismatch")
+        if decision.action_space != catalog.reference():
+            raise DecisionProjectionContractError(
+                "ControllerView Decision/catalog reference mismatch"
+            )
+        if len(self.valid_actions) != catalog.action_count:
+            raise DecisionProjectionContractError(
+                "ControllerView valid action/catalog count mismatch"
+            )
+        for index, (legacy, entry) in enumerate(
+            zip(self.valid_actions, catalog.entries)
+        ):
+            if not isinstance(legacy, Mapping):
+                raise TypeError("ControllerView valid actions must be mappings")
+            if legacy.get("action_id") != entry.action_id:
+                raise DecisionProjectionContractError(
+                    f"ControllerView action identity mismatch at index {index}"
+                )
+            action = legacy.get("action")
+            if not isinstance(action, Mapping):
+                raise DecisionProjectionContractError(
+                    f"ControllerView action record missing at index {index}"
+                )
+            if canonical_hash(action) != entry.operation_hash:
+                raise DecisionProjectionContractError(
+                    f"ControllerView operation mismatch at index {index}"
+                )
 
     def to_record(self) -> dict[str, object]:
+        """Serialize the explicit legacy compatibility surface only."""
+
         return {
             "session_id": self.session_id,
             "perspective": self.perspective,
@@ -118,6 +188,18 @@ class ControllerView:
             "sim_time_ms": self.sim_time_ms,
             "terminated": self.terminated,
             "truncated": self.truncated,
+        }
+
+    def decision_record(self) -> dict[str, object]:
+        """Serialize only the perspective-safe machine decision interface."""
+
+        if self.decision_semantic is None or self.action_catalog is None:
+            raise DecisionProjectionContractError(
+                "legacy ControllerView has no Decision semantic core"
+            )
+        return {
+            "decision_semantic": self.decision_semantic.to_dict(),
+            "action_catalog": self.action_catalog.to_dict(),
         }
 
 

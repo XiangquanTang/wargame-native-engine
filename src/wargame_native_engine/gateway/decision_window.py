@@ -10,6 +10,7 @@ from typing import Mapping, Sequence
 
 from wargame_native_engine.core.action import (
     ACTION_PRIORITY,
+    ActionType,
     EngineAction,
     ValidAction,
 )
@@ -172,7 +173,20 @@ class DecisionWindow:
         snapshot = self.valid_action_snapshots[side]
         return tuple(deepcopy(value.to_dict()) for value in snapshot.values())
 
-    def authorize_proposal(self, side: str, value: ValidAction) -> None:
+    def frozen_valid_actions(self, side: str) -> tuple[ValidAction, ...]:
+        """Return a detached copy in the exact catalog/index order."""
+
+        return tuple(
+            deepcopy(value) for value in self.valid_action_snapshots[side].values()
+        )
+
+    def authorize_proposal(
+        self,
+        side: str,
+        value: ValidAction,
+        *,
+        engine_capability: str | None = None,
+    ) -> None:
         """Extend the frozen ID map with one server-generated proposal.
 
         Only a capability already present at window-open time may be extended.
@@ -200,6 +214,14 @@ class DecisionWindow:
             and item.action.action_type is action.action_type
             for item in snapshot.values()
         )
+        if not capability and engine_capability == "INDIRECT_FIRE":
+            parameters = action.parameters
+            capability = (
+                action.action_type is ActionType.FIRE
+                and isinstance(parameters, Mapping)
+                and parameters.get("fire_mode") == "INDIRECT"
+                and detached.source == "operation_indirect_fire_proposal"
+            )
         if not capability:
             raise CommandGatewayError(
                 "proposal_capability_not_frozen",

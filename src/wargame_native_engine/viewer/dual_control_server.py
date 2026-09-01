@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -18,12 +19,21 @@ from wargame_native_engine.operations import ProductOperationService
 from wargame_native_engine.operations.controller import SideController
 from wargame_native_engine.rendering import RenderScene
 from wargame_native_engine.viewer.live_control import controller_view_record
+from wargame_native_engine.viewer.human_capabilities import (
+    build_human_capabilities,
+)
+from wargame_native_engine.viewer.static_resources import (
+    load_symbol_static_resource,
+)
 
 
 _STATIC_ROOT = Path(__file__).with_name("static")
 _STATIC_FILES = {
     "/static/dual_control.js": ("dual_control.js", "text/javascript; charset=utf-8"),
+    "/static/capability_ui.js": ("capability_ui.js", "text/javascript; charset=utf-8"),
     "/static/map_renderer.js": ("map_renderer.js", "text/javascript; charset=utf-8"),
+    "/static/unit_symbol_renderer.js": ("unit_symbol_renderer.js", "text/javascript; charset=utf-8"),
+    "/static/unit_symbol_resolver.js": ("unit_symbol_resolver.js", "text/javascript; charset=utf-8"),
     "/static/live_actions.js": ("live_actions.js", "text/javascript; charset=utf-8"),
     "/static/live_styles.css": ("live_styles.css", "text/css; charset=utf-8"),
     "/static/styles.css": ("styles.css", "text/css; charset=utf-8"),
@@ -46,6 +56,7 @@ class DualSideControlHTTPServer(ThreadingHTTPServer):
         red_token: str,
         blue_token: str,
         map_data: Mapping[str, object],
+        weapon_profiles: Mapping[str | int, object] | None,
         output_dir: Path,
     ) -> None:
         self.gateway = gateway
@@ -61,6 +72,7 @@ class DualSideControlHTTPServer(ThreadingHTTPServer):
         if len(self.tokens) != 2:
             raise ValueError("RED and BLUE tokens must differ")
         self.map_data = map_data
+        self.weapon_profiles = deepcopy(dict(weapon_profiles or {}))
         self.output_dir = output_dir
         self.side_controllers = {
             side: SideController(gateway, self.session_id, controller)
@@ -99,6 +111,12 @@ class DualSideControlRequestHandler(BaseHTTPRequestHandler):
                     HTTPStatus.OK,
                     (_STATIC_ROOT / filename).read_bytes(),
                     content_type,
+                )
+                return
+            resource = load_symbol_static_resource(path)
+            if resource is not None:
+                self._send_bytes(
+                    HTTPStatus.OK, resource.payload, resource.content_type,
                 )
                 return
             if path == "/api/bootstrap":
@@ -189,19 +207,29 @@ class DualSideControlRequestHandler(BaseHTTPRequestHandler):
                     raise ValueError(
                         "capabilities requires exactly token and actor_ids"
                     )
-                side, _ = self._seat(body["token"])
+                side, _controller = self._seat(body["token"])
+                _window, view = self.server.product_services[
+                    side
+                ].controller.state()
+                base = self.server.product_services[side].capabilities(
+                    body["actor_ids"], view=view,
+                )
                 self._send_json(
                     HTTPStatus.OK,
-                    self.server.product_services[side].capabilities(
-                        body["actor_ids"]
+                    build_human_capabilities(
+                        base,
+                        view,
+                        body["actor_ids"],
+                        weapon_profiles=self.server.weapon_profiles,
                     ),
                 )
                 return
             if path == "/api/product/preview":
                 allowed = {
                     "token", "request_id", "actor_ids", "operation_type",
-                    "destination_hex", "target_id", "movement_mode",
+                    "destination_hex", "target_hex", "target_id", "movement_mode",
                     "weapon_choices", "whole_side_wait",
+                    "fire_mode", "guider_id", "shooter_id", "weapon_id",
                 }
                 required = {"token", "request_id", "actor_ids", "operation_type"}
                 if not required.issubset(body) or not set(body).issubset(allowed):
@@ -219,10 +247,15 @@ class DualSideControlRequestHandler(BaseHTTPRequestHandler):
                     body["operation_type"],
                     request_id=_nonempty_text(body["request_id"], "request_id"),
                     destination_hex=body.get("destination_hex"),
+                    target_hex=body.get("target_hex"),
                     target_id=body.get("target_id"),
                     movement_mode=body.get("movement_mode", "NORMAL"),
                     weapon_choices=body.get("weapon_choices"),
                     whole_side_wait=body.get("whole_side_wait", False),
+                    fire_mode=body.get("fire_mode"),
+                    guider_id=body.get("guider_id"),
+                    shooter_id=body.get("shooter_id"),
+                    weapon_id=body.get("weapon_id"),
                 )
                 self._send_json(HTTPStatus.OK, preview.to_record())
                 return
@@ -535,7 +568,7 @@ class DualSideControlRequestHandler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header(
             "Content-Security-Policy",
-            "default-src 'self'; script-src 'self'; style-src 'self'",
+            "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' blob:",
         )
         self.end_headers()
         self.wfile.write(payload)
@@ -551,6 +584,7 @@ def create_dual_side_control_server(
     blue_token: str,
     map_data: Mapping[str, object],
     output_dir: str | Path,
+    weapon_profiles: Mapping[str | int, object] | None = None,
     host: str = "127.0.0.1",
     port: int = 8002,
 ) -> DualSideControlHTTPServer:
@@ -563,6 +597,7 @@ def create_dual_side_control_server(
         red_token=red_token,
         blue_token=blue_token,
         map_data=map_data,
+        weapon_profiles=weapon_profiles,
         output_dir=Path(output_dir),
     )
 

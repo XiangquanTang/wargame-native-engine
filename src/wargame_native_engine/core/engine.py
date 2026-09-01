@@ -1,26 +1,110 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from wargame_native_engine.adjudication import (
     AdjudicationTableSet, DiceRoller, DirectFireAdjudicator,
-    DirectFireRequest, DirectFireResolution, WeaponProfile,
+    DirectFireRequest, DirectFireResolution, DirectFireResourcePolicy,
+    FireResolution,
+    GuidedFireCommitEffect, GuidedFireEffectPlan, GuidedFireRecoveryUpdate,
+    GuidedFireRequest, GuidedFireResolver, GuidedFireStageResult,
+    GuidedFireValidationResult, WeaponProfile,
+)
+from wargame_native_engine.adjudication.boarding import (
+    BoardRequest,
+    BoardValidationResult,
+    UnloadRequest,
+    UnloadValidationResult,
+)
+from wargame_native_engine.adjudication.guided_fire import (
+    _build_validated_guided_fire_request,
+)
+from wargame_native_engine.adjudication.indirect_fire import (
+    IndirectFireDamageEffect,
+    IndirectFireEffectResolutionResult,
+    IndirectFireEffectStatus,
+    IndirectFireEffectBundle,
+    IndirectFireImpactValidationResult,
+    IndirectFireObservationPolicy,
+    IndirectFirePlanRequest,
+    IndirectFirePlanValidationEvidence,
+    IndirectFirePlanValidationResult,
+    IndirectFireResolution,
+    IndirectFireResolutionEvidence,
+    IndirectFireRngState,
+    IndirectFireRngTransition,
+    IndirectFireScatterResult,
+    IndirectFireTargetEvidence,
+    IndirectFireTriState,
+    _build_validated_indirect_fire_impact_request,
+    _build_validated_indirect_fire_plan_request,
+    resolve_indirect_fire_effects,
 )
 from wargame_native_engine.compat.source_frame.models import ArmorClass, UnitDomain
-
 from wargame_native_engine.core.action import (
     ACTION_PRIORITY, ActionDecision, ActionType, EngineAction, ValidAction,
     valid_action_sort_key,
 )
 from wargame_native_engine.core.action_router import ActionRouter, RoutedAction
-from wargame_native_engine.core.event import EngineEvent, EventType, event_sort_key
-from wargame_native_engine.core.observation import (
-    OperatorObservation, SideObservation, objective_view,
+from wargame_native_engine.core.boarding import (
+    BoardCapability,
+    BoardingTransition,
+    BoardingTransitionStatus,
+    BoardingTransitionType,
+    UnloadCapability,
+    advance_boarding_transitions,
+    board_capability_sort_key,
+    boarding_transition_id,
+    normalize_boarding_transitions,
+    unload_capability_sort_key,
 )
-from wargame_native_engine.core.operator import OperatorState
+from wargame_native_engine.core.concealment import (
+    ConcealmentCapability,
+    ConcealmentPosture,
+    concealment_capability_sort_key,
+)
+from wargame_native_engine.core.event import EngineEvent, EventType, event_sort_key
+from wargame_native_engine.core.fire_capability import (
+    GuidedFireCapability,
+    IndirectFireCapability,
+    IndirectFireCapabilityStatus,
+    IndirectFireTargetHexStatus,
+    IndirectFireTargetHexValidation,
+    guided_fire_capability_sort_key,
+    indirect_fire_capability_sort_key,
+)
+from wargame_native_engine.core.fire_intent import (
+    FireIntent,
+    FireMode,
+    HexTarget,
+    IndirectFireIntent,
+    UnitTarget,
+    _build_validated_indirect_fire_intent,
+)
+from wargame_native_engine.core.indirect_fire import (
+    FireMission,
+    FireMissionScatterEvidence,
+    IndirectFireActiveAreaView,
+    advance_indirect_fire_active_missions,
+    advance_indirect_fire_missions,
+    can_cancel_mission,
+    cancel_fire_mission,
+    fire_mission_sort_key,
+    indirect_fire_active_delta_ms,
+)
+from wargame_native_engine.core.observation import (
+    OperatorObservation,
+    SideObservation,
+    objective_view,
+    side_safe_enemy_observation,
+)
+from wargame_native_engine.core.operator import (
+    MovementTaskPauseReason,
+    OperatorState,
+)
 from wargame_native_engine.core.result import GameResult, StepResult
 from wargame_native_engine.core.rng import NativeRNG
 from wargame_native_engine.core.tactical_overlay import (
@@ -33,6 +117,9 @@ from wargame_native_engine.core.tactical_overlay import (
     WeaponEnvelopeEntry,
 )
 from wargame_native_engine.core.world import Stage, WorldState
+from wargame_native_engine.rules.operator_identity import (
+    resolve_operator_canonical_identity,
+)
 from wargame_native_engine.io.scenario import (
     NativeScenario,
     native_map_identity_hash,
@@ -47,6 +134,53 @@ from wargame_native_engine.movement.policy import (
 from wargame_native_engine.movement.runtime import MovementRuntime
 from wargame_native_engine.movement.route_planner import DeterministicRoutePlanner
 from wargame_native_engine.rules.config import Ruleset, load_ruleset
+from wargame_native_engine.rules.boarding import (
+    BoardingAuthority,
+    BoardingProfile,
+    load_boarding_authority,
+)
+from wargame_native_engine.rules.guidance import (
+    GuidanceAffiliationEvidence,
+    GuidanceProfile,
+    GuidanceScope,
+    load_guidance_authority,
+)
+from wargame_native_engine.rules.indirect_fire import (
+    ArtilleryClass,
+    INDIRECT_FIRE_AUTHORITY_SCHEMA_VERSION,
+    INDIRECT_FIRE_EXECUTION_POLICY_ID,
+    INDIRECT_FIRE_EXECUTION_POLICY_VERSION,
+    IndirectFireAmmoConsumeTiming,
+    IndirectFireAmmunitionAuthority,
+    IndirectFireAuthority,
+    IndirectFireAuthorityDescriptor,
+    IndirectFireCancellationReason,
+    IndirectFireDamagePolicy,
+    IndirectFireExecutionPolicy,
+    IndirectFireMissionState,
+    IndirectFireProfile,
+    IndirectRangePolicy,
+    IndirectTargetDomain,
+    ScatterDirectionPolicy,
+    build_indirect_fire_authority_descriptor,
+    load_indirect_fire_ammunition_authority,
+    load_indirect_fire_authority,
+    load_indirect_fire_damage_policy,
+    load_indirect_fire_execution_policy,
+    load_indirect_fire_observation_authority,
+    load_indirect_fire_replay_identity,
+)
+from wargame_native_engine.rules.operator_lifecycle import (
+    LifecycleExpiryBehavior,
+    OperatorLifecycleAuthority,
+    load_operator_lifecycle_authority,
+)
+from wargame_native_engine.rules.perspective import load_perspective_policy
+from wargame_native_engine.rules.loitering_munition import (
+    LoiteringMunitionAttackAuthority,
+    LoiteringMunitionAttackPolicy,
+    load_loitering_munition_attack_authority,
+)
 from wargame_native_engine.rules.terminal_rules import TerminalRules
 from wargame_native_engine.core.time import (
     require_positive_milliseconds,
@@ -62,7 +196,7 @@ from wargame_native_engine.systems.terminal import evaluate_terminal
 from wargame_native_engine.systems.visibility import can_see
 from wargame_native_engine.visibility import (
     HexCell, HexMapProfile, LineOfSightEvidence, ObservationProfiles,
-    evaluate_line_of_sight, evaluate_visibility, hex_distance,
+    VisibilityResult, evaluate_line_of_sight, evaluate_visibility, hex_distance,
     within_maximum_observation_distance,
 )
 from wargame_native_engine.version import ADJUDICATION_SEMANTICS_VERSION
@@ -74,8 +208,40 @@ if TYPE_CHECKING:
 @dataclass(frozen=True, slots=True)
 class _SourceFireIntent:
     routed: RoutedAction
+    contract: FireIntent
     request: DirectFireRequest
     resolution: DirectFireResolution
+    loitering_attack_policy: LoiteringMunitionAttackPolicy | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _SourceGuidedFireIntent:
+    routed: RoutedAction
+    contract: FireIntent
+    stage: GuidedFireStageResult
+    commit_effect: GuidedFireCommitEffect
+    direct_request: DirectFireRequest
+
+
+@dataclass(frozen=True, slots=True)
+class _SourceIndirectFireIntent:
+    routed: RoutedAction
+    contract: IndirectFireIntent
+    request: IndirectFirePlanRequest
+    mission: FireMission
+
+
+@dataclass(frozen=True, slots=True)
+class _SourceBoardingIntent:
+    routed: RoutedAction
+    transition_type: BoardingTransitionType
+    request: BoardRequest | UnloadRequest
+
+
+@dataclass(frozen=True, slots=True)
+class _SourceConcealmentIntent:
+    routed: RoutedAction
+    capability: ConcealmentCapability
 
 
 class NativeEngine:
@@ -98,6 +264,46 @@ class NativeEngine:
         self.map_runtime_data = map_runtime_data
         self.ruleset = (ruleset if isinstance(ruleset, Ruleset)
                         else load_ruleset(ruleset))
+        self._boarding_authority = load_boarding_authority()
+        self._guidance_authority = load_guidance_authority()
+        self._operator_lifecycle_authority = (
+            load_operator_lifecycle_authority()
+        )
+        self._loitering_munition_attack_authority = (
+            load_loitering_munition_attack_authority()
+        )
+        self._indirect_fire_authority = load_indirect_fire_authority()
+        self._indirect_fire_execution_policy = (
+            load_indirect_fire_execution_policy()
+        )
+        self._indirect_fire_ammunition_authority = (
+            load_indirect_fire_ammunition_authority()
+        )
+        self._indirect_fire_observation_authority = (
+            load_indirect_fire_observation_authority()
+        )
+        self._indirect_fire_damage_policy = load_indirect_fire_damage_policy()
+        self._indirect_fire_observation_policy = IndirectFireObservationPolicy(
+            self._indirect_fire_observation_authority
+            .impact_observation_policy
+        )
+        self._indirect_fire_spotter_evidence = (
+            self._indirect_fire_observation_authority.authority_basis
+        )
+        self._indirect_fire_authority_descriptors = {
+            profile.profile_id: build_indirect_fire_authority_descriptor(
+                profile,
+                self._indirect_fire_authority,
+                self._indirect_fire_execution_policy,
+                self._indirect_fire_ammunition_authority,
+                self._indirect_fire_observation_authority,
+                self._indirect_fire_damage_policy,
+            )
+            for profile in self._indirect_fire_authority.profiles
+            if self._indirect_fire_ammunition_authority.mapping_for_weapon(
+                profile.weapon_id
+            ) is not None
+        }
         self.terminal_rules = TerminalRules(
             max_ticks=(scenario.terminal_rules.max_ticks if max_ticks is None
                        else int(max_ticks)),
@@ -156,6 +362,9 @@ class NativeEngine:
         self._seed = int(seed)
         self._rng = NativeRNG(self._seed)
         self._world = self.scenario.initial_world()
+        self._validate_boarding_snapshot(self._world)
+        self._validate_operator_lifecycle_snapshot(self._world)
+        self._validate_loitering_attack_snapshot(self._world)
         self._world.elapsed_time_ms = self._world.tick * 1000
         self._action_counts = {side: 0 for side in self.scenario.side_order}
         self._error_counts = {side: 0 for side in self.scenario.side_order}
@@ -179,11 +388,37 @@ class NativeEngine:
     def observe(self, side: str) -> SideObservation:
         world = self._require_world()
         self._require_side(side)
-        friendly = tuple(OperatorObservation.from_state(item)
-                         for item in self._friendly(side))
-        visible = tuple(OperatorObservation.from_state(
-                            item, include_raw_attributes=False)
-                        for item in self._visible_enemies(side))
+        active_boarding = {}
+        for transition in world.boarding_transitions:
+            if transition.status is not BoardingTransitionStatus.ACTIVE:
+                continue
+            for operator_id in (transition.carrier_id, transition.passenger_id):
+                if operator_id in active_boarding:
+                    raise RuntimeError(
+                        "operator has multiple active boarding transitions"
+                    )
+                active_boarding[operator_id] = transition
+        friendly = tuple(
+            OperatorObservation.from_state(
+                item,
+                boarding_transition_type=(
+                    None
+                    if item.operator_id not in active_boarding
+                    else active_boarding[item.operator_id].transition_type.value
+                ),
+                boarding_transition_remaining_ms=(
+                    None
+                    if item.operator_id not in active_boarding
+                    else active_boarding[item.operator_id].remaining_ms
+                ),
+            )
+            for item in self._friendly(side)
+        )
+        perspective_policy = load_perspective_policy()
+        visible = tuple(
+            side_safe_enemy_observation(item, policy=perspective_policy)
+            for item in self._visible_enemies(side)
+        )
         actions = self.valid_actions(side)
         return SideObservation(
             side=side, tick=world.tick, stage=world.stage,
@@ -198,6 +433,2556 @@ class NativeEngine:
                 "max_ticks": self.terminal_rules.max_ticks,
             }},
         )
+
+    def guidance_profile_for_operator(
+        self,
+        operator_id: int,
+    ) -> GuidanceProfile | None:
+        """Return only an explicitly assigned Native guidance profile.
+
+        Source compatibility metadata and ``raw_attributes`` are deliberately
+        not consulted here.  Exact Source type/subtype mappings are conversion
+        facts, not permission to mutate a loaded world's authority.
+        """
+
+        if type(operator_id) is not int or operator_id < 0:
+            raise ValueError("operator_id must be a non-negative exact int")
+        operator = self._require_world().operators.get(operator_id)
+        if operator is None:
+            raise ValueError("OPERATOR_NOT_FOUND")
+        if operator.guidance_profile_id is None:
+            return None
+        return self._guidance_authority.profile(operator.guidance_profile_id)
+
+    def guidance_affiliation_for_operator(
+        self,
+        operator_id: int,
+    ) -> tuple[int, GuidanceAffiliationEvidence] | None:
+        """Return one explicit, evidenced affiliation without inferring links."""
+
+        if type(operator_id) is not int or operator_id < 0:
+            raise ValueError("operator_id must be a non-negative exact int")
+        world = self._require_world()
+        operator = world.operators.get(operator_id)
+        if operator is None:
+            raise ValueError("OPERATOR_NOT_FOUND")
+        affiliation_id = operator.guidance_affiliation_id
+        evidence = operator.guidance_affiliation_evidence
+        if affiliation_id is None or evidence is None:
+            return None
+        affiliated = world.operators.get(affiliation_id)
+        if affiliated is None or affiliated.side != operator.side:
+            return None
+        return affiliation_id, evidence
+
+    def get_guided_fire_capabilities(
+        self,
+        side: str,
+    ) -> tuple[GuidedFireCapability, ...]:
+        """Return deterministic opportunities from one detached pre-state.
+
+        This query uses each guider's current per-unit observation evidence. It
+        deliberately does not require shooter LOS and never emits an action,
+        consumes RNG, changes state, or invokes an adjudicator.
+        """
+
+        self._require_side(side)
+        pre_state = WorldState.from_dict(self._require_world().to_dict())
+        return self._guided_fire_capabilities_from_pre_state(pre_state, side)
+
+    def get_board_capabilities(
+        self,
+        side: str,
+    ) -> tuple[BoardCapability, ...]:
+        """Return current BOARD opportunities from one detached pre-state."""
+
+        self._require_side(side)
+        pre_state = WorldState.from_dict(self._require_world().to_dict())
+        return self._board_capabilities_from_pre_state(pre_state, side)
+
+    def get_unload_capabilities(
+        self,
+        side: str,
+    ) -> tuple[UnloadCapability, ...]:
+        """Return current UNLOAD opportunities from one detached pre-state."""
+
+        self._require_side(side)
+        pre_state = WorldState.from_dict(self._require_world().to_dict())
+        return self._unload_capabilities_from_pre_state(pre_state, side)
+
+    def get_concealment_capabilities(
+        self,
+        side: str,
+    ) -> tuple[ConcealmentCapability, ...]:
+        """Return deterministic ENTER_CONCEALMENT availability.
+
+        The query is detached and read-only.  Consumers receive both available
+        and blocked records so Human/Agent adapters can show the authoritative
+        reason without reimplementing posture rules.
+        """
+
+        self._require_side(side)
+        pre_state = WorldState.from_dict(self._require_world().to_dict())
+        return self._concealment_capabilities_from_pre_state(pre_state, side)
+
+    def _concealment_capabilities_from_pre_state(
+        self,
+        pre_state: WorldState,
+        side: str,
+    ) -> tuple[ConcealmentCapability, ...]:
+        values = [
+            ConcealmentCapability(
+                operator_id=operator.operator_id,
+                available=(reason := self._concealment_blocker(
+                    operator,
+                    pre_state,
+                )) is None,
+                reason="AVAILABLE" if reason is None else reason,
+            )
+            for operator in sorted(
+                (
+                    item for item in pre_state.operators.values()
+                    if item.side == side
+                ),
+                key=lambda item: item.operator_id,
+            )
+        ]
+        return tuple(sorted(values, key=concealment_capability_sort_key))
+
+    @staticmethod
+    def _concealment_blocker(
+        operator: OperatorState,
+        pre_state: WorldState,
+    ) -> str | None:
+        if not operator.alive or operator.state.upper() == "DESTROYED":
+            return "DESTROYED"
+        if operator.mounted_on is not None or operator.state.upper() == "ON_BOARD":
+            return "ON_BOARD"
+        if not operator.deployed:
+            return "NOT_DEPLOYED"
+        domain = _unit_domain(operator.operator_type)
+        if domain is UnitDomain.AIR:
+            return "AIR_UNIT_NOT_SUPPORTED"
+        if domain not in {UnitDomain.PERSONNEL, UnitDomain.VEHICLE}:
+            return "UNIT_DOMAIN_NOT_SUPPORTED"
+        if operator.concealed:
+            return "ALREADY_CONCEALED"
+        if operator.movement_mode == MovementMode.MARCHING.value:
+            return "MARCHING"
+        if operator.movement_mode in {
+            MovementMode.CHARGE_1.value,
+            MovementMode.CHARGE_2.value,
+        }:
+            return "CHARGE"
+        if (
+            operator.segment_to_hex is not None
+            or operator.speed != 0
+            or not operator.stopped
+            or operator.move_to_stop_remaining_ms != 0
+        ):
+            return "MOVING"
+        if (
+            operator.suppression_remaining_ms != 0
+            or operator.state.upper() == "SUPPRESSED"
+        ):
+            return "SUPPRESSED"
+        if (
+            operator.transition_kind is not None
+            or operator.transition_remaining_ms != 0
+            or _operator_has_boarding_transition(
+                pre_state,
+                operator.operator_id,
+            )
+        ):
+            return "TRANSITION_IN_PROGRESS"
+        if operator.movement_locked:
+            return "TRANSITION_IN_PROGRESS"
+        if operator.current_hex is None:
+            return "CURRENT_HEX_REQUIRED"
+        return None
+
+    def board_action(self, capability: BoardCapability) -> EngineAction:
+        """Encode one current Engine capability as a replayable BOARD action."""
+
+        validation = self.build_board_request(capability)
+        if not validation.valid or validation.request is None:
+            raise ValueError(validation.reason)
+        request = validation.request
+        return EngineAction(
+            side=request.side,
+            actor_id=request.passenger_id,
+            action_type=ActionType.BOARD,
+            target_id=request.carrier_id,
+            parameters={
+                "profile_id": request.profile_id,
+                "authority_version": request.authority_version,
+                "authority_hash": request.authority_hash,
+            },
+        )
+
+    def unload_action(self, capability: UnloadCapability) -> EngineAction:
+        """Encode one current Engine capability as a replayable UNLOAD action."""
+
+        validation = self.build_unload_request(capability)
+        if not validation.valid or validation.request is None:
+            raise ValueError(validation.reason)
+        request = validation.request
+        return EngineAction(
+            side=request.side,
+            actor_id=request.carrier_id,
+            action_type=ActionType.UNLOAD,
+            target_id=request.passenger_id,
+            parameters={
+                "profile_id": request.profile_id,
+                "authority_version": request.authority_version,
+                "authority_hash": request.authority_hash,
+            },
+        )
+
+    def build_board_request(
+        self,
+        capability: BoardCapability,
+    ) -> BoardValidationResult:
+        """Bind a current BOARD capability to an immutable request."""
+
+        if not isinstance(capability, BoardCapability):
+            raise TypeError("capability must be BoardCapability")
+        pre_state = WorldState.from_dict(self._require_world().to_dict())
+        passenger = pre_state.operators.get(capability.passenger_id)
+        if passenger is None:
+            return BoardValidationResult(False, "PASSENGER_NOT_FOUND")
+        action = EngineAction(
+            side=passenger.side,
+            actor_id=capability.passenger_id,
+            action_type=ActionType.BOARD,
+            target_id=capability.carrier_id,
+            parameters={
+                "profile_id": capability.profile_id,
+                "authority_version": capability.authority_version,
+                "authority_hash": capability.authority_hash,
+            },
+        )
+        return self._build_board_request_from_pre_state(
+            capability,
+            pre_state,
+            action_id=action.action_id,
+        )
+
+    def build_unload_request(
+        self,
+        capability: UnloadCapability,
+    ) -> UnloadValidationResult:
+        """Bind a current UNLOAD capability to an immutable request."""
+
+        if not isinstance(capability, UnloadCapability):
+            raise TypeError("capability must be UnloadCapability")
+        pre_state = WorldState.from_dict(self._require_world().to_dict())
+        carrier = pre_state.operators.get(capability.carrier_id)
+        if carrier is None:
+            return UnloadValidationResult(False, "CARRIER_NOT_FOUND")
+        action = EngineAction(
+            side=carrier.side,
+            actor_id=capability.carrier_id,
+            action_type=ActionType.UNLOAD,
+            target_id=capability.passenger_id,
+            parameters={
+                "profile_id": capability.profile_id,
+                "authority_version": capability.authority_version,
+                "authority_hash": capability.authority_hash,
+            },
+        )
+        return self._build_unload_request_from_pre_state(
+            capability,
+            pre_state,
+            action_id=action.action_id,
+        )
+
+    def validate_board_request(
+        self,
+        request: BoardRequest,
+    ) -> BoardValidationResult:
+        """Reject stale or forged BOARD requests against current authority."""
+
+        if not isinstance(request, BoardRequest):
+            raise TypeError("request must be BoardRequest")
+        pre_state = WorldState.from_dict(self._require_world().to_dict())
+        return self._validate_board_request_against_pre_state(request, pre_state)
+
+    def validate_unload_request(
+        self,
+        request: UnloadRequest,
+    ) -> UnloadValidationResult:
+        """Reject stale or forged UNLOAD requests against current authority."""
+
+        if not isinstance(request, UnloadRequest):
+            raise TypeError("request must be UnloadRequest")
+        pre_state = WorldState.from_dict(self._require_world().to_dict())
+        return self._validate_unload_request_against_pre_state(request, pre_state)
+
+    def _board_capabilities_from_pre_state(
+        self,
+        pre_state: WorldState,
+        side: str,
+    ) -> tuple[BoardCapability, ...]:
+        capabilities: list[BoardCapability] = []
+        carriers = tuple(sorted(
+            (
+                operator for operator in pre_state.operators.values()
+                if operator.side == side
+                and operator.alive
+                and operator.deployed
+                and operator.current_hex is not None
+                and operator.boarding_profile_id is not None
+            ),
+            key=lambda item: item.operator_id,
+        ))
+        passengers = tuple(sorted(
+            (
+                operator for operator in pre_state.operators.values()
+                if operator.side == side
+                and operator.alive
+                and operator.deployed
+                and operator.current_hex is not None
+                and operator.mounted_on is None
+                and operator.passenger_id is None
+            ),
+            key=lambda item: item.operator_id,
+        ))
+        for carrier in carriers:
+            profile = self._boarding_authority.profile(
+                str(carrier.boarding_profile_id)
+            )
+            if profile is None or not self._boarding_carrier_ready(
+                carrier,
+                profile,
+                pre_state,
+                require_empty=True,
+                require_unsuppressed=True,
+            ):
+                continue
+            for passenger in passengers:
+                if not self._boarding_passenger_ready(passenger, profile, pre_state):
+                    continue
+                if passenger.current_hex != carrier.current_hex:
+                    continue
+                capabilities.append(BoardCapability(
+                    passenger_id=passenger.operator_id,
+                    carrier_id=carrier.operator_id,
+                    profile_id=profile.profile_id,
+                    authority_version=self._boarding_authority.authority_version,
+                    authority_hash=self._boarding_authority.content_hash,
+                ))
+        return tuple(sorted(capabilities, key=board_capability_sort_key))
+
+    def _unload_capabilities_from_pre_state(
+        self,
+        pre_state: WorldState,
+        side: str,
+    ) -> tuple[UnloadCapability, ...]:
+        capabilities: list[UnloadCapability] = []
+        for carrier in sorted(
+            pre_state.operators.values(), key=lambda item: item.operator_id
+        ):
+            if (
+                carrier.side != side
+                or not carrier.alive
+                or not carrier.deployed
+                or carrier.current_hex is None
+                or carrier.passenger_id is None
+                or carrier.boarding_profile_id is None
+            ):
+                continue
+            profile = self._boarding_authority.profile(
+                carrier.boarding_profile_id
+            )
+            passenger = pre_state.operators.get(carrier.passenger_id)
+            if (
+                profile is None
+                or passenger is None
+                or passenger.side != side
+                or not passenger.alive
+                or passenger.mounted_on != carrier.operator_id
+                or passenger.deployed
+                or not self._boarding_carrier_ready(
+                    carrier,
+                    profile,
+                    pre_state,
+                    require_empty=False,
+                    require_unsuppressed=True,
+                )
+            ):
+                continue
+            capabilities.append(UnloadCapability(
+                carrier_id=carrier.operator_id,
+                passenger_id=passenger.operator_id,
+                profile_id=profile.profile_id,
+                authority_version=self._boarding_authority.authority_version,
+                authority_hash=self._boarding_authority.content_hash,
+            ))
+        return tuple(sorted(capabilities, key=unload_capability_sort_key))
+
+    def _boarding_carrier_ready(
+        self,
+        carrier: OperatorState,
+        profile: BoardingProfile,
+        pre_state: WorldState,
+        *,
+        require_empty: bool,
+        require_unsuppressed: bool,
+    ) -> bool:
+        return (
+            _unit_domain(carrier.operator_type).value in profile.carrier_domains
+            and (not require_empty or carrier.passenger_id is None)
+            and not carrier.movement_locked
+            and _boarding_operator_stopped(carrier)
+            and (
+                not require_unsuppressed
+                or not _boarding_operator_suppressed(carrier)
+            )
+            and not _operator_has_boarding_transition(
+                pre_state, carrier.operator_id
+            )
+        )
+
+    def _boarding_passenger_ready(
+        self,
+        passenger: OperatorState,
+        profile: BoardingProfile,
+        pre_state: WorldState,
+    ) -> bool:
+        return (
+            _unit_domain(passenger.operator_type).value
+            in profile.passenger_domains
+            and _boarding_operator_stopped(passenger)
+            and not _boarding_operator_suppressed(passenger)
+            and not _operator_has_boarding_transition(
+                pre_state, passenger.operator_id
+            )
+        )
+
+    def _build_board_request_from_pre_state(
+        self,
+        capability: BoardCapability,
+        pre_state: WorldState,
+        *,
+        action_id: str,
+    ) -> BoardValidationResult:
+        passenger = pre_state.operators.get(capability.passenger_id)
+        if passenger is None:
+            return BoardValidationResult(False, "PASSENGER_NOT_FOUND")
+        current = self._board_capabilities_from_pre_state(
+            pre_state,
+            passenger.side,
+        )
+        if capability not in current:
+            return BoardValidationResult(False, "CAPABILITY_NOT_CURRENT")
+        request = BoardRequest(
+            tick=pre_state.tick,
+            action_id=action_id,
+            side=passenger.side,
+            actor_id=passenger.operator_id,
+            carrier_id=capability.carrier_id,
+            passenger_id=capability.passenger_id,
+            profile_id=capability.profile_id,
+            authority_version=capability.authority_version,
+            authority_hash=capability.authority_hash,
+        )
+        return BoardValidationResult(True, "VALID", request)
+
+    def _build_unload_request_from_pre_state(
+        self,
+        capability: UnloadCapability,
+        pre_state: WorldState,
+        *,
+        action_id: str,
+    ) -> UnloadValidationResult:
+        carrier = pre_state.operators.get(capability.carrier_id)
+        if carrier is None:
+            return UnloadValidationResult(False, "CARRIER_NOT_FOUND")
+        current = self._unload_capabilities_from_pre_state(
+            pre_state,
+            carrier.side,
+        )
+        if capability not in current:
+            return UnloadValidationResult(False, "CAPABILITY_NOT_CURRENT")
+        request = UnloadRequest(
+            tick=pre_state.tick,
+            action_id=action_id,
+            side=carrier.side,
+            actor_id=carrier.operator_id,
+            carrier_id=capability.carrier_id,
+            passenger_id=capability.passenger_id,
+            profile_id=capability.profile_id,
+            authority_version=capability.authority_version,
+            authority_hash=capability.authority_hash,
+        )
+        return UnloadValidationResult(True, "VALID", request)
+
+    def _validate_board_request_against_pre_state(
+        self,
+        request: BoardRequest,
+        pre_state: WorldState,
+    ) -> BoardValidationResult:
+        expected_action = EngineAction(
+            side=request.side,
+            actor_id=request.passenger_id,
+            action_type=ActionType.BOARD,
+            target_id=request.carrier_id,
+            parameters={
+                "profile_id": request.profile_id,
+                "authority_version": request.authority_version,
+                "authority_hash": request.authority_hash,
+            },
+        )
+        if (
+            request.tick != pre_state.tick
+            or request.actor_id != request.passenger_id
+            or request.action_id != expected_action.action_id
+        ):
+            return BoardValidationResult(False, "REQUEST_NOT_CURRENT")
+        try:
+            capability = BoardCapability(
+                request.passenger_id,
+                request.carrier_id,
+                request.profile_id,
+                request.authority_version,
+                request.authority_hash,
+            )
+        except (TypeError, ValueError):
+            return BoardValidationResult(False, "INVALID_REQUEST")
+        current = self._build_board_request_from_pre_state(
+            capability,
+            pre_state,
+            action_id=request.action_id,
+        )
+        if not current.valid or current.request != request:
+            return BoardValidationResult(False, current.reason)
+        return current
+
+    def _validate_unload_request_against_pre_state(
+        self,
+        request: UnloadRequest,
+        pre_state: WorldState,
+    ) -> UnloadValidationResult:
+        expected_action = EngineAction(
+            side=request.side,
+            actor_id=request.carrier_id,
+            action_type=ActionType.UNLOAD,
+            target_id=request.passenger_id,
+            parameters={
+                "profile_id": request.profile_id,
+                "authority_version": request.authority_version,
+                "authority_hash": request.authority_hash,
+            },
+        )
+        if (
+            request.tick != pre_state.tick
+            or request.actor_id != request.carrier_id
+            or request.action_id != expected_action.action_id
+        ):
+            return UnloadValidationResult(False, "REQUEST_NOT_CURRENT")
+        try:
+            capability = UnloadCapability(
+                request.carrier_id,
+                request.passenger_id,
+                request.profile_id,
+                request.authority_version,
+                request.authority_hash,
+            )
+        except (TypeError, ValueError):
+            return UnloadValidationResult(False, "INVALID_REQUEST")
+        current = self._build_unload_request_from_pre_state(
+            capability,
+            pre_state,
+            action_id=request.action_id,
+        )
+        if not current.valid or current.request != request:
+            return UnloadValidationResult(False, current.reason)
+        return current
+
+    def get_indirect_fire_capabilities(
+        self,
+        side: str,
+    ) -> tuple[IndirectFireCapability, ...]:
+        """Return side-owned indirect-fire authority without enabling fire.
+
+        The result is computed from one detached pre-state.  It is not added
+        to ``valid_actions`` and cannot create a mission, consume RNG, emit an
+        event, or mutate authoritative state.  Incomplete authority is
+        represented as an explicit BLOCKED capability rather than guessed.
+        """
+
+        self._require_side(side)
+        pre_state = WorldState.from_dict(self._require_world().to_dict())
+        return self._indirect_fire_capabilities_from_pre_state(pre_state, side)
+
+    def indirect_fire_authority_descriptor(
+        self,
+        profile_id: str,
+    ) -> IndirectFireAuthorityDescriptor | None:
+        """Return one immutable executable-authority identity, if complete."""
+
+        if not isinstance(profile_id, str) or not profile_id.strip():
+            raise ValueError("profile_id must be a non-empty string")
+        return self._indirect_fire_authority_descriptors.get(profile_id)
+
+    def indirect_fire_replay_identity(self) -> Mapping[str, str]:
+        """Return the exact authority identity required by INDIRECT replay."""
+
+        return load_indirect_fire_replay_identity()
+
+    def _indirect_fire_capabilities_from_pre_state(
+        self,
+        pre_state: WorldState,
+        side: str,
+    ) -> tuple[IndirectFireCapability, ...]:
+        """Generate capability records from exactly the supplied pre-state."""
+
+        if not isinstance(pre_state, WorldState):
+            raise TypeError("pre_state must be WorldState")
+        self._require_side(side)
+        capabilities: list[IndirectFireCapability] = []
+        for shooter in sorted(
+            pre_state.operators.values(), key=lambda item: item.operator_id
+        ):
+            if shooter.side != side or not shooter.alive or not shooter.deployed:
+                continue
+            for weapon_id in sorted(set(shooter.weapon_ids)):
+                profile = self._indirect_fire_authority.profile_for_weapon(weapon_id)
+                if profile is None:
+                    continue
+                blockers = _indirect_fire_execution_blockers(
+                    self._indirect_fire_authority,
+                    profile,
+                    shooter,
+                    ammunition_authority=(
+                        self._indirect_fire_ammunition_authority
+                    ),
+                    damage_policy=self._indirect_fire_damage_policy,
+                    descriptor=self._indirect_fire_authority_descriptors.get(
+                        profile.profile_id
+                    ),
+                    observation_policy=self._indirect_fire_observation_policy,
+                )
+                capabilities.append(IndirectFireCapability(
+                    shooter_id=shooter.operator_id,
+                    weapon_id=weapon_id,
+                    artillery_class=profile.artillery_class,
+                    profile_id=profile.profile_id,
+                    range_policy=profile.range_policy,
+                    minimum_range=profile.minimum_range,
+                    maximum_range=profile.maximum_range,
+                    target_policy=profile.target_domain,
+                    status=(
+                        IndirectFireCapabilityStatus.BLOCKED
+                        if blockers
+                        else IndirectFireCapabilityStatus.AVAILABLE
+                    ),
+                    blockers=blockers,
+                ))
+        return tuple(sorted(
+            capabilities,
+            key=indirect_fire_capability_sort_key,
+        ))
+
+    def validate_indirect_fire_target_hex(
+        self,
+        capability: IndirectFireCapability,
+        target_hex: int,
+    ) -> IndirectFireTargetHexValidation:
+        """Validate a hex selection without creating an executable intent.
+
+        Callers may hold stale or self-constructed capability records, so this
+        method first recomputes the current side-bound capability.  Authority
+        gaps fail closed before any range interpretation.
+        """
+
+        if not isinstance(capability, IndirectFireCapability):
+            raise TypeError("capability must be IndirectFireCapability")
+        if type(target_hex) is not int or target_hex < 0:
+            raise ValueError("target_hex must be a non-negative exact int")
+        pre_state = WorldState.from_dict(self._require_world().to_dict())
+        return self._validate_indirect_fire_target_hex_from_pre_state(
+            capability,
+            target_hex,
+            pre_state,
+        )
+
+    def _validate_indirect_fire_target_hex_from_pre_state(
+        self,
+        capability: IndirectFireCapability,
+        target_hex: int,
+        pre_state: WorldState,
+    ) -> IndirectFireTargetHexValidation:
+        """Validate a target against the same detached capability pre-state."""
+
+        shooter = pre_state.operators.get(capability.shooter_id)
+        if shooter is None:
+            return IndirectFireTargetHexValidation(
+                IndirectFireTargetHexStatus.INVALID,
+                "CAPABILITY_SHOOTER_NOT_FOUND",
+                capability.shooter_id,
+                capability.weapon_id,
+                target_hex,
+            )
+        current = self._indirect_fire_capabilities_from_pre_state(
+            pre_state,
+            shooter.side,
+        )
+        if capability not in current:
+            return IndirectFireTargetHexValidation(
+                IndirectFireTargetHexStatus.INVALID,
+                "CAPABILITY_NOT_CURRENT",
+                capability.shooter_id,
+                capability.weapon_id,
+                target_hex,
+            )
+        if self._source_map is None or shooter.current_hex is None:
+            return IndirectFireTargetHexValidation(
+                IndirectFireTargetHexStatus.INVALID,
+                "TARGET_HEX_VALIDATION_UNAVAILABLE",
+                capability.shooter_id,
+                capability.weapon_id,
+                target_hex,
+            )
+        try:
+            self._source_map.cell(target_hex)
+        except ValueError:
+            return IndirectFireTargetHexValidation(
+                IndirectFireTargetHexStatus.INVALID,
+                "TARGET_HEX_NOT_FOUND",
+                capability.shooter_id,
+                capability.weapon_id,
+                target_hex,
+            )
+        if capability.range_policy is (
+            IndirectRangePolicy.SCENARIO_DEFINED_GLOBAL_HEX
+        ):
+            return IndirectFireTargetHexValidation(
+                IndirectFireTargetHexStatus.VALID,
+                "TARGET_HEX_VALID_SCENARIO_GLOBAL",
+                capability.shooter_id,
+                capability.weapon_id,
+                target_hex,
+            )
+        if capability.minimum_range is None or capability.maximum_range is None:
+            return IndirectFireTargetHexValidation(
+                IndirectFireTargetHexStatus.BLOCKED,
+                "BLOCKED_RANGE_UNKNOWN",
+                capability.shooter_id,
+                capability.weapon_id,
+                target_hex,
+            )
+        if capability.target_policy is IndirectTargetDomain.UNKNOWN:
+            return IndirectFireTargetHexValidation(
+                IndirectFireTargetHexStatus.BLOCKED,
+                "BLOCKED_TARGET_DOMAIN_UNKNOWN",
+                capability.shooter_id,
+                capability.weapon_id,
+                target_hex,
+            )
+        if capability.status is not IndirectFireCapabilityStatus.AVAILABLE:
+            return IndirectFireTargetHexValidation(
+                IndirectFireTargetHexStatus.BLOCKED,
+                "BLOCKED_CAPABILITY_UNAVAILABLE",
+                capability.shooter_id,
+                capability.weapon_id,
+                target_hex,
+            )
+        target_distance = hex_distance(shooter.current_hex, target_hex)
+        if not capability.minimum_range <= target_distance <= capability.maximum_range:
+            return IndirectFireTargetHexValidation(
+                IndirectFireTargetHexStatus.INVALID,
+                "TARGET_HEX_OUT_OF_RANGE",
+                capability.shooter_id,
+                capability.weapon_id,
+                target_hex,
+                target_distance,
+            )
+        return IndirectFireTargetHexValidation(
+            IndirectFireTargetHexStatus.VALID,
+            "TARGET_HEX_VALID",
+            capability.shooter_id,
+            capability.weapon_id,
+            target_hex,
+            target_distance,
+        )
+
+    def build_indirect_fire_plan_request(
+        self,
+        capability: IndirectFireCapability,
+        planned_hex: int,
+    ) -> IndirectFirePlanValidationResult:
+        """Build immutable planning evidence from one current pre-state.
+
+        This method cannot create a mission or action.  It performs no RNG
+        draw and writes no world, event, recorder, or replay state.
+        """
+
+        if not isinstance(capability, IndirectFireCapability):
+            raise TypeError("capability must be IndirectFireCapability")
+        if type(planned_hex) is not int or planned_hex < 0:
+            raise ValueError("planned_hex must be a non-negative exact int")
+        pre_state = WorldState.from_dict(self._require_world().to_dict())
+        return self._build_indirect_fire_plan_request_from_pre_state(
+            capability,
+            planned_hex,
+            pre_state,
+        )
+
+    def indirect_fire_action(
+        self,
+        capability: IndirectFireCapability,
+        planned_hex: int,
+    ) -> EngineAction:
+        """Return one explicit, authority-bound FIRE/INDIRECT action.
+
+        The target hex is validated by the Engine; no hex action list is
+        generated and weapon identity never implies a fire mode.
+        """
+
+        pre_state = WorldState.from_dict(self._require_world().to_dict())
+        validation = self._build_indirect_fire_plan_request_from_pre_state(
+            capability,
+            planned_hex,
+            pre_state,
+        )
+        if not validation.valid or validation.request is None:
+            raise ValueError(validation.reason)
+        descriptor = self._indirect_fire_authority_descriptors.get(
+            capability.profile_id
+        )
+        if descriptor is None:
+            raise ValueError("CAPABILITY_BLOCKED")
+        shooter = pre_state.operators[capability.shooter_id]
+        identity = self.indirect_fire_replay_identity()
+        return EngineAction(
+            side=shooter.side,
+            actor_id=capability.shooter_id,
+            action_type=ActionType.FIRE,
+            parameters={
+                "fire_mode": FireMode.INDIRECT.value,
+                "weapon_id": capability.weapon_id,
+                "target_hex": planned_hex,
+                "execution_policy_id": (
+                    validation.request.execution_policy_id
+                ),
+                **identity,
+            },
+        )
+
+    def _build_indirect_fire_plan_request_from_pre_state(
+        self,
+        capability: IndirectFireCapability,
+        planned_hex: int,
+        pre_state: WorldState,
+        *,
+        action_id: str | None = None,
+    ) -> IndirectFirePlanValidationResult:
+        """Build planning evidence from exactly the supplied pre-state."""
+
+        if not isinstance(capability, IndirectFireCapability):
+            raise TypeError("capability must be IndirectFireCapability")
+        if type(planned_hex) is not int or planned_hex < 0:
+            raise ValueError("planned_hex must be a non-negative exact int")
+        if not isinstance(pre_state, WorldState):
+            raise TypeError("pre_state must be WorldState")
+        shooter = pre_state.operators.get(capability.shooter_id)
+        if shooter is None or shooter.side not in self.scenario.side_order:
+            return _indirect_fire_plan_failure(
+                "CAPABILITY_BLOCKED",
+                "shooter_not_found",
+            )
+        if not shooter.alive or not shooter.deployed:
+            return _indirect_fire_plan_failure(
+                "CAPABILITY_BLOCKED",
+                "shooter_not_operational",
+            )
+
+        profile = self._indirect_fire_authority.profile(
+            capability.profile_id
+        )
+        if (
+            profile is None
+            or profile.weapon_id != capability.weapon_id
+            or capability.weapon_id not in shooter.weapon_ids
+            or profile.supported_fire_mode != "INDIRECT"
+        ):
+            return _indirect_fire_plan_failure(
+                "WEAPON_NOT_AUTHORIZED",
+                "weapon_not_authorized",
+            )
+
+        current = self._indirect_fire_capabilities_from_pre_state(
+            pre_state,
+            shooter.side,
+        )
+        matching = next(
+            (
+                item for item in current
+                if item.shooter_id == capability.shooter_id
+                and item.weapon_id == capability.weapon_id
+                and item.profile_id == capability.profile_id
+            ),
+            None,
+        )
+        if matching is None:
+            return _indirect_fire_plan_failure(
+                "WEAPON_NOT_AUTHORIZED",
+                "weapon_not_authorized",
+            )
+        if matching.status is not IndirectFireCapabilityStatus.AVAILABLE:
+            return IndirectFirePlanValidationResult(
+                valid=False,
+                reason="CAPABILITY_BLOCKED",
+                blockers=matching.blockers,
+            )
+        if capability != matching:
+            return _indirect_fire_plan_failure(
+                "CAPABILITY_BLOCKED",
+                "capability_not_current",
+            )
+
+        target_validation = self._validate_indirect_fire_target_hex_from_pre_state(
+            matching,
+            planned_hex,
+            pre_state,
+        )
+        if target_validation.status is not IndirectFireTargetHexStatus.VALID:
+            return _indirect_fire_plan_failure(
+                target_validation.reason,
+                target_validation.reason.lower(),
+            )
+
+        policy = self._indirect_fire_execution_policy
+        if (
+            not isinstance(policy, IndirectFireExecutionPolicy)
+            or policy.policy_id != INDIRECT_FIRE_EXECUTION_POLICY_ID
+            or policy.policy_version != INDIRECT_FIRE_EXECUTION_POLICY_VERSION
+        ):
+            return _indirect_fire_plan_failure(
+                "POLICY_UNAVAILABLE",
+                "execution_policy_unavailable",
+            )
+        evidence = IndirectFirePlanValidationEvidence(
+            checked_profile_id=profile.profile_id,
+            checked_policy_hash=policy.content_hash,
+            planned_hex_validated=True,
+            range_policy=profile.range_policy,
+        )
+        ammo_before = tuple(sorted(self._ammunition(shooter).items()))
+        action_record = {
+            "contract": "indirect-fire-plan-request/1.0",
+            "tick": pre_state.tick,
+            "shooter_id": shooter.operator_id,
+            "weapon_id": profile.weapon_id,
+            "planned_hex": planned_hex,
+            "artillery_profile_id": profile.profile_id,
+            "execution_policy_id": policy.policy_id,
+            "execution_policy_hash": policy.content_hash,
+            "authority_version": INDIRECT_FIRE_AUTHORITY_SCHEMA_VERSION,
+        }
+        request = _build_validated_indirect_fire_plan_request(
+            tick=pre_state.tick,
+            action_id=(
+                "indirect-plan-" + canonical_hash(action_record)[:24]
+                if action_id is None
+                else action_id
+            ),
+            shooter_id=shooter.operator_id,
+            weapon_id=profile.weapon_id,
+            planned_hex=planned_hex,
+            artillery_profile_id=profile.profile_id,
+            execution_policy_id=policy.policy_id,
+            execution_policy_hash=policy.content_hash,
+            ammo_before=ammo_before,
+            authority_version=INDIRECT_FIRE_AUTHORITY_SCHEMA_VERSION,
+            validation_evidence=evidence,
+        )
+        return IndirectFirePlanValidationResult(
+            valid=True,
+            reason="PLAN_REQUEST_VALID",
+            blockers=(),
+            request=request,
+        )
+
+    def create_indirect_fire_mission(
+        self,
+        plan_request: IndirectFirePlanRequest,
+    ) -> FireMission:
+        """Atomically create one PLANNED mission from current plan evidence.
+
+        This trusted internal API is not an Action/Human/Agent entry point.
+        Ammunition identity and cost come only from the loaded, hashed Native
+        authority.  No RNG is consumed and no impact result is generated.
+        """
+
+        if not isinstance(plan_request, IndirectFirePlanRequest):
+            raise TypeError("plan_request must be IndirectFirePlanRequest")
+        authoritative = self._require_world()
+        if authoritative.done:
+            raise RuntimeError("episode_already_finished")
+        pre_state = WorldState.from_dict(authoritative.to_dict())
+        mission = self._build_indirect_fire_mission_from_pre_state(
+            plan_request,
+            pre_state,
+        )
+        working = WorldState.from_dict(pre_state.to_dict())
+        event = self._apply_indirect_fire_mission_to_working_state(
+            working,
+            plan_request,
+            mission,
+            action_sequence=-1,
+        )
+        self._commit_world(authoritative, working)
+        self._last_events = (event,)
+        self._source_valid_actions_cache.clear()
+        self._source_valid_actions_state_hash = None
+        return mission
+
+    def _build_indirect_fire_mission_from_pre_state(
+        self,
+        plan_request: IndirectFirePlanRequest,
+        pre_state: WorldState,
+        *,
+        action_stream_bound: bool = False,
+    ) -> FireMission:
+        shooter = pre_state.operators.get(plan_request.shooter_id)
+        if shooter is None:
+            raise ValueError("INDIRECT_FIRE_SHOOTER_NOT_FOUND")
+        capability = next((
+            item
+            for item in self._indirect_fire_capabilities_from_pre_state(
+                pre_state,
+                shooter.side,
+            )
+            if item.shooter_id == plan_request.shooter_id
+            and item.weapon_id == plan_request.weapon_id
+            and item.profile_id == plan_request.artillery_profile_id
+        ), None)
+        if capability is None:
+            raise ValueError("INDIRECT_FIRE_CAPABILITY_NOT_CURRENT")
+        validation = self._build_indirect_fire_plan_request_from_pre_state(
+            capability,
+            plan_request.planned_hex,
+            pre_state,
+            action_id=plan_request.action_id,
+        )
+        if not validation.valid or validation.request != plan_request:
+            raise ValueError("INDIRECT_FIRE_PLAN_REQUEST_STALE")
+        profile = self._indirect_fire_authority.profile(
+            plan_request.artillery_profile_id
+        )
+        if profile is None:
+            raise ValueError("INDIRECT_FIRE_PROFILE_UNAVAILABLE")
+        resource = self._indirect_fire_authority.resource_policy(
+            profile.resource_policy_id
+        )
+        mapping = self._indirect_fire_ammunition_authority.mapping_for_weapon(
+            plan_request.weapon_id
+        )
+        if (
+            resource is None
+            or mapping is None
+            or resource.ammo_cost != mapping.ammo_cost_per_mission
+        ):
+            raise ValueError("AMMO_MAPPING_UNRESOLVED")
+        if (
+            self._indirect_fire_execution_policy.ammo_policy.consume_timing
+            is not IndirectFireAmmoConsumeTiming.MISSION_CREATE
+        ):
+            raise ValueError("INDIRECT_FIRE_AMMO_CONSUME_TIMING_UNSUPPORTED")
+        current_ammunition = self._ammunition(shooter)
+        if tuple(sorted(current_ammunition.items())) != plan_request.ammo_before:
+            raise ValueError("INDIRECT_FIRE_AMMUNITION_PRESTATE_MISMATCH")
+        if current_ammunition.get(mapping.ammunition_key, 0) < (
+            mapping.ammo_cost_per_mission
+        ):
+            raise ValueError("INDIRECT_FIRE_AMMUNITION_UNAVAILABLE")
+        mission_id = "mission-" + canonical_hash({
+            "contract": "native-indirect-fire-mission/1.0",
+            "plan_request": plan_request.to_record(),
+        })[:24]
+        if any(
+            item.mission_id == mission_id
+            for item in pre_state.indirect_fire_missions
+        ):
+            raise ValueError("INDIRECT_FIRE_MISSION_ALREADY_EXISTS")
+        return FireMission(
+            mission_id=mission_id,
+            created_tick=pre_state.tick,
+            shooter_id=plan_request.shooter_id,
+            weapon_id=plan_request.weapon_id,
+            planned_hex=plan_request.planned_hex,
+            profile_id=plan_request.artillery_profile_id,
+            authority_version=plan_request.authority_version,
+            execution_policy_id=plan_request.execution_policy_id,
+            execution_policy_hash=plan_request.execution_policy_hash,
+            phase=IndirectFireMissionState.PLANNED,
+            created_at=pre_state.elapsed_time_ms,
+            remaining_flight_seconds=profile.flight_time_seconds,
+            ammo_consumed=mapping.ammo_cost_per_mission,
+            ammunition_key=mapping.ammunition_key,
+            cancelable=False,
+            action_stream_bound=action_stream_bound,
+            active_duration_seconds=profile.active_duration_seconds,
+        )
+
+    def _apply_indirect_fire_mission_to_working_state(
+        self,
+        working: WorldState,
+        request: IndirectFirePlanRequest,
+        mission: FireMission,
+        *,
+        action_sequence: int,
+    ) -> EngineEvent:
+        shooter = working.operators[mission.shooter_id]
+        profile = self._indirect_fire_authority.profile(mission.profile_id)
+        if profile is None or profile.weapon_id != mission.weapon_id:
+            raise ValueError("INDIRECT_FIRE_PROFILE_UNAVAILABLE")
+        ammunition = self._ammunition(shooter)
+        before = ammunition.get(mission.ammunition_key, 0)
+        if before < mission.ammo_consumed:
+            raise ValueError("INDIRECT_FIRE_AMMUNITION_UNAVAILABLE")
+        ammunition[mission.ammunition_key] = before - mission.ammo_consumed
+        shooter.raw_attributes["ammunition"] = ammunition
+        source = shooter.raw_attributes.get("source_frame")
+        if isinstance(source, dict):
+            source["remain_bullet_nums"] = dict(ammunition)
+        shooter.indirect_fire_planned_cooldown_remaining_ms = max(
+            shooter.indirect_fire_planned_cooldown_remaining_ms,
+            profile.planned_cooldown_seconds * 1_000,
+        )
+        working.indirect_fire_missions = tuple(sorted(
+            (*working.indirect_fire_missions, mission),
+            key=fire_mission_sort_key,
+        ))
+        identity = self.indirect_fire_replay_identity()
+        return self._indirect_fire_mission_event(
+            working,
+            EventType.INDIRECT_FIRE_MISSION_CREATED,
+            mission,
+            {
+                "action_id": request.action_id,
+                "planned_hex": mission.planned_hex,
+                "profile_id": mission.profile_id,
+                "authority_version": mission.authority_version,
+                "execution_policy_id": mission.execution_policy_id,
+                "execution_policy_hash": mission.execution_policy_hash,
+                "ammunition_key": mission.ammunition_key,
+                "ammo_consumed": mission.ammo_consumed,
+                "authority_hash": identity["indirect_fire_authority_hash"],
+                "ammo_mapping_hash": identity["ammo_mapping_hash"],
+                "observation_policy_hash": identity["observation_policy_hash"],
+                "damage_policy_hash": identity["damage_policy_hash"],
+            },
+            action_sequence=action_sequence,
+        )
+
+    def can_cancel_indirect_fire_mission(self, mission_id: str) -> bool:
+        """Return current cancellation eligibility without changing state."""
+
+        if not isinstance(mission_id, str) or not mission_id:
+            raise ValueError("mission_id must be a non-empty string")
+        mission = next(
+            (
+                item for item in self._require_world().indirect_fire_missions
+                if item.mission_id == mission_id
+            ),
+            None,
+        )
+        if mission is None:
+            raise ValueError("INDIRECT_FIRE_MISSION_NOT_FOUND")
+        return can_cancel_mission(mission)
+
+    def get_indirect_fire_active_areas(
+        self,
+        side: str,
+    ) -> tuple[IndirectFireActiveAreaView, ...]:
+        """Return own-side ACTIVE areas without exposing opponent authority."""
+
+        if side not in self.scenario.side_order:
+            raise ValueError(f"unknown side: {side}")
+        world = self._require_world()
+        return tuple(
+            IndirectFireActiveAreaView(
+                mission_id=mission.mission_id,
+                shooter_id=mission.shooter_id,
+                impact_hex=int(mission.impact_hex),
+                active_remaining_seconds=mission.active_remaining_seconds,
+                affected_operator_ids=mission.affected_operator_ids,
+            )
+            for mission in sorted(
+                world.indirect_fire_missions,
+                key=fire_mission_sort_key,
+            )
+            if mission.phase is IndirectFireMissionState.ACTIVE
+            and mission.impact_hex is not None
+            and world.operators.get(mission.shooter_id) is not None
+            and world.operators[mission.shooter_id].side == side
+        )
+
+    def cancel_indirect_fire_mission(
+        self,
+        mission_id: str,
+        reason: IndirectFireCancellationReason,
+    ) -> FireMission:
+        """Atomically cancel one FLYING mission without refunding ammunition."""
+
+        if not isinstance(mission_id, str) or not mission_id:
+            raise ValueError("mission_id must be a non-empty string")
+        if not isinstance(reason, IndirectFireCancellationReason):
+            raise TypeError("reason must be IndirectFireCancellationReason")
+        authoritative = self._require_world()
+        working = WorldState.from_dict(authoritative.to_dict())
+        mission = next(
+            (
+                item for item in working.indirect_fire_missions
+                if item.mission_id == mission_id
+            ),
+            None,
+        )
+        if mission is None:
+            raise ValueError("INDIRECT_FIRE_MISSION_NOT_FOUND")
+        cancelled = cancel_fire_mission(mission, reason)
+        working.indirect_fire_missions = tuple(sorted(
+            (
+                cancelled if item.mission_id == mission_id else item
+                for item in working.indirect_fire_missions
+            ),
+            key=fire_mission_sort_key,
+        ))
+        event = self._indirect_fire_mission_event(
+            working,
+            EventType.INDIRECT_FIRE_MISSION_CANCELLED,
+            cancelled,
+            {"cancellation_reason": reason.value, "ammo_refunded": 0},
+        )
+        self._commit_world(authoritative, working)
+        self._last_events = (event,)
+        self._source_valid_actions_cache.clear()
+        self._source_valid_actions_state_hash = None
+        return cancelled
+
+    def resolve_indirect_fire_impact(
+        self,
+        mission_id: str,
+    ) -> IndirectFireImpactValidationResult:
+        """Resolve one ACTIVE mission against detached state and cloned RNG.
+
+        This Phase D-1 query never commits the cloned RNG, changes mission
+        phase, emits an event, or applies unit effects.  The current production
+        observation policy is unresolved and therefore fails closed.
+        """
+
+        if not isinstance(mission_id, str) or not mission_id:
+            raise ValueError("mission_id must be a non-empty string")
+        authoritative = self._require_world()
+        if self._rng is None:
+            raise RuntimeError("engine_not_reset")
+        pre_state = WorldState.from_dict(authoritative.to_dict())
+        mission = next(
+            (
+                item for item in pre_state.indirect_fire_missions
+                if item.mission_id == mission_id
+            ),
+            None,
+        )
+        if mission is None:
+            return _indirect_fire_impact_failure(
+                "MISSION_NOT_FOUND",
+                "mission_not_found",
+            )
+        if mission.phase is not IndirectFireMissionState.ACTIVE:
+            return _indirect_fire_impact_failure(
+                "MISSION_NOT_ACTIVE",
+                "mission_not_active",
+            )
+        if mission.impact_hex is not None:
+            return _indirect_fire_impact_failure(
+                "MISSION_IMPACT_ALREADY_RESOLVED",
+                "impact_hex",
+            )
+        profile = self._indirect_fire_authority.profile(mission.profile_id)
+        policy = self._indirect_fire_execution_policy
+        if (
+            profile is None
+            or profile.weapon_id != mission.weapon_id
+            or mission.authority_version != INDIRECT_FIRE_AUTHORITY_SCHEMA_VERSION
+            or not isinstance(policy, IndirectFireExecutionPolicy)
+            or mission.execution_policy_id != policy.policy_id
+            or mission.execution_policy_hash != policy.content_hash
+        ):
+            return _indirect_fire_impact_failure(
+                "POLICY_UNAVAILABLE",
+                "mission_policy_mismatch",
+            )
+        observation_policy = self._indirect_fire_observation_policy
+        if observation_policy is IndirectFireObservationPolicy.UNRESOLVED:
+            return _indirect_fire_impact_failure(
+                "UNRESOLVED",
+                "observation_policy",
+            )
+        if observation_policy is not IndirectFireObservationPolicy.UNOBSERVED:
+            return _indirect_fire_impact_failure(
+                "UNRESOLVED",
+                "observation_policy",
+            )
+        if self._source_map is None or self._adjudication_tables is None:
+            return _indirect_fire_impact_failure(
+                "IMPACT_RUNTIME_UNAVAILABLE",
+                "source_hex_map",
+            )
+        shooter = pre_state.operators.get(mission.shooter_id)
+        if shooter is None or shooter.current_hex is None:
+            return _indirect_fire_impact_failure(
+                "SHOOTER_EVIDENCE_UNAVAILABLE",
+                "shooter_position",
+            )
+        try:
+            self._source_map.cell(mission.planned_hex)
+        except ValueError:
+            return _indirect_fire_impact_failure(
+                "PLANNED_HEX_NOT_FOUND",
+                "planned_hex",
+            )
+
+        rng_snapshot = self._rng.snapshot()
+        rng_before = IndirectFireRngState(
+            seed=int(rng_snapshot["seed"]),
+            state=int(rng_snapshot["state"]),
+            draws=int(rng_snapshot["draws"]),
+        )
+        detached_rng = NativeRNG.restore(rng_snapshot)
+        direction_roll = detached_rng.randbelow(6) + 1
+        distance_dice = (
+            detached_rng.randbelow(6) + 1,
+            detached_rng.randbelow(6) + 1,
+        )
+        distance_roll = sum(distance_dice)
+        shooter_distance = hex_distance(
+            int(shooter.current_hex),
+            mission.planned_hex,
+        )
+        distance_band, distance_band_index = _indirect_fire_distance_band(
+            shooter_distance
+        )
+        dispersion = self._adjudication_tables.document["indirect_fire"][
+            "unobserved_dispersion"
+        ]
+        table_result = str(
+            dispersion["by_roll"][str(distance_roll)][distance_band_index]
+        )
+        scatter_distance = _indirect_fire_scatter_distance(table_result)
+        impact_hex = mission.planned_hex
+        for _ in range(scatter_distance):
+            neighbor = int(
+                self._source_map.cell(impact_hex).neighbors[direction_roll - 1]
+            )
+            if neighbor < 0:
+                return _indirect_fire_impact_failure(
+                    "IMPACT_HEX_OUT_OF_MAP",
+                    "impact_hex",
+                )
+            try:
+                self._source_map.cell(neighbor)
+            except ValueError:
+                return _indirect_fire_impact_failure(
+                    "IMPACT_HEX_OUT_OF_MAP",
+                    "impact_hex",
+                )
+            impact_hex = neighbor
+
+        after_snapshot = detached_rng.snapshot()
+        rng_after = IndirectFireRngState(
+            seed=int(after_snapshot["seed"]),
+            state=int(after_snapshot["state"]),
+            draws=int(after_snapshot["draws"]),
+        )
+        scatter_result = IndirectFireScatterResult(
+            direction_roll=direction_roll,
+            direction_index=direction_roll - 1,
+            distance_dice=distance_dice,
+            distance_roll=distance_roll,
+            distance_band=distance_band,
+            table_id="indirect_fire.unobserved_dispersion",
+            table_result=table_result,
+            scatter_distance=scatter_distance,
+        )
+        request = _build_validated_indirect_fire_impact_request(
+            mission_id=mission.mission_id,
+            tick=pre_state.tick,
+            shooter_id=mission.shooter_id,
+            weapon_id=mission.weapon_id,
+            planned_hex=mission.planned_hex,
+            impact_hex=impact_hex,
+            scatter_result=scatter_result,
+            execution_policy_id=mission.execution_policy_id,
+            execution_policy_hash=mission.execution_policy_hash,
+            rng_before=rng_before,
+            rng_after=rng_after,
+            spotter_evidence=self._indirect_fire_spotter_evidence,
+            observation_policy=observation_policy,
+        )
+        transition = IndirectFireRngTransition(rng_before, rng_after)
+        affected = tuple(sorted(
+            item.operator_id
+            for item in pre_state.operators.values()
+            if item.alive
+            and item.deployed
+            and item.current_hex == impact_hex
+        ))
+        evidence = IndirectFireResolutionEvidence(
+            observation_policy=observation_policy,
+            spotter_evidence=self._indirect_fire_spotter_evidence,
+            affected_hex_policy="IMPACT_HEX_ONLY",
+            operator_order="OPERATOR_ID_ASCENDING",
+            pre_state_hash=canonical_hash(pre_state.to_dict()),
+            adjudication_table_hash=self._adjudication_tables.content_hash,
+        )
+        resolution = IndirectFireResolution(
+            mission_id=mission.mission_id,
+            shooter_id=mission.shooter_id,
+            weapon_id=mission.weapon_id,
+            planned_hex=mission.planned_hex,
+            impact_hex=impact_hex,
+            execution_policy_id=mission.execution_policy_id,
+            execution_policy_hash=mission.execution_policy_hash,
+            affected_operator_ids=affected,
+            scatter_result=scatter_result,
+            rng_transition=transition,
+            resolution_evidence=evidence,
+        )
+        effect_bundle = IndirectFireEffectBundle(
+            mission_id=mission.mission_id,
+            shooter_id=mission.shooter_id,
+            weapon_id=mission.weapon_id,
+            planned_hex=mission.planned_hex,
+            impact_hex=impact_hex,
+            execution_policy_id=mission.execution_policy_id,
+            execution_policy_hash=mission.execution_policy_hash,
+            affected_units=affected,
+            scatter_result=scatter_result,
+            resolution_evidence=evidence,
+            rng_transition=transition,
+        )
+        if self._rng.snapshot() != rng_snapshot:
+            raise RuntimeError("INDIRECT_FIRE_AUTHORITATIVE_RNG_CHANGED")
+        return IndirectFireImpactValidationResult(
+            valid=True,
+            reason="IMPACT_RESOLUTION_VALID",
+            blockers=(),
+            request=request,
+            resolution=resolution,
+            effect_bundle=effect_bundle,
+        )
+
+    def resolve_indirect_fire_effects(
+        self,
+        impact_resolution: IndirectFireResolution,
+        *,
+        _affected_operator_ids: tuple[int, ...] | None = None,
+    ) -> IndirectFireEffectResolutionResult:
+        """Resolve D-2A damage contracts without committing any effect."""
+
+        if not isinstance(impact_resolution, IndirectFireResolution):
+            raise TypeError("impact_resolution must be IndirectFireResolution")
+        authoritative = self._require_world()
+        if self._rng is None:
+            raise RuntimeError("engine_not_reset")
+        if self._source_map is None or self._adjudication_tables is None:
+            return _indirect_fire_effect_failure("impact_runtime_unavailable")
+        before_world = authoritative.to_dict()
+        before_rng = self._rng.snapshot()
+        before_events = self._last_events
+        if canonical_hash(before_world) != (
+            impact_resolution.resolution_evidence.pre_state_hash
+        ):
+            return _indirect_fire_effect_failure("pre_state_hash")
+        if before_rng != impact_resolution.rng_transition.before.to_record():
+            return _indirect_fire_effect_failure("authoritative_rng_state")
+        if self._adjudication_tables.content_hash != (
+            impact_resolution.resolution_evidence.adjudication_table_hash
+        ):
+            return _indirect_fire_effect_failure("adjudication_table_hash")
+
+        pre_state = WorldState.from_dict(before_world)
+        mission = next(
+            (
+                value for value in pre_state.indirect_fire_missions
+                if value.mission_id == impact_resolution.mission_id
+            ),
+            None,
+        )
+        if mission is None or mission.phase is not IndirectFireMissionState.ACTIVE:
+            return _indirect_fire_effect_failure("mission_not_active")
+        profile = self._indirect_fire_authority.profile(mission.profile_id)
+        if profile is None or profile.weapon_id != mission.weapon_id:
+            return _indirect_fire_effect_failure("artillery_profile")
+        shooter = pre_state.operators.get(mission.shooter_id)
+        if shooter is None or not shooter.alive or not shooter.deployed:
+            return _indirect_fire_effect_failure("shooter")
+
+        occupants = tuple(sorted(
+            value.operator_id
+            for value in pre_state.operators.values()
+            if value.alive
+            and value.deployed
+            and value.current_hex == impact_resolution.impact_hex
+        ))
+        actual_affected = (
+            occupants
+            if _affected_operator_ids is None
+            else _affected_operator_ids
+        )
+        if (_affected_operator_ids is not None
+                and (_affected_operator_ids
+                     != tuple(sorted(set(_affected_operator_ids)))
+                     or any(value not in occupants
+                            for value in _affected_operator_ids))):
+            return _indirect_fire_effect_failure("affected_operator_evidence")
+        if actual_affected != impact_resolution.affected_operator_ids:
+            return _indirect_fire_effect_failure("affected_operator_evidence")
+        stacked = len(actual_affected) > 1
+        targets: list[IndirectFireTargetEvidence] = []
+        for operator_id in actual_affected:
+            target = pre_state.operators[operator_id]
+            armor_value = str(target.raw_attributes.get(
+                "armor_class",
+                target.raw_attributes.get("normalized_value", {}).get(
+                    "armor_class",
+                    "UNKNOWN",
+                ),
+            )).upper()
+            try:
+                armor = ArmorClass(armor_value)
+            except ValueError:
+                armor = ArmorClass.UNKNOWN
+            targets.append(IndirectFireTargetEvidence(
+                operator_id=target.operator_id,
+                domain=_unit_domain(target.operator_type),
+                armor=armor,
+                blood=int(target.blood),
+                terrain=self._source_map.terrain(
+                    int(target.current_hex)
+                ).value,
+                concealed=target.concealed,
+                moving=not target.stopped,
+                stacked=stacked,
+                marching=target.movement_mode == MovementMode.MARCHING.value,
+            ))
+        result = resolve_indirect_fire_effects(
+            impact_resolution,
+            shooter_id=mission.shooter_id,
+            weapon_id=mission.weapon_id,
+            artillery_class=profile.artillery_class,
+            shooter_strength=int(shooter.blood),
+            targets=tuple(targets),
+            table_document=self._adjudication_tables.document,
+            table_content_hash=self._adjudication_tables.content_hash,
+            damage_policy=self._indirect_fire_damage_policy,
+        )
+        if (
+            authoritative.to_dict() != before_world
+            or self._rng.snapshot() != before_rng
+            or self._last_events != before_events
+        ):
+            raise RuntimeError("INDIRECT_FIRE_EFFECT_RESOLUTION_MUTATED_ENGINE")
+        return result
+
+    def commit_indirect_fire_effect_bundle(
+        self,
+        bundle: IndirectFireEffectBundle,
+    ) -> EngineEvent:
+        """Atomically apply one fully resolved ACTIVE mission impact.
+
+        Resolution is recomputed against the current authoritative pre-state
+        before any working-state mutation.  Commit never rerolls scatter or
+        damage; it restores the already staged RNG ``after`` state only after
+        the detached world has been completely validated.
+        """
+
+        if not isinstance(bundle, IndirectFireEffectBundle):
+            raise TypeError("bundle must be IndirectFireEffectBundle")
+        authoritative = self._require_world()
+        if self._rng is None:
+            raise RuntimeError("engine_not_reset")
+        if self._source_policy is None:
+            raise ValueError("INDIRECT_FIRE_REQUIRES_SOURCE_RUNTIME")
+        before_world = authoritative.to_dict()
+        before_rng = self._rng.snapshot()
+        if canonical_hash(before_world) != bundle.resolution_evidence.pre_state_hash:
+            raise ValueError("INDIRECT_FIRE_EFFECT_PRESTATE_MISMATCH")
+        if before_rng != bundle.rng_transition.before.to_record():
+            raise ValueError("INDIRECT_FIRE_EFFECT_RNG_PRESTATE_MISMATCH")
+        if (
+            self._adjudication_tables is None
+            or self._adjudication_tables.content_hash
+            != bundle.resolution_evidence.adjudication_table_hash
+        ):
+            raise ValueError("INDIRECT_FIRE_EFFECT_TABLE_MISMATCH")
+        policy = self._indirect_fire_execution_policy
+        if (
+            not isinstance(policy, IndirectFireExecutionPolicy)
+            or bundle.execution_policy_id != policy.policy_id
+            or bundle.execution_policy_hash != policy.content_hash
+        ):
+            raise ValueError("INDIRECT_FIRE_EFFECT_POLICY_MISMATCH")
+        if any(
+            effect.resolution_evidence.status
+            is not IndirectFireEffectStatus.RESOLVED
+            for effect in bundle.damage_effects
+        ):
+            raise ValueError("INDIRECT_FIRE_EFFECT_UNRESOLVED")
+        if (
+            bundle.damage_rng_transition is None
+            or bundle.damage_rng_transition.after != bundle.rng_transition.after
+            or bundle.damage_rng_transition.before.draws
+            < bundle.rng_transition.before.draws
+        ):
+            raise ValueError("INDIRECT_FIRE_EFFECT_RNG_TRANSITION_MISMATCH")
+
+        mission = next(
+            (
+                value for value in authoritative.indirect_fire_missions
+                if value.mission_id == bundle.mission_id
+            ),
+            None,
+        )
+        if mission is None:
+            raise ValueError("INDIRECT_FIRE_MISSION_NOT_FOUND")
+        if mission.phase is not IndirectFireMissionState.ACTIVE:
+            raise ValueError("INDIRECT_FIRE_MISSION_NOT_ACTIVE")
+        if (
+            mission.shooter_id != bundle.shooter_id
+            or mission.weapon_id != bundle.weapon_id
+            or mission.planned_hex != bundle.planned_hex
+            or mission.execution_policy_id != bundle.execution_policy_id
+            or mission.execution_policy_hash != bundle.execution_policy_hash
+        ):
+            raise ValueError("INDIRECT_FIRE_EFFECT_MISSION_MISMATCH")
+
+        impact = self.resolve_indirect_fire_impact(bundle.mission_id)
+        if not impact.valid or impact.resolution is None:
+            raise ValueError("INDIRECT_FIRE_IMPACT_NOT_CURRENT")
+        resolved = self.resolve_indirect_fire_effects(impact.resolution)
+        if (
+            resolved.status is not IndirectFireEffectStatus.RESOLVED
+            or resolved.effect_bundle != bundle
+        ):
+            raise ValueError("INDIRECT_FIRE_EFFECT_BUNDLE_NOT_CURRENT")
+
+        working = WorldState.from_dict(before_world)
+        committed_events = self._apply_indirect_fire_area_bundle(
+            working,
+            bundle,
+            initialize_area=True,
+        )
+        committed_events = (
+            *committed_events,
+            *self._apply_boarding_carrier_destruction(working),
+        )
+        working.last_judge_info = [event.to_dict() for event in committed_events]
+        committed_rng = NativeRNG.restore(bundle.rng_transition.after.to_record())
+
+        # _commit_world validates a complete detached clone before its bounded
+        # field assignments.  RNG/events remain unpublished until it returns.
+        self._commit_world(authoritative, working)
+        self._rng = committed_rng
+        self._last_events = committed_events
+        self._source_valid_actions_cache.clear()
+        self._source_valid_actions_state_hash = None
+        return committed_events[0]
+
+    def _apply_indirect_fire_area_bundle(
+        self,
+        working: WorldState,
+        bundle: IndirectFireEffectBundle,
+        *,
+        initialize_area: bool,
+    ) -> tuple[EngineEvent, ...]:
+        """Apply a staged area bundle to the current detached working world."""
+
+        mission = next(
+            (value for value in working.indirect_fire_missions
+             if value.mission_id == bundle.mission_id),
+            None,
+        )
+        if mission is None or mission.phase is not IndirectFireMissionState.ACTIVE:
+            raise ValueError("INDIRECT_FIRE_MISSION_NOT_ACTIVE")
+        if initialize_area:
+            if mission.impact_hex is not None:
+                raise ValueError("INDIRECT_FIRE_IMPACT_ALREADY_COMMITTED")
+        elif mission.impact_hex != bundle.impact_hex:
+            raise ValueError("INDIRECT_FIRE_ACTIVE_HEX_MISMATCH")
+        duplicate = set(mission.affected_operator_ids).intersection(
+            bundle.affected_units
+        )
+        if duplicate:
+            raise ValueError("INDIRECT_FIRE_OPERATOR_ALREADY_RESOLVED")
+
+        self._apply_indirect_fire_damage_effects(working, bundle)
+        affected_ids = tuple(sorted({
+            *mission.affected_operator_ids,
+            *bundle.affected_units,
+        }))
+        scatter_evidence = (
+            FireMissionScatterEvidence(
+                direction_roll=bundle.scatter_result.direction_roll,
+                direction_index=bundle.scatter_result.direction_index,
+                distance_dice=bundle.scatter_result.distance_dice,
+                distance_roll=bundle.scatter_result.distance_roll,
+                distance_band=bundle.scatter_result.distance_band,
+                table_id=bundle.scatter_result.table_id,
+                table_result=bundle.scatter_result.table_result,
+                scatter_distance=bundle.scatter_result.scatter_distance,
+            )
+            if initialize_area
+            else mission.scatter_evidence
+        )
+        active_mission = replace(
+            mission,
+            impact_hex=bundle.impact_hex,
+            scatter_evidence=scatter_evidence,
+            affected_operator_ids=affected_ids,
+            active_started_tick=(
+                working.tick if initialize_area else mission.active_started_tick
+            ),
+            active_remaining_seconds=(
+                mission.active_duration_seconds
+                if initialize_area else mission.active_remaining_seconds
+            ),
+        )
+        working.indirect_fire_missions = tuple(sorted(
+            (active_mission if value.mission_id == mission.mission_id else value
+             for value in working.indirect_fire_missions),
+            key=fire_mission_sort_key,
+        ))
+        events: list[EngineEvent] = []
+        if initialize_area:
+            events.append(self._indirect_fire_active_started_event(
+                working, active_mission, bundle
+            ))
+        for effect in bundle.damage_effects:
+            events.append(self._indirect_fire_area_triggered_event(
+                working, active_mission, effect
+            ))
+        return tuple(events)
+
+    def _apply_indirect_fire_damage_effects(
+        self,
+        working: WorldState,
+        bundle: IndirectFireEffectBundle,
+    ) -> None:
+        for effect in bundle.damage_effects:
+            target = working.operators.get(effect.operator_id)
+            if (
+                target is None
+                or not target.alive
+                or not target.deployed
+                or target.current_hex != bundle.impact_hex
+            ):
+                raise ValueError("INDIRECT_FIRE_EFFECT_TARGET_NOT_CURRENT")
+            before = int(target.blood)
+            if effect.damage_result == "NO_EFFECT":
+                losses = 0
+            elif effect.damage_result == "SUPPRESS":
+                losses = 0
+            elif effect.damage_result.startswith("LOSS_"):
+                try:
+                    losses = int(effect.damage_result.split("_", 1)[1])
+                except ValueError as exc:
+                    raise ValueError(
+                        "INDIRECT_FIRE_EFFECT_INVALID_DAMAGE_RESULT"
+                    ) from exc
+                if losses <= 0 or losses > before:
+                    raise ValueError("INDIRECT_FIRE_EFFECT_INVALID_LOSSES")
+            else:
+                raise ValueError("INDIRECT_FIRE_EFFECT_INVALID_DAMAGE_RESULT")
+            after = before - losses
+            expected_destroyed = (
+                IndirectFireTriState.TRUE
+                if after == 0
+                else IndirectFireTriState.FALSE
+            )
+            if effect.destroyed_result is not expected_destroyed:
+                raise ValueError("INDIRECT_FIRE_EFFECT_DESTROYED_MISMATCH")
+            expected_suppression = (
+                IndirectFireTriState.TRUE
+                if effect.damage_result == "SUPPRESS"
+                else IndirectFireTriState.FALSE
+            )
+            if effect.suppression_result is not expected_suppression:
+                raise ValueError("INDIRECT_FIRE_EFFECT_SUPPRESSION_MISMATCH")
+            target.blood = after
+            target.health = target.max_health * after / int(target.max_blood)
+            if after == 0:
+                target.alive = False
+                target.state = "destroyed"
+                target.suppression_remaining_ms = 0
+                target.movement_task_pause_reason = None
+            elif effect.suppression_result is IndirectFireTriState.TRUE:
+                target.state = "SUPPRESSED"
+                target.suppression_remaining_ms = self._source_policy.suppression_ms
+                self._mark_source_suppression_movement_task(target)
+
+    @staticmethod
+    def _indirect_fire_active_started_event(
+        working: WorldState,
+        mission: FireMission,
+        bundle: IndirectFireEffectBundle,
+    ) -> EngineEvent:
+        sequence = working.next_event_sequence
+        working.next_event_sequence += 1
+        shooter = working.operators.get(mission.shooter_id)
+        return EngineEvent(
+            tick=working.tick,
+            event_type=EventType.INDIRECT_FIRE_ACTIVE_STARTED,
+            side=None if shooter is None else shooter.side,
+            actor_id=mission.shooter_id,
+            data={
+                "mission_id": mission.mission_id,
+                "weapon_id": mission.weapon_id,
+                "planned_hex": mission.planned_hex,
+                "impact_hex": bundle.impact_hex,
+                "active_remaining_seconds": mission.active_remaining_seconds,
+                "scatter_evidence": _indirect_fire_scatter_record(
+                    bundle.scatter_result
+                ),
+                "event_time_ms": working.elapsed_time_ms,
+                "action_sequence": -1,
+                "event_sequence": sequence,
+            },
+        )
+
+    @staticmethod
+    def _indirect_fire_area_triggered_event(
+        working: WorldState,
+        mission: FireMission,
+        effect: IndirectFireDamageEffect,
+    ) -> EngineEvent:
+        sequence = working.next_event_sequence
+        working.next_event_sequence += 1
+        shooter = working.operators.get(mission.shooter_id)
+        return EngineEvent(
+            tick=working.tick,
+            event_type=EventType.INDIRECT_FIRE_AREA_TRIGGERED,
+            side=None if shooter is None else shooter.side,
+            actor_id=mission.shooter_id,
+            target_id=effect.operator_id,
+            data={
+                "mission_id": mission.mission_id,
+                "impact_hex": mission.impact_hex,
+                "operator_id": effect.operator_id,
+                "damage_summary": _indirect_fire_damage_effect_record(effect),
+                "rng_transition": (
+                    None
+                    if effect.resolution_evidence.rng_transition is None
+                    else effect.resolution_evidence.rng_transition.to_record()
+                ),
+                "event_time_ms": working.elapsed_time_ms,
+                "action_sequence": -1,
+                "event_sequence": sequence,
+            },
+        )
+
+    @staticmethod
+    def _indirect_fire_resolved_event(
+        working: WorldState,
+        mission: FireMission,
+    ) -> EngineEvent:
+        sequence = working.next_event_sequence
+        working.next_event_sequence += 1
+        shooter = working.operators.get(mission.shooter_id)
+        return EngineEvent(
+            tick=working.tick,
+            event_type=EventType.INDIRECT_FIRE_RESOLVED,
+            side=None if shooter is None else shooter.side,
+            actor_id=mission.shooter_id,
+            data={
+                "mission_id": mission.mission_id,
+                "shooter_id": mission.shooter_id,
+                "weapon_id": mission.weapon_id,
+                "planned_hex": mission.planned_hex,
+                "impact_hex": mission.impact_hex,
+                "affected_units": list(mission.affected_operator_ids),
+                "active_duration_seconds": mission.active_duration_seconds,
+                "policy_hash": mission.execution_policy_hash,
+                "event_time_ms": working.elapsed_time_ms,
+                "action_sequence": -1,
+                "event_sequence": sequence,
+            },
+        )
+
+    @staticmethod
+    def _indirect_fire_mission_event(
+        world: WorldState,
+        event_type: EventType,
+        mission: FireMission,
+        data: Mapping[str, Any],
+        *,
+        action_sequence: int = -1,
+    ) -> EngineEvent:
+        sequence = world.next_event_sequence
+        world.next_event_sequence += 1
+        shooter = world.operators.get(mission.shooter_id)
+        return EngineEvent(
+            tick=world.tick,
+            event_type=event_type,
+            side=None if shooter is None else shooter.side,
+            actor_id=mission.shooter_id,
+            data={
+                **data,
+                "mission_id": mission.mission_id,
+                "event_time_ms": world.elapsed_time_ms,
+                "action_sequence": action_sequence,
+                "event_sequence": sequence,
+            },
+        )
+
+    def guided_fire_action(
+        self,
+        capability: GuidedFireCapability,
+    ) -> EngineAction:
+        """Return a canonical executable action for one current capability."""
+
+        request = self.build_guided_fire_request(capability)
+        world = self._require_world()
+        guider = world.operators.get(request.guider_id)
+        if guider is None:
+            raise ValueError("GUIDED_FIRE_GUIDER_NOT_FOUND")
+        return ActionRouter.guided_fire_action(guider.side, capability)
+
+    def build_guided_fire_request(
+        self,
+        capability: GuidedFireCapability,
+    ) -> GuidedFireRequest:
+        """Revalidate one capability and return detached preview evidence.
+
+        The capability tuple is not trusted merely because a caller can hold
+        or construct it.  All authority is recomputed from one current detached
+        pre-state before the non-executable request is created.
+        """
+
+        if not isinstance(capability, GuidedFireCapability):
+            raise TypeError("capability must be GuidedFireCapability")
+        pre_state = WorldState.from_dict(self._require_world().to_dict())
+        return self._build_guided_fire_request_from_pre_state(
+            capability,
+            pre_state,
+        )
+
+    def _build_guided_fire_request_from_pre_state(
+        self,
+        capability: GuidedFireCapability,
+        pre_state: WorldState,
+    ) -> GuidedFireRequest:
+        """Build a request from the caller's one detached pre-state."""
+
+        if not isinstance(capability, GuidedFireCapability):
+            raise TypeError("capability must be GuidedFireCapability")
+        if not isinstance(pre_state, WorldState):
+            raise TypeError("pre_state must be WorldState")
+        guider = pre_state.operators.get(capability.guider_id)
+        shooter = pre_state.operators.get(capability.shooter_id)
+        target = pre_state.operators.get(capability.target_id)
+        if guider is None:
+            raise ValueError("GUIDED_FIRE_GUIDER_NOT_FOUND")
+        if shooter is None:
+            raise ValueError("GUIDED_FIRE_SHOOTER_NOT_FOUND")
+        if target is None:
+            raise ValueError("GUIDED_FIRE_TARGET_NOT_FOUND")
+
+        profile = self._guidance_authority.profile(
+            capability.guidance_profile_id
+        )
+        if profile is None or guider.guidance_profile_id != profile.profile_id:
+            raise ValueError("GUIDED_FIRE_PROFILE_UNAVAILABLE")
+        try:
+            weapon = self._source_weapon_profile(capability.weapon_id)
+        except ValueError as exc:
+            raise ValueError("GUIDED_FIRE_WEAPON_UNAVAILABLE") from exc
+        if (
+            FireMode.GUIDED not in weapon.supported_fire_modes
+            or capability.weapon_id not in shooter.weapon_ids
+        ):
+            raise ValueError("GUIDED_FIRE_WEAPON_UNSUPPORTED")
+        current = self._guided_fire_capabilities_from_pre_state(
+            pre_state,
+            guider.side,
+        )
+        if capability not in current:
+            raise ValueError("GUIDED_FIRE_CAPABILITY_STALE")
+        visibility = self._guided_fire_visibility(guider, target)
+        if not visibility.observable:
+            raise ValueError("GUIDED_FIRE_TARGET_NOT_VISIBLE_TO_GUIDER")
+        if shooter.current_hex is None or target.current_hex is None:
+            raise ValueError("CURRENT_HEX_REQUIRED")
+        return _build_validated_guided_fire_request(
+            capability,
+            tick=pre_state.tick,
+            guider_visibility_evidence=visibility,
+            shooter_distance=hex_distance(
+                int(shooter.current_hex), int(target.current_hex)
+            ),
+            ammunition_before=self._ammunition(shooter).get(
+                weapon.ammunition_key,
+                0,
+            ),
+            cooldown_before=shooter.weapon_cooldown_remaining_ms,
+        )
+
+    def validate_guided_fire_request(
+        self,
+        request: GuidedFireRequest,
+    ) -> GuidedFireValidationResult:
+        """Validate a request against exactly one detached current pre-state."""
+
+        if not isinstance(request, GuidedFireRequest):
+            raise TypeError("request must be GuidedFireRequest")
+        pre_state = WorldState.from_dict(self._require_world().to_dict())
+        return self._validate_guided_fire_request_against_pre_state(
+            request,
+            pre_state,
+        )
+
+    def build_guided_fire_effect_plan(
+        self,
+        request: GuidedFireRequest,
+    ) -> GuidedFireEffectPlan:
+        """Build resource effects without damage, RNG, events, or mutation."""
+
+        if not isinstance(request, GuidedFireRequest):
+            raise TypeError("request must be GuidedFireRequest")
+        pre_state = WorldState.from_dict(self._require_world().to_dict())
+        validation = self._validate_guided_fire_request_against_pre_state(
+            request,
+            pre_state,
+        )
+        if not validation.valid:
+            raise ValueError(
+                f"GUIDED_FIRE_VALIDATION_FAILED:{validation.reason}"
+            )
+        return self._guided_fire_effect_plan_for_validated_request(request)
+
+    def resolve_guided_fire_request(
+        self,
+        request: GuidedFireRequest,
+    ) -> FireResolution:
+        """Stage deterministic damage/resources without committing runtime."""
+
+        if not isinstance(request, GuidedFireRequest):
+            raise TypeError("request must be GuidedFireRequest")
+        if self._rng is None or self._adjudication_tables is None:
+            raise RuntimeError("guided-fire runtime is unavailable")
+        pre_state = WorldState.from_dict(self._require_world().to_dict())
+        validation = self._validate_guided_fire_request_against_pre_state(
+            request,
+            pre_state,
+        )
+        if not validation.valid:
+            raise ValueError(
+                f"GUIDED_FIRE_VALIDATION_FAILED:{validation.reason}"
+            )
+        effect_plan = self._guided_fire_effect_plan_for_validated_request(
+            request
+        )
+        direct_request = self._guided_direct_fire_request(request, pre_state)
+        detached_rng = NativeRNG.restore(self._rng.snapshot())
+        return GuidedFireResolver(
+            self._adjudication_tables,
+            detached_rng,
+        ).resolve(validation, direct_request, effect_plan)
+
+    def stage_guided_fire_intent(
+        self,
+        intent: FireIntent,
+    ) -> GuidedFireStageResult:
+        """Route and stage one GUIDED intent without authoritative mutation.
+
+        The detached world is the immutable pre-state for request construction,
+        validation, and resolution.  RNG is cloned once and its transition is
+        returned only as an EffectBundle; no Engine event is published.
+        """
+
+        staged = self.stage_guided_fire_intents((intent,))
+        return staged[0]
+
+    def stage_guided_fire_intents(
+        self,
+        intents: Sequence[FireIntent],
+    ) -> tuple[GuidedFireStageResult, ...]:
+        """Stage a deterministic GUIDED batch against one detached pre-state.
+
+        This is the internal execution-pipeline boundary intended to be called
+        after an orchestrator has sealed a batch.  It deliberately performs no
+        conflict resolution or authoritative commit; those belong to Phase 4C-2.
+        """
+
+        if isinstance(intents, (str, bytes)) or not isinstance(
+            intents, Sequence
+        ):
+            raise TypeError("intents must be a sequence of FireIntent")
+        values = tuple(intents)
+        if any(not isinstance(intent, FireIntent) for intent in values):
+            raise TypeError("intents must contain only FireIntent")
+        if self._rng is None or self._adjudication_tables is None:
+            raise RuntimeError("guided-fire runtime is unavailable")
+        pre_state = WorldState.from_dict(self._require_world().to_dict())
+        detached_rng = NativeRNG.restore(self._rng.snapshot())
+        ordered = tuple(sorted(values, key=_guided_fire_intent_sort_key))
+        router = self._action_router
+        if router is None:
+            raise RuntimeError("guided-fire router is unavailable")
+        staged: list[GuidedFireStageResult] = []
+        for intent in ordered:
+            routed = router.route_fire_intent(
+                intent,
+                guided_stage=lambda candidate: (
+                    self._stage_guided_fire_intent_against_pre_state(
+                        candidate,
+                        pre_state,
+                        detached_rng,
+                    )
+                ),
+            )
+            if not isinstance(routed, GuidedFireStageResult):
+                raise RuntimeError("GUIDED intent unexpectedly left GUIDED route")
+            staged.append(routed)
+        return tuple(staged)
+
+    def _stage_guided_fire_intent_against_pre_state(
+        self,
+        intent: FireIntent,
+        pre_state: WorldState,
+        detached_rng: NativeRNG,
+        *,
+        action_id: str | None = None,
+    ) -> GuidedFireStageResult:
+        if intent.mode is not FireMode.GUIDED:
+            raise ValueError("GUIDED_FIRE_STAGE_REQUIRES_GUIDED_INTENT")
+        if not isinstance(intent.target, UnitTarget):
+            raise ValueError("GUIDED_FIRE_REQUIRES_UNIT_TARGET")
+        if intent.guider_id is None:
+            raise ValueError("GUIDER_REQUIRED")
+        shooter = pre_state.operators.get(intent.shooter_id)
+        if shooter is None:
+            raise ValueError("GUIDED_FIRE_SHOOTER_NOT_FOUND")
+        available = self._guided_fire_capabilities_from_pre_state(
+            pre_state,
+            shooter.side,
+        )
+        matching = tuple(
+            item
+            for item in available
+            if (
+                item.guider_id == intent.guider_id
+                and item.shooter_id == intent.shooter_id
+                and item.weapon_id == intent.weapon_id
+                and item.target_id == intent.target.unit_id
+            )
+        )
+        if len(matching) != 1:
+            raise ValueError("GUIDED_FIRE_CAPABILITY_NOT_AVAILABLE")
+        request = self._build_guided_fire_request_from_pre_state(
+            matching[0],
+            pre_state,
+        )
+        router = self._action_router
+        if router is None:
+            raise RuntimeError("guided-fire router is unavailable")
+        router.route_guided_fire_request(intent, request)
+        validation = self._validate_guided_fire_request_against_pre_state(
+            request,
+            pre_state,
+        )
+        if not validation.valid:
+            raise ValueError(
+                f"GUIDED_FIRE_VALIDATION_FAILED:{validation.reason}"
+            )
+        effect_plan = self._guided_fire_effect_plan_for_validated_request(
+            request
+        )
+        direct_request = self._guided_direct_fire_request(
+            request,
+            pre_state,
+            action_id=action_id,
+        )
+        if self._adjudication_tables is None:
+            raise RuntimeError("guided-fire runtime is unavailable")
+        resolution = GuidedFireResolver(
+            self._adjudication_tables,
+            detached_rng,
+        ).resolve(validation, direct_request, effect_plan)
+        return GuidedFireStageResult(
+            request=request,
+            validation=validation,
+            resolution=resolution,
+            effect_bundle=resolution.effect_bundle,
+        )
+
+    def _guided_fire_effect_plan_for_validated_request(
+        self,
+        request: GuidedFireRequest,
+    ) -> GuidedFireEffectPlan:
+        profile = self._guidance_authority.profile(request.guidance_profile_id)
+        if profile is None:
+            raise RuntimeError("validated guidance profile disappeared")
+        # The guidance profile recovery reserves both participants in the
+        # joint opportunity. Weapon cooldown remains a separate direct-fire
+        # effect for the future adjudicator/commit phase.
+        recovery_updates = tuple(sorted(
+            (
+                GuidedFireRecoveryUpdate(
+                    operator_id=request.shooter_id,
+                    recovery_remaining_ms=profile.recovery_seconds * 1000,
+                ),
+                GuidedFireRecoveryUpdate(
+                    operator_id=request.guider_id,
+                    recovery_remaining_ms=profile.recovery_seconds * 1000,
+                ),
+            ),
+            key=lambda item: item.operator_id,
+        ))
+        return GuidedFireEffectPlan(
+            shooter_id=request.shooter_id,
+            guider_id=request.guider_id,
+            weapon_id=request.weapon_id,
+            target_id=request.target_id,
+            ammo_consume=1,
+            recovery_updates=recovery_updates,
+        )
+
+    def _guided_direct_fire_request(
+        self,
+        request: GuidedFireRequest,
+        pre_state: WorldState,
+        *,
+        action_id: str | None = None,
+    ) -> DirectFireRequest:
+        shooter = pre_state.operators[request.shooter_id]
+        target = pre_state.operators[request.target_id]
+        # Internal-only action identity keeps GUIDED dice/adjudication evidence
+        # deterministic without changing EngineAction or Replay serialization.
+        internal_action = EngineAction(
+            shooter.side,
+            shooter.operator_id,
+            ActionType.SHOOT,
+            target_id=target.operator_id,
+            parameters={
+                "weapon_id": request.weapon_id,
+                "fire_mode": FireMode.GUIDED.value,
+                "guider_id": request.guider_id,
+            },
+        )
+        direct_request = self._direct_fire_request(
+            internal_action,
+            shooter,
+            target,
+            world=pre_state,
+            weapon_id=request.weapon_id,
+        )
+        return replace(
+            direct_request,
+            action_id=(direct_request.action_id if action_id is None else action_id),
+            visibility=request.guider_visibility_evidence,
+            distance=request.shooter_distance,
+            ammunition_before=request.ammunition_before,
+            weapon_cooldown_before=(request.cooldown_before + 999) // 1000,
+        )
+
+    def _validate_guided_fire_request_against_pre_state(
+        self,
+        request: GuidedFireRequest,
+        pre_state: WorldState,
+    ) -> GuidedFireValidationResult:
+        def result(valid: bool, reason: str) -> GuidedFireValidationResult:
+            return GuidedFireValidationResult(valid, reason, request)
+
+        if pre_state.done:
+            return result(False, "WORLD_DONE")
+        if request.tick != pre_state.tick:
+            return result(False, "STALE_REQUEST_TICK")
+        guider = pre_state.operators.get(request.guider_id)
+        if guider is None:
+            return result(False, "GUIDER_NOT_FOUND")
+        shooter = pre_state.operators.get(request.shooter_id)
+        if shooter is None:
+            return result(False, "SHOOTER_NOT_FOUND")
+        target = pre_state.operators.get(request.target_id)
+        if target is None:
+            return result(False, "TARGET_NOT_FOUND")
+
+        profile = self._guidance_authority.profile(
+            request.guidance_profile_id
+        )
+        if profile is None or guider.guidance_profile_id != profile.profile_id:
+            return result(False, "GUIDANCE_PROFILE_UNAVAILABLE")
+        try:
+            weapon = self._source_weapon_profile(request.weapon_id)
+        except ValueError:
+            return result(False, "WEAPON_NOT_FOUND")
+        if FireMode.GUIDED not in weapon.supported_fire_modes:
+            return result(False, "WEAPON_GUIDED_MODE_UNSUPPORTED")
+        if request.weapon_id not in shooter.weapon_ids:
+            return result(False, "WEAPON_NOT_CARRIED")
+
+        if guider.side != shooter.side:
+            return result(False, "GUIDER_SHOOTER_SIDE_MISMATCH")
+        if target.side == shooter.side:
+            return result(False, "SAME_SIDE_TARGET")
+        if not target.alive:
+            return result(False, "TARGET_NOT_ALIVE")
+        if not target.deployed:
+            return result(False, "TARGET_NOT_DEPLOYED")
+        if not guider.alive:
+            return result(False, "GUIDER_NOT_ALIVE")
+        if not guider.deployed:
+            return result(False, "GUIDER_NOT_DEPLOYED")
+        if guider.guided_fire_recovery_remaining_ms != 0:
+            return result(False, "GUIDER_RECOVERING")
+        restrictions = (
+            profile.requires_stopped,
+            profile.requires_unfolded,
+            profile.prohibited_while_suppressed,
+        )
+        if any(value is None for value in restrictions):
+            return result(False, "GUIDANCE_PROFILE_UNRESOLVED")
+        if profile.requires_stopped and (not guider.stopped or guider.moving):
+            return result(False, "GUIDER_MUST_STOP")
+        if profile.requires_unfolded and not guider.weapon_unfolded:
+            return result(False, "GUIDER_WEAPON_NOT_UNFOLDED")
+        if (
+            profile.prohibited_while_suppressed
+            and guider.suppression_remaining_ms > 0
+        ):
+            return result(False, "GUIDER_SUPPRESSED")
+
+        if not shooter.alive:
+            return result(False, "SHOOTER_NOT_ALIVE")
+        if not shooter.deployed:
+            return result(False, "SHOOTER_NOT_DEPLOYED")
+        if shooter.guided_fire_recovery_remaining_ms != 0:
+            return result(False, "SHOOTER_RECOVERING")
+        if not self._guidance_scope_allows(profile, guider, shooter):
+            return result(False, "GUIDANCE_SCOPE_NOT_AUTHORIZED")
+        ammunition = self._ammunition(shooter).get(weapon.ammunition_key, 0)
+        if ammunition <= 0:
+            return result(False, "AMMUNITION_UNAVAILABLE")
+        if shooter.weapon_cooldown_remaining_ms != 0:
+            return result(False, "WEAPON_ON_COOLDOWN")
+        if shooter.transition_kind is not None:
+            return result(False, "SHOOTER_TRANSITIONING")
+        if shooter.move_to_stop_remaining_ms != 0:
+            return result(False, "SHOOTER_TRANSITIONING")
+        if (
+            (not shooter.stopped or shooter.moving)
+            and not weapon.can_fire_while_moving
+        ):
+            return result(False, "SHOOTER_MUST_STOP")
+        if weapon.requires_unfolded and not shooter.weapon_unfolded:
+            return result(False, "WEAPON_NOT_UNFOLDED")
+
+        if (
+            guider.current_hex is None
+            or shooter.current_hex is None
+            or target.current_hex is None
+        ):
+            return result(False, "CURRENT_HEX_REQUIRED")
+        if _unit_domain(target.operator_type) not in weapon.target_domains:
+            return result(False, "UNSUPPORTED_TARGET_DOMAIN")
+        shooter_distance = hex_distance(
+            int(shooter.current_hex),
+            int(target.current_hex),
+        )
+        if shooter_distance > weapon.maximum_range:
+            return result(False, "TARGET_OUT_OF_RANGE")
+        visibility = self._guided_fire_visibility(guider, target)
+        if not visibility.observable:
+            return result(False, "TARGET_NOT_OBSERVED_BY_GUIDER")
+
+        # These checks bind the detached request evidence to this exact
+        # pre-state.  Shooter visibility is intentionally absent.
+        if request.shooter_distance != shooter_distance:
+            return result(False, "REQUEST_DISTANCE_MISMATCH")
+        if request.ammunition_before != ammunition:
+            return result(False, "REQUEST_AMMUNITION_MISMATCH")
+        if request.cooldown_before != shooter.weapon_cooldown_remaining_ms:
+            return result(False, "REQUEST_COOLDOWN_MISMATCH")
+        if (
+            request.guider_visibility_evidence.to_dict()
+            != visibility.to_dict()
+        ):
+            return result(False, "REQUEST_VISIBILITY_EVIDENCE_MISMATCH")
+        return result(True, "LEGAL")
+
+    def _guided_fire_capabilities_from_pre_state(
+        self,
+        pre_state: WorldState,
+        side: str,
+    ) -> tuple[GuidedFireCapability, ...]:
+        if pre_state.done or self._source_map is None:
+            return ()
+
+        friendlies = tuple(sorted(
+            (item for item in pre_state.operators.values() if item.side == side),
+            key=lambda item: item.operator_id,
+        ))
+        enemies = tuple(sorted(
+            (
+                item
+                for item in pre_state.operators.values()
+                if item.side != side and item.alive and item.deployed
+            ),
+            key=lambda item: item.operator_id,
+        ))
+        capabilities: list[GuidedFireCapability] = []
+        for guider in friendlies:
+            profile = (
+                None
+                if guider.guidance_profile_id is None
+                else self._guidance_authority.profile(guider.guidance_profile_id)
+            )
+            if profile is None or not self._guidance_guider_ready(guider, profile):
+                continue
+            visible_target_ids = {
+                int(value)
+                for value in guider.raw_attributes.get("see_enemy_bop_ids", ())
+                if type(value) is int and value >= 0
+            }
+            if not visible_target_ids:
+                continue
+            for shooter in friendlies:
+                if not self._guidance_scope_allows(profile, guider, shooter):
+                    continue
+                for weapon_id in sorted(shooter.weapon_ids):
+                    try:
+                        weapon = self._source_weapon_profile(weapon_id)
+                    except ValueError:
+                        continue
+                    if not self._guided_weapon_ready(shooter, weapon):
+                        continue
+                    for target in enemies:
+                        if (
+                            target.operator_id not in visible_target_ids
+                            or target.current_hex is None
+                            or _unit_domain(target.operator_type)
+                            not in weapon.target_domains
+                            or hex_distance(
+                                int(shooter.current_hex), int(target.current_hex)
+                            ) > weapon.maximum_range
+                        ):
+                            continue
+                        capabilities.append(GuidedFireCapability(
+                            guider_id=guider.operator_id,
+                            shooter_id=shooter.operator_id,
+                            weapon_id=int(weapon_id),
+                            target_id=target.operator_id,
+                            guidance_profile_id=profile.profile_id,
+                        ))
+        return tuple(sorted(capabilities, key=guided_fire_capability_sort_key))
+
+    def _guided_fire_visibility(
+        self,
+        guider: OperatorState,
+        target: OperatorState,
+    ) -> VisibilityResult:
+        """Recompute exact guider evidence through the observation evaluator."""
+
+        if self._source_map is None or self._source_visibility_map is None:
+            raise ValueError("SOURCE_VISIBILITY_MAP_UNAVAILABLE")
+        if guider.current_hex is None or target.current_hex is None:
+            raise ValueError("CURRENT_HEX_REQUIRED")
+        return evaluate_visibility(
+            self._source_visibility_map,
+            observer_hex=guider.current_hex,
+            target_hex=target.current_hex,
+            observer_domain=_unit_domain(guider.operator_type),
+            target_domain=_unit_domain(target.operator_type),
+            observer_is_drone=_uses_drone_observation_profile(
+                guider, self._operator_lifecycle_authority
+            ),
+            target_is_drone=_uses_drone_observation_profile(
+                target, self._operator_lifecycle_authority
+            ),
+            target_concealed=target.concealed,
+            target_terrain=self._source_map.terrain(target.current_hex).value,
+            line_of_sight_evidence=self._runtime_line_of_sight(guider, target),
+        )
+
+    @staticmethod
+    def _guidance_guider_ready(
+        guider: OperatorState,
+        profile: GuidanceProfile,
+    ) -> bool:
+        if (
+            not guider.alive
+            or not guider.deployed
+            or guider.current_hex is None
+            or guider.movement_locked
+            or guider.guided_fire_recovery_remaining_ms != 0
+        ):
+            return False
+        # None is an unresolved authority fact, not permission to omit a rule.
+        restrictions = (
+            profile.requires_stopped,
+            profile.requires_unfolded,
+            profile.prohibited_while_suppressed,
+        )
+        if any(value is None for value in restrictions):
+            return False
+        if profile.requires_stopped and (not guider.stopped or guider.moving):
+            return False
+        if profile.requires_unfolded and not guider.weapon_unfolded:
+            return False
+        if profile.prohibited_while_suppressed and guider.suppression_remaining_ms > 0:
+            return False
+        return True
+
+    @staticmethod
+    def _guidance_scope_allows(
+        profile: GuidanceProfile,
+        guider: OperatorState,
+        shooter: OperatorState,
+    ) -> bool:
+        if (
+            not shooter.alive
+            or not shooter.deployed
+            or shooter.current_hex is None
+            or shooter.movement_locked
+            or shooter.guided_fire_recovery_remaining_ms != 0
+        ):
+            return False
+        if profile.guidance_scope is GuidanceScope.AFFILIATED_SHOOTER:
+            return (
+                guider.guidance_affiliation_id == shooter.operator_id
+                and guider.guidance_affiliation_evidence is not None
+            )
+        if profile.guidance_scope is GuidanceScope.SIDE_WIDE:
+            return _unit_domain(shooter.operator_type) is UnitDomain.VEHICLE
+        return False
+
+    def _guided_weapon_ready(
+        self,
+        shooter: OperatorState,
+        weapon: WeaponProfile,
+    ) -> bool:
+        if (
+            type(weapon.weapon_id) is not int
+            or weapon.weapon_id not in shooter.weapon_ids
+            or FireMode.GUIDED not in weapon.supported_fire_modes
+            or shooter.movement_locked
+            or shooter.weapon_cooldown_remaining_ms != 0
+            or shooter.transition_kind is not None
+            or shooter.move_to_stop_remaining_ms != 0
+            or (
+                (not shooter.stopped or shooter.moving)
+                and not weapon.can_fire_while_moving
+            )
+            or (weapon.requires_unfolded and not shooter.weapon_unfolded)
+        ):
+            return False
+        return self._ammunition(shooter).get(weapon.ammunition_key, 0) > 0
 
     def valid_actions(self, side: str) -> tuple[ValidAction, ...]:
         world = self._require_world()
@@ -661,7 +3446,8 @@ class NativeEngine:
             "tick", "stage", "terminal", "winner", "terminal_reason",
             "truncated", "elapsed_time_ms", "next_action_sequence",
             "next_event_sequence", "movement_evidence", "last_actions",
-            "last_judge_info",
+            "last_judge_info", "indirect_fire_missions",
+            "boarding_transitions",
         ):
             setattr(authoritative, name, getattr(committed, name))
         for collection_name in ("operators", "sides", "objectives"):
@@ -848,10 +3634,38 @@ class NativeEngine:
                 seen_actors.add(actor_id)
             common_errors[item.action_sequence] = error
 
+        boarding_by_carrier: defaultdict[int, list[RoutedAction]] = defaultdict(list)
+        carrier_actions: set[int] = set()
+        for item in routed:
+            if common_errors[item.action_sequence] is not None:
+                continue
+            if item.action.action_type is ActionType.BOARD:
+                if item.action.target_id is not None:
+                    boarding_by_carrier[item.action.target_id].append(item)
+            elif (
+                item.action.actor_id is not None
+                and item.action.action_type is not ActionType.WAIT
+            ):
+                carrier_actions.add(item.action.actor_id)
+        for carrier_id, contenders in boarding_by_carrier.items():
+            if len(contenders) > 1:
+                for item in contenders:
+                    common_errors[item.action_sequence] = (
+                        "BOARDING_CARRIER_CONFLICT"
+                    )
+            elif carrier_id in carrier_actions:
+                common_errors[contenders[0].action_sequence] = (
+                    "BOARDING_CARRIER_ACTION_CONFLICT"
+                )
+
         accepted: list[RoutedAction] = []
         decisions: list[ActionDecision] = []
         events: list[EngineEvent] = []
         fire_intents: list[_SourceFireIntent] = []
+        guided_fire_intents: list[_SourceGuidedFireIntent] = []
+        indirect_fire_intents: list[_SourceIndirectFireIntent] = []
+        boarding_intents: list[_SourceBoardingIntent] = []
+        concealment_intents: list[_SourceConcealmentIntent] = []
         for item in routed:
             action = item.action
             error = common_errors[item.action_sequence]
@@ -860,6 +3674,39 @@ class NativeEngine:
                     error, intent = self._stage_source_shoot(item, pre_state, events)
                     if intent is not None:
                         fire_intents.append(intent)
+                elif action.action_type is ActionType.FIRE:
+                    mode = str(action.parameters.get("fire_mode", "")).upper()
+                    if mode == FireMode.GUIDED.value:
+                        error, guided = self._stage_source_guided_fire(
+                            item,
+                            pre_state,
+                            events,
+                        )
+                        if guided is not None:
+                            guided_fire_intents.append(guided)
+                    elif mode == FireMode.INDIRECT.value:
+                        error, indirect = self._stage_source_indirect_fire(
+                            item,
+                            pre_state,
+                        )
+                        if indirect is not None:
+                            indirect_fire_intents.append(indirect)
+                    else:
+                        error = "INVALID_FIRE_MODE"
+                elif action.action_type in {ActionType.BOARD, ActionType.UNLOAD}:
+                    error, boarding = self._stage_source_boarding(
+                        item,
+                        pre_state,
+                    )
+                    if boarding is not None:
+                        boarding_intents.append(boarding)
+                elif action.action_type is ActionType.ENTER_CONCEALMENT:
+                    error, concealment = self._stage_source_concealment(
+                        item,
+                        pre_state,
+                    )
+                    if concealment is not None:
+                        concealment_intents.append(concealment)
                 else:
                     error = self._dispatch_source_action(item, events)
             if error is None:
@@ -879,8 +3726,43 @@ class NativeEngine:
                     action.target_id, item.action_sequence,
                     {"action_id": action.action_id, "code": error}))
 
-        self._apply_source_fire_intents(fire_intents, events)
-        self._movement.advance(world, delta_time_ms, events)
+        self._apply_source_concealment_intents(concealment_intents, events)
+        self._apply_source_boarding_intents(boarding_intents, events)
+        self._apply_source_fire_intents(
+            fire_intents,
+            guided_fire_intents,
+            events,
+        )
+        events.extend(self._apply_boarding_carrier_destruction(world))
+        self._apply_source_indirect_fire_intents(
+            indirect_fire_intents,
+            events,
+        )
+        self._advance_source_operator_time(delta_time_ms, events)
+        self._advance_source_boarding_transitions(delta_time_ms, events)
+        active_delta_by_mission = dict(indirect_fire_active_delta_ms(
+            world.indirect_fire_missions,
+            delta_time_ms,
+        ))
+        world.indirect_fire_missions = advance_indirect_fire_missions(
+            world.indirect_fire_missions,
+            delta_time_ms,
+            current_tick=world.tick,
+        )
+        self._resolve_active_indirect_fire_missions(events)
+        events.extend(self._apply_boarding_carrier_destruction(world))
+        world.indirect_fire_missions, expired_mission_ids = (
+            advance_indirect_fire_active_missions(
+                world.indirect_fire_missions,
+                delta_time_ms,
+                current_tick=world.tick,
+                delta_time_ms_by_mission=active_delta_by_mission,
+            )
+        )
+        self._emit_expired_indirect_fire_missions(
+            expired_mission_ids,
+            events,
+        )
         self._refresh_source_observation()
         world.last_actions = [item.action.to_dict() for item in routed]
         direct_event_types = {
@@ -890,6 +3772,17 @@ class NativeEngine:
             EventType.COMBAT_RESULT_LOOKED_UP, EventType.LOSSES_APPLIED,
             EventType.SUPPRESSION_APPLIED, EventType.UNIT_DESTROYED,
             EventType.WEAPON_COOLDOWN_STARTED, EventType.AMMUNITION_CONSUMED,
+            EventType.GUIDED_FIRE_RESOLVED,
+            EventType.INDIRECT_FIRE_MISSION_CREATED,
+            EventType.INDIRECT_FIRE_ACTIVE_STARTED,
+            EventType.INDIRECT_FIRE_AREA_TRIGGERED,
+            EventType.INDIRECT_FIRE_RESOLVED,
+            EventType.BOARD_STARTED,
+            EventType.BOARD_COMPLETED,
+            EventType.UNLOAD_STARTED,
+            EventType.UNLOAD_COMPLETED,
+            EventType.UNIT_CONCEALED,
+            EventType.UNIT_EXPOSED,
         }
         world.last_judge_info = [item.to_dict() for item in events
                                  if item.event_type in direct_event_types]
@@ -941,6 +3834,13 @@ class NativeEngine:
                 operator, path, mode, world)
             if not legality.legal:
                 return legality.reason_code
+            self._expose_operator(
+                operator,
+                events,
+                action_sequence=sequence,
+                action_id=action.action_id,
+                reason="MOVE",
+            )
             self._movement.start(
                 world, operator, path=path, mode=mode,
                 action_id=action.action_id, action_sequence=sequence,
@@ -957,6 +3857,16 @@ class NativeEngine:
             return None
         if action.action_type is ActionType.SHOOT:
             raise RuntimeError("SHOOT must be resolved through joint staging")
+        if action.action_type is ActionType.FIRE:
+            raise RuntimeError("FIRE must be resolved through joint staging")
+        if action.action_type in {ActionType.BOARD, ActionType.UNLOAD}:
+            raise RuntimeError(
+                "BOARD/UNLOAD must be resolved through boarding staging"
+            )
+        if action.action_type is ActionType.ENTER_CONCEALMENT:
+            raise RuntimeError(
+                "ENTER_CONCEALMENT must be resolved through posture staging"
+            )
         if action.action_type is ActionType.WEAPON_LOCK:
             return self._start_source_transition(
                 operator, "WEAPON_LOCK", sequence, action.action_id, events)
@@ -966,6 +3876,91 @@ class NativeEngine:
         if action.action_type is ActionType.CHANGE_STATE:
             return self._change_source_state(routed, events)
         return "UNSUPPORTED_ACTION_TYPE"
+
+    def _stage_source_concealment(
+        self,
+        routed: RoutedAction,
+        pre_state: WorldState,
+    ) -> tuple[str | None, _SourceConcealmentIntent | None]:
+        action = routed.action
+        if action.target_id is not None or action.target_position is not None:
+            return "INVALID_CONCEALMENT_TARGET", None
+        if action.parameters:
+            return "INVALID_CONCEALMENT_PARAMETERS", None
+        capability = next(
+            (
+                item
+                for item in self._concealment_capabilities_from_pre_state(
+                    pre_state,
+                    action.side,
+                )
+                if item.operator_id == action.actor_id
+            ),
+            None,
+        )
+        if capability is None:
+            return "ACTOR_NOT_FOUND", None
+        if not capability.available:
+            return capability.reason, None
+        return None, _SourceConcealmentIntent(routed, capability)
+
+    def _apply_source_concealment_intents(
+        self,
+        intents: Sequence[_SourceConcealmentIntent],
+        events: list[EngineEvent],
+    ) -> None:
+        world = self._require_world()
+        for intent in sorted(
+            intents,
+            key=lambda item: item.routed.action_sequence,
+        ):
+            action = intent.routed.action
+            operator = world.operators[intent.capability.operator_id]
+            previous = operator.concealment_posture
+            if previous is not ConcealmentPosture.EXPOSED:
+                raise RuntimeError("CONCEALMENT_PRESTATE_MISMATCH")
+            operator.set_concealment_posture(ConcealmentPosture.CONCEALED)
+            events.append(self._source_event(
+                EventType.UNIT_CONCEALED,
+                operator.side,
+                operator.operator_id,
+                None,
+                intent.routed.action_sequence,
+                {
+                    "action_id": action.action_id,
+                    "operator_id": operator.operator_id,
+                    "previous_posture": previous.value,
+                    "new_posture": ConcealmentPosture.CONCEALED.value,
+                },
+            ))
+
+    def _expose_operator(
+        self,
+        operator: OperatorState,
+        events: list[EngineEvent],
+        *,
+        action_sequence: int,
+        action_id: str,
+        reason: str,
+    ) -> None:
+        previous = operator.concealment_posture
+        if previous is not ConcealmentPosture.CONCEALED:
+            return
+        operator.set_concealment_posture(ConcealmentPosture.EXPOSED)
+        events.append(self._source_event(
+            EventType.UNIT_EXPOSED,
+            operator.side,
+            operator.operator_id,
+            None,
+            action_sequence,
+            {
+                "action_id": action_id,
+                "operator_id": operator.operator_id,
+                "reason": reason,
+                "previous_posture": previous.value,
+                "new_posture": ConcealmentPosture.EXPOSED.value,
+            },
+        ))
 
     def _start_source_transition(self, operator: Any, kind: str,
                                  action_sequence: int, action_id: str,
@@ -1058,11 +4053,17 @@ class NativeEngine:
         action, sequence = routed.action, routed.action_sequence
         if action.target_id is None or action.target_id not in pre_state.operators:
             return "TARGET_NOT_FOUND", None
-        attacker = pre_state.operators[int(action.actor_id)]
-        target = pre_state.operators[int(action.target_id)]
         try:
+            fire_intent = self._action_router.route_fire(action)
+            if not isinstance(fire_intent, FireIntent):
+                raise RuntimeError("SHOOT unexpectedly left DIRECT route")
+            if not isinstance(fire_intent.target, UnitTarget):
+                raise ValueError("DIRECT_FIRE_REQUIRES_UNIT_TARGET")
+            attacker = pre_state.operators[fire_intent.shooter_id]
+            target = pre_state.operators[fire_intent.target.unit_id]
             request = self._direct_fire_request(
-                action, attacker, target, world=pre_state)
+                action, attacker, target, world=pre_state,
+                weapon_id=fire_intent.weapon_id)
         except ValueError as exc:
             return str(exc), None
         if self._rng is None or self._adjudication_tables is None:
@@ -1073,42 +4074,905 @@ class NativeEngine:
             events.append(self._annotate_source_event(source_event, sequence))
         if resolution.outcome is None:
             return (resolution.error or resolution.legality.reason_code), None
-        return None, _SourceFireIntent(routed, request, resolution)
+        loitering_policy = self._loitering_attack_policy_for(
+            attacker,
+            int(fire_intent.weapon_id),
+            request.weapon,
+        )
+        return None, _SourceFireIntent(
+            routed, fire_intent, request, resolution, loitering_policy)
+
+    def _stage_source_boarding(
+        self,
+        routed: RoutedAction,
+        pre_state: WorldState,
+    ) -> tuple[str | None, _SourceBoardingIntent | None]:
+        """Stage BOARD/UNLOAD against the sealed tick pre-state."""
+
+        action = routed.action
+        if action.target_id is None:
+            return "TARGET_REQUIRED", None
+        profile_id = action.parameters.get("profile_id")
+        authority_version = action.parameters.get("authority_version")
+        authority_hash = action.parameters.get("authority_hash")
+        try:
+            if action.action_type is ActionType.BOARD:
+                capability = BoardCapability(
+                    passenger_id=int(action.actor_id),
+                    carrier_id=int(action.target_id),
+                    profile_id=str(profile_id),
+                    authority_version=str(authority_version),
+                    authority_hash=str(authority_hash),
+                )
+                validation = self._build_board_request_from_pre_state(
+                    capability,
+                    pre_state,
+                    action_id=action.action_id,
+                )
+                if not validation.valid or validation.request is None:
+                    return validation.reason, None
+                return None, _SourceBoardingIntent(
+                    routed,
+                    BoardingTransitionType.BOARD,
+                    validation.request,
+                )
+            if action.action_type is ActionType.UNLOAD:
+                capability = UnloadCapability(
+                    carrier_id=int(action.actor_id),
+                    passenger_id=int(action.target_id),
+                    profile_id=str(profile_id),
+                    authority_version=str(authority_version),
+                    authority_hash=str(authority_hash),
+                )
+                validation = self._build_unload_request_from_pre_state(
+                    capability,
+                    pre_state,
+                    action_id=action.action_id,
+                )
+                if not validation.valid or validation.request is None:
+                    return validation.reason, None
+                return None, _SourceBoardingIntent(
+                    routed,
+                    BoardingTransitionType.UNLOAD,
+                    validation.request,
+                )
+        except (TypeError, ValueError):
+            return "INVALID_BOARDING_REQUEST", None
+        return "UNSUPPORTED_ACTION_TYPE", None
+
+    def _apply_source_boarding_intents(
+        self,
+        intents: Sequence[_SourceBoardingIntent],
+        events: list[EngineEvent],
+    ) -> None:
+        """Apply staged relations to the working world only."""
+
+        world = self._require_world()
+        transitions = list(world.boarding_transitions)
+        for intent in sorted(
+            intents,
+            key=lambda item: item.routed.action_sequence,
+        ):
+            request = intent.request
+            carrier = world.operators[request.carrier_id]
+            passenger = world.operators[request.passenger_id]
+            profile = self._boarding_authority.profile(request.profile_id)
+            if profile is None:
+                raise RuntimeError("BOARDING_PROFILE_UNAVAILABLE")
+            transition = BoardingTransition(
+                transition_id=boarding_transition_id(
+                    request.action_id,
+                    intent.transition_type,
+                ),
+                transition_type=intent.transition_type,
+                actor_id=request.actor_id,
+                carrier_id=request.carrier_id,
+                passenger_id=request.passenger_id,
+                remaining_ms=profile.transition_duration_ms,
+                transition_start_tick=world.tick,
+                completed_tick=None,
+                status=BoardingTransitionStatus.ACTIVE,
+                profile_id=profile.profile_id,
+                authority_version=request.authority_version,
+                authority_hash=request.authority_hash,
+            )
+            if intent.transition_type is BoardingTransitionType.BOARD:
+                carrier.passenger_id = passenger.operator_id
+                carrier.movement_locked = True
+                passenger.mounted_on = carrier.operator_id
+                passenger.deployed = False
+                passenger.current_hex = None
+                passenger.state = "ON_BOARD"
+                passenger.stopped = True
+                passenger.speed = 0.0
+                event_type = EventType.BOARD_STARTED
+            else:
+                carrier.movement_locked = True
+                event_type = EventType.UNLOAD_STARTED
+            transitions.append(transition)
+            events.append(self._source_event(
+                event_type,
+                request.side,
+                request.actor_id,
+                request.carrier_id,
+                intent.routed.action_sequence,
+                {
+                    "action_id": request.action_id,
+                    "transition_id": transition.transition_id,
+                    "carrier_id": request.carrier_id,
+                    "passenger_id": request.passenger_id,
+                    "duration_ms": transition.remaining_ms,
+                    "profile_id": request.profile_id,
+                    "authority_version": request.authority_version,
+                    "authority_hash": request.authority_hash,
+                },
+            ))
+        world.boarding_transitions = normalize_boarding_transitions(transitions)
+
+    def _advance_source_boarding_transitions(
+        self,
+        delta_time_ms: int,
+        events: list[EngineEvent],
+    ) -> None:
+        world = self._require_world()
+        transitions, completed = advance_boarding_transitions(
+            world.boarding_transitions,
+            delta_time_ms,
+            completed_tick=world.tick,
+        )
+        world.boarding_transitions = transitions
+        for transition in completed:
+            carrier = world.operators.get(transition.carrier_id)
+            passenger = world.operators.get(transition.passenger_id)
+            if carrier is None or passenger is None:
+                raise RuntimeError("BOARDING_TRANSITION_OPERATOR_MISSING")
+            if (
+                carrier.passenger_id != passenger.operator_id
+                or passenger.mounted_on != carrier.operator_id
+            ):
+                raise RuntimeError("BOARDING_TRANSITION_RELATION_MISMATCH")
+            carrier.movement_locked = False
+            if transition.transition_type is BoardingTransitionType.BOARD:
+                event_type = EventType.BOARD_COMPLETED
+            else:
+                carrier.passenger_id = None
+                passenger.mounted_on = None
+                if passenger.alive:
+                    passenger.deployed = True
+                    passenger.current_hex = carrier.current_hex
+                    passenger.x = carrier.x
+                    passenger.y = carrier.y
+                    passenger.state = "ACTIVE"
+                else:
+                    passenger.deployed = False
+                    passenger.current_hex = None
+                    passenger.state = "destroyed"
+                passenger.stopped = True
+                passenger.speed = 0.0
+                event_type = EventType.UNLOAD_COMPLETED
+            event_data = {
+                "transition_id": transition.transition_id,
+                "carrier_id": carrier.operator_id,
+                "passenger_id": passenger.operator_id,
+                "profile_id": transition.profile_id,
+                "reason_code": "COMPLETED",
+                "transition_start_tick": transition.transition_start_tick,
+                "completed_tick": transition.completed_tick,
+            }
+            if transition.transition_type is BoardingTransitionType.UNLOAD:
+                event_data["hex"] = passenger.current_hex
+            events.append(self._source_event(
+                event_type,
+                carrier.side,
+                transition.actor_id,
+                carrier.operator_id,
+                world.next_action_sequence,
+                event_data,
+            ))
+
+    def _advance_source_operator_time(
+        self,
+        delta_time_ms: int,
+        events: list[EngineEvent],
+    ) -> None:
+        """Advance movement and finite operator lifetimes on one time axis.
+
+        Splitting at the nearest lifecycle boundary makes expiry independent of
+        env-step size while leaving Movement segment semantics unchanged.
+        """
+
+        if self._movement is None:
+            raise RuntimeError("source movement runtime is unavailable")
+        world = self._require_world()
+        remaining_delta = int(delta_time_ms)
+        self._expire_source_operator_lifecycles(events)
+        while remaining_delta > 0:
+            finite_boundaries = [
+                int(operator.lifecycle_remaining_ms)
+                for operator in world.operators.values()
+                if operator.alive
+                and operator.lifecycle_remaining_ms is not None
+                and operator.lifecycle_remaining_ms > 0
+            ]
+            duration = min([remaining_delta, *finite_boundaries])
+            self._movement.advance(world, duration, events)
+            for operator in sorted(
+                world.operators.values(), key=lambda item: item.operator_id
+            ):
+                if not operator.alive or operator.lifecycle_remaining_ms is None:
+                    continue
+                operator.lifecycle_remaining_ms = max(
+                    0,
+                    operator.lifecycle_remaining_ms - duration,
+                )
+            remaining_delta -= duration
+            self._expire_source_operator_lifecycles(events)
+
+    def _expire_source_operator_lifecycles(
+        self,
+        events: list[EngineEvent],
+    ) -> None:
+        world = self._require_world()
+        for operator in sorted(
+            world.operators.values(), key=lambda item: item.operator_id
+        ):
+            if (
+                not operator.alive
+                or operator.lifecycle_profile_id is None
+                or operator.lifecycle_remaining_ms != 0
+            ):
+                continue
+            profile = self._operator_lifecycle_authority.profile(
+                operator.lifecycle_profile_id
+            )
+            if profile is None:
+                raise RuntimeError("OPERATOR_LIFECYCLE_PROFILE_UNAVAILABLE")
+            if profile.expiry_behavior is not LifecycleExpiryBehavior.DESTROY_OPERATOR:
+                raise RuntimeError("OPERATOR_LIFECYCLE_EXPIRY_UNSUPPORTED")
+            before = int(operator.blood)
+            self._destroy_source_operator(operator)
+            events.append(self._source_event(
+                EventType.UNIT_DESTROYED,
+                operator.side,
+                operator.operator_id,
+                operator.operator_id,
+                -1,
+                {
+                    "target_blood_before": before,
+                    "target_blood_after": 0,
+                    "losses": before,
+                    "reason_code": "LIFECYCLE_EXPIRED",
+                    "lifecycle_profile_id": profile.profile_id,
+                    "lifecycle_authority_version": (
+                        self._operator_lifecycle_authority.authority_version
+                    ),
+                    "lifecycle_authority_hash": (
+                        self._operator_lifecycle_authority.content_hash
+                    ),
+                },
+            ))
+
+    @staticmethod
+    def _mark_source_suppression_movement_task(
+        operator: OperatorState,
+    ) -> None:
+        """Bind a moving personnel task to the frozen suppression resume rule."""
+
+        if (
+            operator.operator_type.upper() == "PERSONNEL"
+            and operator.moving
+            and not operator.movement_stop_requested
+        ):
+            operator.movement_task_pause_reason = (
+                MovementTaskPauseReason.SUPPRESSION
+            )
+
+    @staticmethod
+    def _destroy_source_operator(operator: OperatorState) -> None:
+        """Apply the established Source destruction state atomically."""
+
+        operator.blood = 0
+        operator.health = 0.0
+        operator.alive = False
+        operator.state = "destroyed"
+        operator.speed = 0.0
+        operator.stopped = True
+        operator.move_path.clear()
+        operator.movement_action_id = None
+        operator.movement_action_sequence = None
+        operator.movement_stop_requested = False
+        operator.movement_blocked_reason = None
+        operator.movement_task_pause_reason = None
+        operator.segment_from_hex = None
+        operator.segment_to_hex = None
+        operator.segment_elapsed_ms = 0
+        operator.segment_traversal_ms = 0
+        operator.segment_event_id = None
+        operator.cur_pos_millionths = 0
+        if operator.lifecycle_remaining_ms is not None:
+            operator.lifecycle_remaining_ms = 0
+        operator.move_to_stop_remaining_ms = 0
+        operator.transition_kind = None
+        operator.transition_remaining_ms = 0
+
+    def _validate_operator_lifecycle_snapshot(
+        self,
+        world: WorldState,
+    ) -> None:
+        """Reject unknown or inconsistent finite-lifecycle authority."""
+
+        for operator in sorted(
+            world.operators.values(), key=lambda item: item.operator_id
+        ):
+            profile_id = operator.lifecycle_profile_id
+            remaining = operator.lifecycle_remaining_ms
+            if profile_id is None and remaining is None:
+                continue
+            if profile_id is None or remaining is None:
+                raise ValueError("OPERATOR_LIFECYCLE_CONTRACT_INCOMPLETE")
+            profile = self._operator_lifecycle_authority.profile(profile_id)
+            if profile is None:
+                raise ValueError("OPERATOR_LIFECYCLE_PROFILE_UNKNOWN")
+            if operator.operator_type.upper() != profile.operator_domain:
+                raise ValueError("OPERATOR_LIFECYCLE_DOMAIN_MISMATCH")
+            if remaining > profile.maximum_lifetime_ms:
+                raise ValueError("OPERATOR_LIFECYCLE_DURATION_EXCEEDS_AUTHORITY")
+            if operator.alive and remaining == 0:
+                raise ValueError("LIVING_OPERATOR_LIFECYCLE_ALREADY_EXPIRED")
+            compatibility_identity = str(
+                operator.raw_attributes.get("canonical_type", "")
+            ).upper()
+            if (
+                compatibility_identity
+                and compatibility_identity != profile.canonical_identity
+            ):
+                raise ValueError("OPERATOR_LIFECYCLE_IDENTITY_MISMATCH")
+
+    def _validate_loitering_attack_snapshot(self, world: WorldState) -> None:
+        """Fail closed when an operator advertises loitering attack authority."""
+
+        for operator in sorted(
+            world.operators.values(), key=lambda item: item.operator_id
+        ):
+            for weapon_id in sorted(operator.weapon_ids):
+                policy = self._loitering_munition_attack_authority.policy_for(
+                    lifecycle_profile_id=operator.lifecycle_profile_id,
+                    weapon_id=weapon_id,
+                )
+                if policy is None:
+                    continue
+                lifecycle = self._operator_lifecycle_authority.profile(
+                    operator.lifecycle_profile_id or ""
+                )
+                if (
+                    lifecycle is None
+                    or lifecycle.canonical_identity != policy.canonical_identity
+                    or lifecycle.operator_domain != operator.operator_type.upper()
+                ):
+                    raise ValueError("LOITERING_ATTACK_IDENTITY_MISMATCH")
+
+    @staticmethod
+    def _apply_boarding_carrier_destruction(
+        working: WorldState,
+    ) -> tuple[EngineEvent, ...]:
+        """Apply the minimal mounted-passenger destruction policy.
+
+        Ordinary carrier damage has no passenger effect.  Only destruction of
+        an explicitly related carrier cascades to its mounted passenger.  The
+        caller supplies the detached working world of an atomic transaction.
+        """
+
+        events: list[EngineEvent] = []
+        for carrier in sorted(
+            working.operators.values(), key=lambda item: item.operator_id
+        ):
+            if carrier.alive or carrier.passenger_id is None:
+                continue
+            passenger = working.operators.get(carrier.passenger_id)
+            if passenger is None or passenger.mounted_on != carrier.operator_id:
+                raise RuntimeError("BOARDING_CARRIER_RELATION_MISMATCH")
+            if not passenger.alive:
+                continue
+            passenger_before = int(passenger.blood)
+            passenger.blood = 0
+            passenger.health = 0.0
+            passenger.alive = False
+            passenger.deployed = False
+            passenger.current_hex = None
+            passenger.state = "destroyed"
+            passenger.suppression_remaining_ms = 0
+            sequence = working.next_event_sequence
+            working.next_event_sequence += 1
+            events.append(EngineEvent(
+                tick=working.tick,
+                event_type=EventType.UNIT_DESTROYED,
+                side=passenger.side,
+                actor_id=carrier.operator_id,
+                target_id=passenger.operator_id,
+                data={
+                    "associated_vehicle_id": carrier.operator_id,
+                    "passenger_id": passenger.operator_id,
+                    "target_blood_before": passenger_before,
+                    "target_blood_after": 0,
+                    "losses": passenger_before,
+                    "boarding_cascade": True,
+                    "reason_code": "CARRIER_DESTROYED",
+                    "event_time_ms": working.elapsed_time_ms,
+                    "action_sequence": -1,
+                    "event_sequence": sequence,
+                },
+            ))
+        return tuple(events)
+
+    def _stage_source_guided_fire(
+        self,
+        routed: RoutedAction,
+        pre_state: WorldState,
+        events: list[EngineEvent],
+    ) -> tuple[str | None, _SourceGuidedFireIntent | None]:
+        """Stage one replayable GUIDED action against the sealed pre-state."""
+
+        if self._action_router is None or self._rng is None:
+            raise RuntimeError("source guided-fire runtime is unavailable")
+        action = routed.action
+        rng_before = self._rng.snapshot()
+        detached_rng = NativeRNG.restore(rng_before)
+        try:
+            staged = self._action_router.route_fire(
+                action,
+                guided_stage=lambda intent: (
+                    self._stage_guided_fire_intent_against_pre_state(
+                        intent,
+                        pre_state,
+                        detached_rng,
+                        action_id=action.action_id,
+                    )
+                ),
+            )
+            if not isinstance(staged, GuidedFireStageResult):
+                raise RuntimeError("FIRE unexpectedly left GUIDED route")
+            if staged.resolution.error is not None:
+                return staged.resolution.error, None
+            commit_effect = GuidedFireCommitEffect.from_stage(staged)
+            direct_request = self._guided_direct_fire_request(
+                staged.request,
+                pre_state,
+                action_id=action.action_id,
+            )
+        except ValueError as exc:
+            return str(exc), None
+
+        transition = commit_effect.rng_transition
+        if (
+            transition.seed != int(rng_before["seed"])
+            or transition.state_before != int(rng_before["state"])
+            or transition.draws_before != int(rng_before["draws"])
+            or detached_rng.snapshot() != {
+                "seed": transition.seed,
+                "state": transition.state_after,
+                "draws": transition.draws_after,
+            }
+        ):
+            raise RuntimeError("GUIDED_FIRE_RNG_TRANSITION_MISMATCH")
+        # This is the tick's working RNG, not the authoritative pre-tick RNG.
+        # The outer transaction publishes it only if the whole tick commits.
+        self._rng = NativeRNG.restore(detached_rng.snapshot())
+        for evidence in commit_effect.evidence:
+            tagged = EngineEvent(
+                tick=evidence.tick,
+                event_type=evidence.event_type,
+                side=evidence.side,
+                actor_id=evidence.actor_id,
+                target_id=evidence.target_id,
+                data={
+                    **evidence.data,
+                    "fire_mode": FireMode.GUIDED.value,
+                    "guider_id": commit_effect.guider_id,
+                },
+            )
+            events.append(self._annotate_source_event(
+                tagged,
+                routed.action_sequence,
+            ))
+        return None, _SourceGuidedFireIntent(
+            routed=routed,
+            contract=self._action_router.fire_intent(action),
+            stage=staged,
+            commit_effect=commit_effect,
+            direct_request=direct_request,
+        )
+
+    def _stage_source_indirect_fire(
+        self,
+        routed: RoutedAction,
+        pre_state: WorldState,
+    ) -> tuple[str | None, _SourceIndirectFireIntent | None]:
+        """Bind an explicit FIRE/INDIRECT action to the sealed pre-state."""
+
+        if self._action_router is None:
+            raise RuntimeError("source indirect-fire runtime is unavailable")
+        action = routed.action
+        try:
+            transport = self._action_router.fire_intent(action)
+            if (
+                transport.mode is not FireMode.INDIRECT
+                or not isinstance(transport.target, HexTarget)
+            ):
+                raise ValueError("INDIRECT_FIRE_REQUIRES_HEX_TARGET")
+            shooter = pre_state.operators.get(transport.shooter_id)
+            if shooter is None:
+                raise ValueError("INDIRECT_FIRE_SHOOTER_NOT_FOUND")
+            capability = next((
+                value
+                for value in self._indirect_fire_capabilities_from_pre_state(
+                    pre_state,
+                    shooter.side,
+                )
+                if value.shooter_id == transport.shooter_id
+                and value.weapon_id == transport.weapon_id
+            ), None)
+            if capability is None or (
+                capability.status is not IndirectFireCapabilityStatus.AVAILABLE
+            ):
+                if capability is not None and (
+                    "indirect_fire_planned_cooldown_remaining"
+                    in capability.blockers
+                ):
+                    raise ValueError(
+                        "INDIRECT_FIRE_PLANNED_COOLDOWN_ACTIVE"
+                    )
+                raise ValueError("CAPABILITY_BLOCKED")
+            descriptor = self._indirect_fire_authority_descriptors.get(
+                capability.profile_id
+            )
+            if descriptor is None:
+                raise ValueError("CAPABILITY_BLOCKED")
+            identity = self.indirect_fire_replay_identity()
+            declared = {
+                "indirect_fire_lifecycle_version": action.parameters.get(
+                    "indirect_fire_lifecycle_version"
+                ),
+                "indirect_fire_authority_version": action.parameters.get(
+                    "indirect_fire_authority_version"
+                ),
+                "indirect_fire_authority_hash": action.parameters.get(
+                    "indirect_fire_authority_hash"
+                ),
+                "execution_policy_hash": action.parameters.get(
+                    "execution_policy_hash"
+                ),
+                "ammo_mapping_hash": action.parameters.get(
+                    "ammo_mapping_hash"
+                ),
+                "observation_policy_hash": action.parameters.get(
+                    "observation_policy_hash"
+                ),
+                "damage_policy_hash": action.parameters.get(
+                    "damage_policy_hash"
+                ),
+            }
+            if declared["execution_policy_hash"] != identity[
+                "execution_policy_hash"
+            ] or action.parameters.get("execution_policy_id") != (
+                self._indirect_fire_execution_policy.policy_id
+            ):
+                raise ValueError("POLICY_HASH_MISMATCH")
+            if declared != identity:
+                raise ValueError("INDIRECT_FIRE_AUTHORITY_MISMATCH")
+            validation = self._build_indirect_fire_plan_request_from_pre_state(
+                capability,
+                transport.target.hex_id,
+                pre_state,
+                action_id=action.action_id,
+            )
+            if not validation.valid or validation.request is None:
+                raise ValueError(validation.reason)
+            request = validation.request
+            mission = self._build_indirect_fire_mission_from_pre_state(
+                request,
+                pre_state,
+                action_stream_bound=True,
+            )
+            contract = _build_validated_indirect_fire_intent(
+                tick=pre_state.tick,
+                shooter_id=transport.shooter_id,
+                weapon_id=transport.weapon_id,
+                target=transport.target,
+                execution_policy_id=request.execution_policy_id,
+                execution_policy_hash=request.execution_policy_hash,
+                authority_version=descriptor.authority_version,
+                authority_hash=identity["indirect_fire_authority_hash"],
+                ammo_mapping_hash=descriptor.ammo_mapping_hash,
+                observation_policy_hash=descriptor.observation_policy_hash,
+                damage_policy_hash=descriptor.damage_policy_hash,
+            )
+        except ValueError as exc:
+            return str(exc), None
+        return None, _SourceIndirectFireIntent(
+            routed=routed,
+            contract=contract,
+            request=request,
+            mission=mission,
+        )
+
+    def _apply_source_indirect_fire_intents(
+        self,
+        intents: Sequence[_SourceIndirectFireIntent],
+        events: list[EngineEvent],
+    ) -> None:
+        world = self._require_world()
+        for intent in sorted(
+            intents,
+            key=lambda value: value.routed.action_sequence,
+        ):
+            event = self._apply_indirect_fire_mission_to_working_state(
+                world,
+                intent.request,
+                intent.mission,
+                action_sequence=intent.routed.action_sequence,
+            )
+            events.append(event)
+
+    def _resolve_active_indirect_fire_missions(
+        self,
+        events: list[EngineEvent],
+    ) -> None:
+        world = self._require_world()
+        active = tuple(sorted((
+            mission
+            for mission in world.indirect_fire_missions
+            if mission.phase is IndirectFireMissionState.ACTIVE
+            and mission.action_stream_bound
+        ), key=fire_mission_sort_key))
+        for mission in active:
+            if mission.impact_hex is None:
+                impact = self.resolve_indirect_fire_impact(mission.mission_id)
+                if not impact.valid or impact.resolution is None:
+                    raise RuntimeError(impact.reason)
+                resolution = impact.resolution
+                initialize_area = True
+            else:
+                current_ids = tuple(sorted(
+                    operator.operator_id
+                    for operator in world.operators.values()
+                    if operator.alive
+                    and operator.deployed
+                    and operator.current_hex == mission.impact_hex
+                    and operator.operator_id not in mission.affected_operator_ids
+                ))
+                if not current_ids:
+                    continue
+                resolution = self._active_indirect_fire_resolution(
+                    mission,
+                    current_ids,
+                )
+                initialize_area = False
+            effects = self.resolve_indirect_fire_effects(
+                resolution,
+                _affected_operator_ids=resolution.affected_operator_ids,
+            )
+            if (
+                effects.status is not IndirectFireEffectStatus.RESOLVED
+                or effects.effect_bundle is None
+            ):
+                raise RuntimeError(
+                    "INDIRECT_FIRE_EFFECT_UNRESOLVED:"
+                    + ",".join(effects.blockers)
+                )
+            events.extend(
+                self._apply_indirect_fire_area_bundle(
+                    world,
+                    effects.effect_bundle,
+                    initialize_area=initialize_area,
+                )
+            )
+            self._rng = NativeRNG.restore(
+                effects.effect_bundle.rng_transition.after.to_record()
+            )
+
+    def _active_indirect_fire_resolution(
+        self,
+        mission: FireMission,
+        operator_ids: tuple[int, ...],
+    ) -> IndirectFireResolution:
+        """Build no-reroll impact evidence for first-time ACTIVE entrants."""
+
+        world = self._require_world()
+        if self._rng is None or self._adjudication_tables is None:
+            raise RuntimeError("INDIRECT_FIRE_IMPACT_RUNTIME_UNAVAILABLE")
+        if mission.impact_hex is None or mission.scatter_evidence is None:
+            raise ValueError("INDIRECT_FIRE_IMPACT_EVIDENCE_UNAVAILABLE")
+        if operator_ids != tuple(sorted(set(operator_ids))):
+            raise ValueError("INDIRECT_FIRE_OPERATOR_ORDER_INVALID")
+        snapshot = self._rng.snapshot()
+        rng_state = IndirectFireRngState(
+            seed=int(snapshot["seed"]),
+            state=int(snapshot["state"]),
+            draws=int(snapshot["draws"]),
+        )
+        scatter = mission.scatter_evidence
+        scatter_result = IndirectFireScatterResult(
+            direction_roll=scatter.direction_roll,
+            direction_index=scatter.direction_index,
+            distance_dice=scatter.distance_dice,
+            distance_roll=scatter.distance_roll,
+            distance_band=scatter.distance_band,
+            table_id=scatter.table_id,
+            table_result=scatter.table_result,
+            scatter_distance=scatter.scatter_distance,
+        )
+        return IndirectFireResolution(
+            mission_id=mission.mission_id,
+            shooter_id=mission.shooter_id,
+            weapon_id=mission.weapon_id,
+            planned_hex=mission.planned_hex,
+            impact_hex=mission.impact_hex,
+            execution_policy_id=mission.execution_policy_id,
+            execution_policy_hash=mission.execution_policy_hash,
+            affected_operator_ids=operator_ids,
+            scatter_result=scatter_result,
+            rng_transition=IndirectFireRngTransition(rng_state, rng_state),
+            resolution_evidence=IndirectFireResolutionEvidence(
+                observation_policy=self._indirect_fire_observation_policy,
+                spotter_evidence=self._indirect_fire_spotter_evidence,
+                affected_hex_policy="IMPACT_HEX_ONLY",
+                operator_order="OPERATOR_ID_ASCENDING",
+                pre_state_hash=canonical_hash(world.to_dict()),
+                adjudication_table_hash=self._adjudication_tables.content_hash,
+            ),
+        )
+
+    def _emit_expired_indirect_fire_missions(
+        self,
+        mission_ids: Sequence[str],
+        events: list[EngineEvent],
+    ) -> None:
+        world = self._require_world()
+        by_id = {mission.mission_id: mission
+                 for mission in world.indirect_fire_missions}
+        for mission_id in sorted(mission_ids):
+            mission = by_id.get(mission_id)
+            if mission is None or mission.phase is not IndirectFireMissionState.RESOLVED:
+                raise RuntimeError("INDIRECT_FIRE_ACTIVE_EXPIRY_MISMATCH")
+            events.append(self._indirect_fire_resolved_event(world, mission))
 
     def _apply_source_fire_intents(
         self,
         intents: Sequence[_SourceFireIntent],
+        guided_intents: Sequence[_SourceGuidedFireIntent],
         events: list[EngineEvent],
     ) -> None:
         """Apply a sealed batch using the configured aggregate policy."""
-        if not intents:
+        if not intents and not guided_intents:
             return
         if (self._adjudication_tables is None or self._source_policy is None
                 or self._rng is None):
             raise RuntimeError("source direct-fire runtime is unavailable")
         world = self._require_world()
 
-        # Every accepted shooter was eligible in the same pre-state.  Its
-        # submitted shot therefore consumes ammunition and starts cooldown
-        # even if another simultaneous effect destroys it in this batch.
+        all_intents: list[_SourceFireIntent | _SourceGuidedFireIntent] = sorted(
+            [*intents, *guided_intents],
+            key=lambda item: item.routed.action_sequence,
+        )
+
+        # Only the firing platform exposes itself.  A GUIDED guider supplies
+        # target acquisition evidence but does not fire and therefore keeps
+        # its current posture.  All intents were accepted against one sealed
+        # pre-state before this working-state mutation occurs.
+        guided_sequences = {
+            item.routed.action_sequence for item in guided_intents
+        }
+        for intent in all_intents:
+            shooter = world.operators[intent.contract.shooter_id]
+            self._expose_operator(
+                shooter,
+                events,
+                action_sequence=intent.routed.action_sequence,
+                action_id=intent.routed.action.action_id,
+                reason=(
+                    "GUIDED_FIRE_SHOOTER"
+                    if intent.routed.action_sequence in guided_sequences
+                    else "DIRECT_FIRE"
+                ),
+            )
+
+        # Every accepted shooter was eligible in the same pre-state. Resource
+        # deltas are therefore aggregated rather than sequentially applying
+        # multiple independently staged ``before -> after`` records.
+        resource_deltas: defaultdict[
+            tuple[int, str], list[tuple[int, int, int]]
+        ] = defaultdict(list)
+        cooldowns: defaultdict[int, list[int]] = defaultdict(list)
+        recovery_updates: defaultdict[int, list[int]] = defaultdict(list)
         for intent in intents:
-            attacker = world.operators[int(intent.routed.action.actor_id)]
-            ammo = self._ammunition(attacker)
-            ammo[intent.request.weapon.ammunition_key] = (
-                intent.resolution.ammunition_after)
-            attacker.raw_attributes["ammunition"] = ammo
+            if intent.loitering_attack_policy is not None:
+                if (
+                    intent.request.resource_policy
+                    is not DirectFireResourcePolicy.SELF_AS_MUNITION
+                    or intent.request.weapon.ammunition_key is not None
+                    or intent.request.ammunition_before is not None
+                    or intent.resolution.ammunition_after is not None
+                ):
+                    raise RuntimeError("LOITERING_ATTACK_RESOURCE_POLICY_MISMATCH")
+                continue
+            ammunition_key = intent.request.weapon.ammunition_key
+            if ammunition_key is None or intent.request.ammunition_before is None:
+                raise RuntimeError("DIRECT_FIRE_AMMUNITION_CONTRACT_INCOMPLETE")
+            if intent.resolution.ammunition_after is None:
+                raise RuntimeError("DIRECT_FIRE_AMMUNITION_EFFECT_MISSING")
+            resource_deltas[
+                (
+                    intent.contract.shooter_id,
+                    ammunition_key,
+                )
+            ].append((
+                intent.request.ammunition_before,
+                intent.resolution.ammunition_after,
+                intent.routed.action_sequence,
+            ))
+            cooldowns[intent.contract.shooter_id].append(
+                intent.resolution.cooldown_after * 1000
+            )
+        for intent in guided_intents:
+            effect = intent.commit_effect
+            resource_deltas[
+                (effect.shooter_id, effect.ammunition_key)
+            ].append((
+                effect.ammunition_before,
+                effect.ammunition_after,
+                intent.routed.action_sequence,
+            ))
+            cooldowns[effect.shooter_id].append(effect.cooldown_after_ms)
+            for update in effect.recovery_updates:
+                recovery_updates[update.operator_id].append(
+                    update.recovery_remaining_ms
+                )
+
+        for (shooter_id, ammunition_key), deltas in sorted(
+            resource_deltas.items()
+        ):
+            attacker = world.operators[shooter_id]
+            ammunition = self._ammunition(attacker)
+            before_values = {before for before, _, _ in deltas}
+            current = ammunition.get(ammunition_key, 0)
+            if before_values != {current}:
+                raise RuntimeError("FIRE_RESOURCE_PRESTATE_MISMATCH")
+            consumed = sum(before - after for before, after, _ in deltas)
+            if consumed < 0 or consumed > current:
+                raise RuntimeError("FIRE_AGGREGATE_AMMUNITION_UNAVAILABLE")
+            ammunition[ammunition_key] = current - consumed
+            attacker.raw_attributes["ammunition"] = ammunition
             source = attacker.raw_attributes.get("source_frame")
             if isinstance(source, dict):
-                source["remain_bullet_nums"] = dict(ammo)
-            attacker.weapon_cooldown_remaining_ms = (
-                intent.resolution.cooldown_after * 1000)
+                source["remain_bullet_nums"] = dict(ammunition)
+        for shooter_id, values in sorted(cooldowns.items()):
+            world.operators[shooter_id].weapon_cooldown_remaining_ms = max(
+                values
+            )
+        for operator_id, values in sorted(recovery_updates.items()):
+            world.operators[operator_id].guided_fire_recovery_remaining_ms = max(
+                values
+            )
 
-        by_target: dict[int, list[_SourceFireIntent]] = defaultdict(list)
-        for intent in intents:
-            by_target[int(intent.routed.action.target_id)].append(intent)
+        by_target: defaultdict[
+            int, list[_SourceFireIntent | _SourceGuidedFireIntent]
+        ] = defaultdict(list)
+        for intent in all_intents:
+            target = intent.contract.target
+            if not isinstance(target, UnitTarget):
+                raise RuntimeError("fire staging requires a unit target")
+            by_target[target.unit_id].append(intent)
 
         adjudicator = DirectFireAdjudicator(
             self._adjudication_tables, DiceRoller(self._rng))
+        destruction_causes: defaultdict[
+            int, list[tuple[str, EngineEvent]]
+        ] = defaultdict(list)
+        self_consuming_operator_ids = {
+            intent.contract.shooter_id
+            for intent in intents
+            if intent.loitering_attack_policy is not None
+        }
         for target_id in sorted(by_target):
             target_intents = sorted(
                 by_target[target_id],
@@ -1117,35 +4981,36 @@ class NativeEngine:
             target = world.operators[target_id]
             before = int(target.blood)
             requested_losses = sum(
-                int(intent.resolution.outcome.vehicle_losses)
-                + int(intent.resolution.outcome.squad_losses)
+                _source_fire_requested_losses(intent)
                 for intent in target_intents
-                if intent.resolution.outcome is not None
             )
             losses = min(before, requested_losses)
             after = max(0, before - losses)
             suppression = any(
-                bool(intent.resolution.outcome.suppression_applied)
+                _source_fire_suppression(intent)
                 for intent in target_intents
-                if intent.resolution.outcome is not None
             )
             target.blood = after
             target.health = target.max_health * after / int(target.max_blood)
             adjudication_ids = [
-                intent.resolution.adjudication_id for intent in target_intents
+                _source_fire_adjudication_id(intent)
+                for intent in target_intents
             ]
             primary = target_intents[0]
+            primary_request = _source_fire_direct_request(primary)
+            primary_adjudication_id = _source_fire_adjudication_id(primary)
             if losses:
                 effect = adjudicator._event(
-                    primary.request, EventType.LOSSES_APPLIED, {
+                    primary_request, EventType.LOSSES_APPLIED, {
                         "target_blood_before": before,
                         "target_blood_after": after,
                         "losses": losses,
                         "aggregate_requested_losses": requested_losses,
-                        "adjudication_id": primary.resolution.adjudication_id,
+                        "adjudication_id": primary_adjudication_id,
                         "aggregate_adjudication_ids": adjudication_ids,
                         "resolution_policy": "aggregate_then_apply",
                     })
+                effect = _tag_guided_aggregate_event(effect, primary)
                 events.append(self._annotate_source_event(
                     effect, primary.routed.action_sequence))
             if suppression and after > 0:
@@ -1156,38 +5021,60 @@ class NativeEngine:
                 target.raw_attributes["suppression_remaining_seconds"] = int(
                     duration)
                 effect = adjudicator._event(
-                    primary.request, EventType.SUPPRESSION_APPLIED, {
+                    primary_request, EventType.SUPPRESSION_APPLIED, {
                         "target_blood_after": after,
                         "duration_seconds": int(duration),
                         "timer_policy": "RESET_TO_FULL_DURATION",
-                        "adjudication_id": primary.resolution.adjudication_id,
+                        "adjudication_id": primary_adjudication_id,
                         "aggregate_adjudication_ids": adjudication_ids,
                         "resolution_policy": "aggregate_then_apply",
                     })
+                effect = _tag_guided_aggregate_event(effect, primary)
                 events.append(self._annotate_source_event(
                     effect, primary.routed.action_sequence))
             if after == 0:
-                target.alive = False
-                target.state = "destroyed"
+                # Preserve the established single-cause direct-fire state
+                # transition and therefore its historical World/replay hash.
+                # Commit-level cause aggregation below owns only destruction
+                # fact deduplication and any additional self-as-ammunition
+                # cleanup required for the same operator.
+                if target_id not in self_consuming_operator_ids:
+                    target.alive = False
+                    target.state = "destroyed"
+                    target.movement_task_pause_reason = None
                 effect = adjudicator._event(
-                    primary.request, EventType.UNIT_DESTROYED, {
+                    primary_request, EventType.UNIT_DESTROYED, {
                         "target_blood_after": 0,
-                        "adjudication_id": primary.resolution.adjudication_id,
+                        "adjudication_id": primary_adjudication_id,
                         "aggregate_adjudication_ids": adjudication_ids,
                         "resolution_policy": "aggregate_then_apply",
                     })
-                events.append(self._annotate_source_event(
-                    effect, primary.routed.action_sequence))
+                effect = _tag_guided_aggregate_event(effect, primary)
+                annotated_effect = self._annotate_source_event(
+                    effect,
+                    primary.routed.action_sequence,
+                )
+                # Keep the established insertion position for ordinary
+                # single-cause combat facts. A later self-as-ammunition cause
+                # replaces this staged fact at the same atomic boundary.
+                events.append(annotated_effect)
+                destruction_causes[target_id].append((
+                    "FIRE_COMBAT_DESTROYED",
+                    annotated_effect,
+                ))
             elif target.state == "SUPPRESSED":
                 # Preserve the established runtime rule: any accepted direct
                 # fire against an already suppressed target resets its timer,
                 # including a table outcome with no additional effect.
                 target.suppression_remaining_ms = self._source_policy.suppression_ms
+                self._mark_source_suppression_movement_task(target)
 
             passenger_ids = sorted({
                 passenger.operator_id
                 for intent in target_intents
-                for passenger in intent.request.carried_passengers
+                for passenger in _source_fire_direct_request(
+                    intent
+                ).carried_passengers
             })
             if requested_losses and passenger_ids:
                 for passenger_id in passenger_ids:
@@ -1204,32 +5091,153 @@ class NativeEngine:
                         passenger.state = "destroyed"
                     effect = EngineEvent(
                         world.tick, EventType.LOSSES_APPLIED, passenger.side,
-                        primary.request.attacker.operator_id, passenger_id,
+                        primary_request.attacker.operator_id, passenger_id,
                         {"associated_vehicle_id": target_id,
                          "target_blood_before": passenger_before,
                          "target_blood_after": passenger_after,
                          "losses": passenger_before - passenger_after,
-                         "adjudication_id": primary.resolution.adjudication_id,
+                         "adjudication_id": primary_adjudication_id,
                          "aggregate_adjudication_ids": adjudication_ids,
                          "resolution_policy": "aggregate_then_apply"},
                     )
                     events.append(self._annotate_source_event(
                         effect, primary.routed.action_sequence))
 
+        # A validated and resolved loitering attack consumes the attacking
+        # Operator itself.  This happens in the same working-world transaction
+        # as the target effects above; validation failures never reach here.
+        for intent in sorted(
+            (
+                item
+                for item in intents
+                if item.loitering_attack_policy is not None
+            ),
+            key=lambda item: item.routed.action_sequence,
+        ):
+            policy = intent.loitering_attack_policy
+            if policy is None:  # pragma: no cover - narrowed by generator
+                raise RuntimeError("LOITERING_ATTACK_POLICY_MISSING")
+            attacker = world.operators[intent.contract.shooter_id]
+            before = int(intent.request.attacker.blood)
+            destruction_causes[attacker.operator_id].append((
+                policy.destruction_reason_code,
+                self._source_event(
+                    EventType.UNIT_DESTROYED,
+                    attacker.side,
+                    attacker.operator_id,
+                    attacker.operator_id,
+                    intent.routed.action_sequence,
+                    {
+                        "action_id": intent.routed.action.action_id,
+                        "target_blood_before": before,
+                        "target_blood_after": 0,
+                        "losses": before,
+                        "reason_code": policy.destruction_reason_code,
+                        "weapon_id": policy.weapon_id,
+                        "target_id": intent.contract.target.unit_id,
+                        "adjudication_id": intent.resolution.adjudication_id,
+                        "consume_condition": policy.consume_condition,
+                        "resource_policy": policy.resource_policy,
+                        "attack_policy_id": policy.policy_id,
+                        "attack_authority_version": (
+                            self._loitering_munition_attack_authority
+                            .authority_version
+                        ),
+                        "attack_authority_hash": (
+                            self._loitering_munition_attack_authority.content_hash
+                        ),
+                    },
+                ),
+            ))
+
+        # Destruction is a fact of the complete fire commit, not of whichever
+        # cause happens to be applied first.  Preserve every independently
+        # staged cause, perform the state transition once per operator, and
+        # publish at most one UNIT_DESTROYED fact for this commit.  No primary
+        # cause is inferred when multiple valid causes coexist.
+        for operator_id in sorted(destruction_causes):
+            operator = world.operators[operator_id]
+            causes = tuple(sorted(
+                destruction_causes[operator_id],
+                key=_source_destruction_cause_sort_key,
+            ))
+            has_additional_destruction_policy = any(
+                cause_code != "FIRE_COMBAT_DESTROYED"
+                for cause_code, _ in causes
+            )
+            if has_additional_destruction_policy:
+                self._destroy_source_operator(operator)
+            if len(causes) == 1 and not has_additional_destruction_policy:
+                continue
+            staged_event_ids = {id(event) for _, event in causes}
+            events[:] = [
+                event for event in events if id(event) not in staged_event_ids
+            ]
+            events.append(_source_destruction_fact(operator, causes))
+
+        # The summary event is constructed only inside the successful working
+        # transaction.  It becomes externally visible together with the World
+        # and RNG at the outer atomic commit point.
+        for intent in sorted(
+            guided_intents,
+            key=lambda item: item.routed.action_sequence,
+        ):
+            effect = intent.commit_effect
+            events.append(self._source_event(
+                EventType.GUIDED_FIRE_RESOLVED,
+                world.operators[effect.shooter_id].side,
+                effect.shooter_id,
+                effect.target_id,
+                intent.routed.action_sequence,
+                {
+                    "action_id": intent.routed.action.action_id,
+                    "fire_mode": FireMode.GUIDED.value,
+                    "guider_id": effect.guider_id,
+                    "shooter_id": effect.shooter_id,
+                    "weapon_id": effect.weapon_id,
+                    "target_id": effect.target_id,
+                    "hit": effect.hit,
+                    "damage_summary": [
+                        {
+                            "target_id": item.target_id,
+                            "vehicle_losses": item.vehicle_losses,
+                            "squad_losses": item.squad_losses,
+                            "suppression_applied": item.suppression_applied,
+                            "destroyed": item.destroyed,
+                            "no_effect": item.no_effect,
+                        }
+                        for item in effect.damage_effects
+                    ],
+                    "adjudication_id": effect.adjudication_id,
+                    "resolution_policy": "aggregate_then_apply",
+                },
+            ))
+
     def _direct_fire_request(self, action: EngineAction, attacker: Any,
                              target: Any, *,
-                             world: WorldState | None = None) -> DirectFireRequest:
+                             world: WorldState | None = None,
+                             weapon_id: int | None = None) -> DirectFireRequest:
         state = self._require_world() if world is None else world
         if (self._source_map is None or self._source_visibility_map is None
                 or self._source_policy is None):
             raise ValueError("SOURCE_MAP_UNAVAILABLE")
         if attacker.current_hex is None or target.current_hex is None:
             raise ValueError("CURRENT_HEX_REQUIRED")
-        weapon_id = action.parameters.get("weapon_id")
-        if weapon_id is None:
+        requested_weapon_id = (action.parameters.get("weapon_id")
+                               if weapon_id is None else weapon_id)
+        if requested_weapon_id is None:
             raise ValueError("WEAPON_REQUIRED")
-        weapon_id = int(weapon_id)
-        profile = self._source_weapon_profile(weapon_id)
+        requested_weapon_id = int(requested_weapon_id)
+        profile = self._source_weapon_profile(requested_weapon_id)
+        loitering_policy = self._loitering_attack_policy_for(
+            attacker,
+            requested_weapon_id,
+            profile,
+        )
+        resource_policy = DirectFireResourcePolicy.AMMUNITION_KEY
+        if loitering_policy is not None:
+            profile = replace(profile, ammunition_key=None)
+            resource_policy = DirectFireResourcePolicy.SELF_AS_MUNITION
         target_domain = _unit_domain(target.operator_type)
         armor_value = str(target.raw_attributes.get(
             "armor_class",
@@ -1246,9 +5254,13 @@ class NativeEngine:
             observer_hex=attacker.current_hex, target_hex=target.current_hex,
             observer_domain=_unit_domain(attacker.operator_type),
             target_domain=target_domain,
-            observer_is_drone=_uses_drone_observation_profile(attacker),
-            target_is_drone=_uses_drone_observation_profile(target),
-            target_concealed=bool(target.raw_attributes.get("concealed", False)),
+            observer_is_drone=_uses_drone_observation_profile(
+                attacker, self._operator_lifecycle_authority
+            ),
+            target_is_drone=_uses_drone_observation_profile(
+                target, self._operator_lifecycle_authority
+            ),
+            target_concealed=target.concealed,
             target_terrain=self._source_map.terrain(target.current_hex).value,
             line_of_sight_evidence=self._runtime_line_of_sight(
                 attacker,
@@ -1266,7 +5278,11 @@ class NativeEngine:
             action_id=action.action_id, attacker=attacker, target=target,
             weapon=profile, visibility=visibility, distance=visibility.distance,
             target_domain=target_domain, target_armor=armor,
-            ammunition_before=ammunition.get(profile.ammunition_key, 0),
+            ammunition_before=(
+                None
+                if resource_policy is DirectFireResourcePolicy.SELF_AS_MUNITION
+                else ammunition.get(profile.ammunition_key, 0)
+            ),
             weapon_cooldown_before=(attacker.weapon_cooldown_remaining_ms + 999) // 1000,
             weapon_unfolded=attacker.weapon_unfolded,
             elevation_difference=int(round(float(right.elevation)
@@ -1275,16 +5291,67 @@ class NativeEngine:
             attacker_moving=(not attacker.stopped
                              or attacker.movement_mode == MovementMode.MARCHING.value),
             target_terrain=self._source_map.terrain(target.current_hex).value,
-            target_concealed=bool(target.raw_attributes.get("concealed", False)),
+            target_concealed=target.concealed,
             target_moving=not target.stopped,
             target_stacked=sum(
                 1 for item in state.operators.values()
                 if item.alive and item.current_hex == target.current_hex) > 1,
             target_marching=target.movement_mode == MovementMode.MARCHING.value,
             attacker_transitioning=(attacker.transition_kind is not None
-                                    or attacker.move_to_stop_remaining_ms > 0),
+                                    or attacker.move_to_stop_remaining_ms > 0)
+            and not (
+                loitering_policy is not None
+                and loitering_policy.can_interrupt_movement_route
+            ),
             target_external_direct_fire_prohibited=target.state == "CLOSE_COMBAT",
-            carried_passengers=passengers)
+            carried_passengers=passengers,
+            metadata=(
+                {}
+                if loitering_policy is None
+                else {
+                    "loitering_attack_policy_id": loitering_policy.policy_id,
+                    "loitering_attack_authority_version": (
+                        self._loitering_munition_attack_authority.authority_version
+                    ),
+                    "loitering_attack_authority_hash": (
+                        self._loitering_munition_attack_authority.content_hash
+                    ),
+                    "consume_condition": loitering_policy.consume_condition,
+                }
+            ),
+            resource_policy=resource_policy)
+
+    def _loitering_attack_policy_for(
+        self,
+        attacker: OperatorState,
+        weapon_id: int,
+        weapon: WeaponProfile,
+    ) -> LoiteringMunitionAttackPolicy | None:
+        policy = self._loitering_munition_attack_authority.policy_for(
+            lifecycle_profile_id=attacker.lifecycle_profile_id,
+            weapon_id=weapon_id,
+        )
+        if policy is None:
+            return None
+        lifecycle = self._operator_lifecycle_authority.profile(
+            attacker.lifecycle_profile_id or ""
+        )
+        if (
+            lifecycle is None
+            or lifecycle.canonical_identity != policy.canonical_identity
+            or attacker.operator_type.upper() != lifecycle.operator_domain
+        ):
+            raise ValueError("LOITERING_ATTACK_IDENTITY_MISMATCH")
+        if (
+            weapon.weapon_class != policy.weapon_class
+            or weapon.maximum_range != policy.maximum_range
+            or tuple(sorted(item.value for item in weapon.target_domains))
+            != policy.target_domains
+        ):
+            raise ValueError("LOITERING_ATTACK_WEAPON_AUTHORITY_MISMATCH")
+        if not policy.requires_observable_target:
+            raise ValueError("LOITERING_ATTACK_OBSERVATION_POLICY_UNSUPPORTED")
+        return policy
 
     def _source_weapon_profile(self, weapon_id: int) -> WeaponProfile:
         source = self.scenario.metadata.get("source_compatible", {})
@@ -1303,7 +5370,10 @@ class NativeEngine:
                 cooldown_ticks=(None if value.get("cooldown_seconds") is None
                                 else int(value["cooldown_seconds"])),
                 requires_unfolded=bool(value.get("requires_unfolded", True)),
-                can_fire_while_moving=bool(value.get("can_fire_while_moving", False)))
+                can_fire_while_moving=bool(value.get("can_fire_while_moving", False)),
+                supported_fire_modes=(
+                    self._guidance_authority.supported_fire_modes(weapon_id)
+                ))
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError("INVALID_WEAPON_PROFILE") from exc
 
@@ -1399,6 +5469,17 @@ class NativeEngine:
             }
         if self.map_runtime_data is not None:
             value["map_runtime_data"] = self.map_runtime_data.identity_record()
+        if _world_uses_operator_lifecycle(world):
+            value["operator_lifecycle_authority"] = (
+                self._operator_lifecycle_authority.identity_record()
+            )
+        if _world_uses_loitering_attack_authority(
+            world,
+            self._loitering_munition_attack_authority,
+        ):
+            value["loitering_munition_attack_authority"] = (
+                self._loitering_munition_attack_authority.identity_record()
+            )
         return value
 
     def restore(self, snapshot: Mapping[str, Any]) -> WorldState:
@@ -1442,19 +5523,136 @@ class NativeEngine:
                 raise ValueError("snapshot map runtime data mismatch")
         elif runtime_data is not None:
             raise ValueError("snapshot requires map runtime data")
-        self._seed = int(snapshot["seed"])
-        self._rng = NativeRNG.restore(snapshot["rng"])
-        self._world = WorldState.from_dict(snapshot["world"])
-        self._action_counts = {str(key): int(item)
-                               for key, item in snapshot["action_counts"].items()}
-        self._error_counts = {str(key): int(item)
-                              for key, item in snapshot["error_counts"].items()}
+        restored_seed = int(snapshot["seed"])
+        restored_rng = NativeRNG.restore(snapshot["rng"])
+        restored_world = WorldState.from_dict(snapshot["world"])
+        self._validate_indirect_fire_mission_snapshot(restored_world)
+        self._validate_boarding_snapshot(restored_world)
+        self._validate_operator_lifecycle_snapshot(restored_world)
+        self._validate_loitering_attack_snapshot(restored_world)
+        lifecycle_identity = snapshot.get("operator_lifecycle_authority")
+        if _world_uses_operator_lifecycle(restored_world):
+            if lifecycle_identity != (
+                self._operator_lifecycle_authority.identity_record()
+            ):
+                raise ValueError("snapshot operator lifecycle authority mismatch")
+        elif lifecycle_identity is not None:
+            raise ValueError("snapshot unexpectedly requires operator lifecycle authority")
+        loitering_identity = snapshot.get(
+            "loitering_munition_attack_authority"
+        )
+        if _world_uses_loitering_attack_authority(
+            restored_world,
+            self._loitering_munition_attack_authority,
+        ):
+            if loitering_identity != (
+                self._loitering_munition_attack_authority.identity_record()
+            ):
+                raise ValueError(
+                    "snapshot loitering-munition attack authority mismatch"
+                )
+        elif loitering_identity is not None:
+            raise ValueError(
+                "snapshot unexpectedly requires loitering-munition attack authority"
+            )
+        restored_action_counts = {
+            str(key): int(item) for key, item in snapshot["action_counts"].items()
+        }
+        restored_error_counts = {
+            str(key): int(item) for key, item in snapshot["error_counts"].items()
+        }
+        self._seed = restored_seed
+        self._rng = restored_rng
+        self._world = restored_world
+        self._action_counts = restored_action_counts
+        self._error_counts = restored_error_counts
         self._last_events = ()
         self._source_valid_actions_cache.clear()
         self._source_valid_actions_state_hash = None
         if self._source_policy is not None:
             self._refresh_source_observation()
         return WorldState.from_dict(self._world.to_dict())
+
+    def _validate_indirect_fire_mission_snapshot(
+        self,
+        world: WorldState,
+    ) -> None:
+        """Fail fast before restoring an unknown mission authority contract."""
+
+        policy = self._indirect_fire_execution_policy
+        if world.indirect_fire_missions and not isinstance(
+            policy,
+            IndirectFireExecutionPolicy,
+        ):
+            raise ValueError("snapshot indirect-fire mission semantics mismatch")
+        for mission in world.indirect_fire_missions:
+            profile = self._indirect_fire_authority.profile(mission.profile_id)
+            if (
+                mission.authority_version
+                != INDIRECT_FIRE_AUTHORITY_SCHEMA_VERSION
+                or profile is None
+                or profile.weapon_id != mission.weapon_id
+                or mission.execution_policy_id != policy.policy_id
+                or mission.execution_policy_hash != policy.content_hash
+            ):
+                raise ValueError("snapshot indirect-fire mission semantics mismatch")
+
+    def _validate_boarding_snapshot(self, world: WorldState) -> None:
+        """Reject relation or authority drift before installing a snapshot."""
+
+        transition_pairs = {
+            (item.carrier_id, item.passenger_id)
+            for item in world.boarding_transitions
+            if item.status is BoardingTransitionStatus.ACTIVE
+        }
+        for transition in world.boarding_transitions:
+            profile = self._boarding_authority.profile(transition.profile_id)
+            carrier = world.operators.get(transition.carrier_id)
+            passenger = world.operators.get(transition.passenger_id)
+            if (
+                profile is None
+                or transition.authority_version
+                != self._boarding_authority.authority_version
+                or transition.authority_hash
+                != self._boarding_authority.content_hash
+                or carrier is None
+                or passenger is None
+            ):
+                raise ValueError("snapshot boarding semantics mismatch")
+            if transition.status is BoardingTransitionStatus.ACTIVE and (
+                carrier.passenger_id != passenger.operator_id
+                or passenger.mounted_on != carrier.operator_id
+                or not carrier.movement_locked
+            ):
+                raise ValueError("snapshot active boarding semantics mismatch")
+        for passenger in world.operators.values():
+            if passenger.mounted_on is None:
+                continue
+            carrier = world.operators.get(passenger.mounted_on)
+            if (
+                carrier is None
+                or carrier.passenger_id != passenger.operator_id
+                or carrier.side != passenger.side
+                or carrier.boarding_profile_id is None
+                or self._boarding_authority.profile(
+                    carrier.boarding_profile_id
+                ) is None
+                or passenger.deployed
+            ):
+                raise ValueError("snapshot boarding relation mismatch")
+            # A stable ON_BOARD relation may exist after BOARD completes; an
+            # active transition is required only while the carrier is locked.
+            if carrier.movement_locked and (
+                carrier.operator_id,
+                passenger.operator_id,
+            ) not in transition_pairs:
+                raise ValueError("snapshot boarding lock mismatch")
+        for carrier in world.operators.values():
+            if carrier.passenger_id is None:
+                continue
+            passenger = world.operators.get(carrier.passenger_id)
+            if passenger is None or passenger.mounted_on != carrier.operator_id:
+                raise ValueError("snapshot boarding carrier relation mismatch")
 
     def close(self) -> None:
         self._closed = True
@@ -1563,6 +5761,16 @@ class NativeEngine:
         for operator in self._friendly(side):
             if not operator.alive or not operator.deployed:
                 continue
+            if operator.mounted_on is not None:
+                continue
+            if operator.movement_locked:
+                wait = EngineAction(side, operator.operator_id, ActionType.WAIT)
+                values.append(ValidAction(
+                    wait,
+                    ACTION_PRIORITY[wait.action_type],
+                    "source_action_router",
+                ))
+                continue
             if operator.moving:
                 action = EngineAction(side, operator.operator_id,
                                       ActionType.STOP_MOVE)
@@ -1617,7 +5825,11 @@ class NativeEngine:
                         values.append(ValidAction(
                             action, ACTION_PRIORITY[action.action_type],
                             "source_action_router"))
-            if operator.stopped and operator.transition_kind is None:
+            if (
+                operator.weapon_ids
+                and operator.stopped
+                and operator.transition_kind is None
+            ):
                 if not operator.weapon_locked:
                     action = EngineAction(side, operator.operator_id,
                                           ActionType.WEAPON_LOCK)
@@ -1631,6 +5843,73 @@ class NativeEngine:
             wait = EngineAction(side, operator.operator_id, ActionType.WAIT)
             values.append(ValidAction(wait, ACTION_PRIORITY[wait.action_type],
                                       "source_action_router"))
+        pre_state = WorldState.from_dict(world.to_dict())
+        for capability in self._board_capabilities_from_pre_state(
+            pre_state,
+            side,
+        ):
+            action = EngineAction(
+                side=side,
+                actor_id=capability.passenger_id,
+                action_type=ActionType.BOARD,
+                target_id=capability.carrier_id,
+                parameters={
+                    "profile_id": capability.profile_id,
+                    "authority_version": capability.authority_version,
+                    "authority_hash": capability.authority_hash,
+                },
+            )
+            values.append(ValidAction(
+                action,
+                ACTION_PRIORITY[action.action_type],
+                "source_boarding_capability",
+            ))
+        for capability in self._unload_capabilities_from_pre_state(
+            pre_state,
+            side,
+        ):
+            action = EngineAction(
+                side=side,
+                actor_id=capability.carrier_id,
+                action_type=ActionType.UNLOAD,
+                target_id=capability.passenger_id,
+                parameters={
+                    "profile_id": capability.profile_id,
+                    "authority_version": capability.authority_version,
+                    "authority_hash": capability.authority_hash,
+                },
+            )
+            values.append(ValidAction(
+                action,
+                ACTION_PRIORITY[action.action_type],
+                "source_boarding_capability",
+            ))
+        for capability in self._concealment_capabilities_from_pre_state(
+            pre_state,
+            side,
+        ):
+            if not capability.available:
+                continue
+            action = EngineAction(
+                side=side,
+                actor_id=capability.operator_id,
+                action_type=ActionType.ENTER_CONCEALMENT,
+            )
+            values.append(ValidAction(
+                action,
+                ACTION_PRIORITY[action.action_type],
+                "source_concealment_capability",
+            ))
+        for capability in self._guided_fire_capabilities_from_pre_state(
+            pre_state,
+            side,
+        ):
+            action = ActionRouter.guided_fire_action(side, capability)
+            values.append(ValidAction(
+                action,
+                ACTION_PRIORITY[action.action_type],
+                "source_guided_fire_capability",
+            ))
         if not values:
             action = EngineAction(side, None, ActionType.WAIT)
             values.append(ValidAction(action, ACTION_PRIORITY[action.action_type],
@@ -1654,8 +5933,12 @@ class NativeEngine:
                             or not target.deployed or target.current_hex is None):
                         continue
                     target_domain = _unit_domain(target.operator_type)
-                    observer_is_drone = _uses_drone_observation_profile(observer)
-                    target_is_drone = _uses_drone_observation_profile(target)
+                    observer_is_drone = _uses_drone_observation_profile(
+                        observer, self._operator_lifecycle_authority
+                    )
+                    target_is_drone = _uses_drone_observation_profile(
+                        target, self._operator_lifecycle_authority
+                    )
                     if not within_maximum_observation_distance(
                         observer_hex=observer.current_hex,
                         target_hex=target.current_hex,
@@ -1674,8 +5957,7 @@ class NativeEngine:
                         target_domain=target_domain,
                         observer_is_drone=observer_is_drone,
                         target_is_drone=target_is_drone,
-                        target_concealed=bool(
-                            target.raw_attributes.get("concealed", False)),
+                        target_concealed=target.concealed,
                         target_terrain=self._source_map.terrain(
                             target.current_hex).value,
                         line_of_sight_evidence=self._runtime_line_of_sight(
@@ -1732,8 +6014,12 @@ class NativeEngine:
 
         if self.map_runtime_data is None:
             return None
-        observer_height = _source_visibility_height_m(observer)
-        target_height = _source_visibility_height_m(target)
+        observer_height = _source_visibility_height_m(
+            observer, self._operator_lifecycle_authority
+        )
+        target_height = _source_visibility_height_m(
+            target, self._operator_lifecycle_authority
+        )
         if observer_height is None or target_height is None:
             return None
         return self.map_runtime_data.visibility.line_of_sight(
@@ -1752,7 +6038,9 @@ class NativeEngine:
 
         if self._source_visibility_map is None:
             raise ValueError("SOURCE_VISIBILITY_MAP_UNAVAILABLE")
-        observer_height = _source_visibility_height_m(observer)
+        observer_height = _source_visibility_height_m(
+            observer, self._operator_lifecycle_authority
+        )
         if self.map_runtime_data is not None and observer_height is not None:
             return self.map_runtime_data.visibility.line_of_sight(
                 int(observer.current_hex),
@@ -1765,6 +6053,188 @@ class NativeEngine:
             int(observer.current_hex),
             int(target_hex),
         )
+
+
+def _indirect_fire_execution_blockers(
+    authority: IndirectFireAuthority,
+    profile: IndirectFireProfile,
+    shooter: OperatorState,
+    *,
+    ammunition_authority: IndirectFireAmmunitionAuthority,
+    damage_policy: IndirectFireDamagePolicy,
+    descriptor: IndirectFireAuthorityDescriptor | None,
+    observation_policy: IndirectFireObservationPolicy,
+) -> tuple[str, ...]:
+    """Translate unresolved authority into stable public blocker codes."""
+
+    blockers: list[str] = []
+    if profile.range_policy is not IndirectRangePolicy.SCENARIO_DEFINED_GLOBAL_HEX:
+        if profile.minimum_range is None:
+            blockers.append("artillery_minimum_range")
+        if profile.maximum_range is None:
+            blockers.append("artillery_maximum_range")
+    if profile.target_domain is IndirectTargetDomain.UNKNOWN:
+        blockers.append("indirect_target_domain")
+    resource = authority.resource_policy(profile.resource_policy_id)
+    ammunition = ammunition_authority.mapping_for_weapon(profile.weapon_id)
+    if (
+        resource is None
+        or ammunition is None
+        or resource.ammo_cost != ammunition.ammo_cost_per_mission
+    ):
+        blockers.append("ammunition_consumption_per_mission")
+    if observation_policy is IndirectFireObservationPolicy.UNRESOLVED:
+        blockers.append("impact_observation_policy")
+    if not isinstance(damage_policy, IndirectFireDamagePolicy):
+        blockers.append("indirect_damage_policy")
+    if descriptor is None:
+        blockers.append("indirect_authority_descriptor")
+    scatter = authority.scatter_profile(profile.scatter_model_id)
+    if scatter is None or scatter.direction_policy is ScatterDirectionPolicy.UNKNOWN:
+        blockers.append("scatter_direction")
+    if shooter.weapon_cooldown_remaining_ms > 0:
+        blockers.append("weapon_cooldown_remaining")
+    if shooter.indirect_fire_planned_cooldown_remaining_ms > 0:
+        blockers.append("indirect_fire_planned_cooldown_remaining")
+    return tuple(sorted(set(blockers)))
+
+
+def _boarding_operator_stopped(operator: OperatorState) -> bool:
+    """Use only authoritative runtime state; never infer from unit identity."""
+
+    return (
+        operator.stopped
+        and not operator.moving
+        and operator.speed == 0
+        and operator.move_to_stop_remaining_ms == 0
+        and operator.transition_kind is None
+        and operator.transition_remaining_ms == 0
+    )
+
+
+def _boarding_operator_suppressed(operator: OperatorState) -> bool:
+    return (
+        operator.suppression_remaining_ms > 0
+        or operator.state.upper() == "SUPPRESSED"
+    )
+
+
+def _operator_has_boarding_transition(
+    world: WorldState,
+    operator_id: int,
+) -> bool:
+    return any(
+        item.status is BoardingTransitionStatus.ACTIVE
+        and (item.carrier_id == operator_id or item.passenger_id == operator_id)
+        for item in world.boarding_transitions
+    )
+
+
+def _indirect_fire_plan_failure(
+    reason: str,
+    *blockers: str,
+) -> IndirectFirePlanValidationResult:
+    return IndirectFirePlanValidationResult(
+        valid=False,
+        reason=reason,
+        blockers=tuple(sorted(set(blockers))),
+    )
+
+
+def _indirect_fire_impact_failure(
+    reason: str,
+    *blockers: str,
+) -> IndirectFireImpactValidationResult:
+    return IndirectFireImpactValidationResult(
+        valid=False,
+        reason=reason,
+        blockers=tuple(sorted(set(blockers))),
+    )
+
+
+def _indirect_fire_effect_failure(
+    *blockers: str,
+) -> IndirectFireEffectResolutionResult:
+    return IndirectFireEffectResolutionResult(
+        status=IndirectFireEffectStatus.INVALID,
+        blockers=tuple(sorted(set(blockers))),
+        effect_bundle=None,
+    )
+
+
+def _indirect_fire_distance_band(distance: int) -> tuple[str, int]:
+    if type(distance) is not int or distance < 0:
+        raise ValueError("indirect-fire distance must be non-negative")
+    if distance <= 20:
+        return "1-20", 0
+    if distance <= 40:
+        return "21-40", 1
+    if distance <= 60:
+        return "41-60", 2
+    return "61+", 3
+
+
+def _indirect_fire_scatter_distance(table_result: str) -> int:
+    if table_result in {"HIT", "SCATTER"}:
+        return 0
+    prefix = "SCATTER_"
+    if table_result.startswith(prefix):
+        try:
+            distance = int(table_result[len(prefix):])
+        except ValueError as exc:
+            raise ValueError("invalid indirect-fire scatter table result") from exc
+        if distance > 0:
+            return distance
+    raise ValueError("invalid indirect-fire scatter table result")
+
+
+def _indirect_fire_scatter_record(
+    result: IndirectFireScatterResult,
+) -> dict[str, object]:
+    return {
+        "direction_roll": result.direction_roll,
+        "direction_index": result.direction_index,
+        "distance_dice": list(result.distance_dice),
+        "distance_roll": result.distance_roll,
+        "distance_band": result.distance_band,
+        "table_id": result.table_id,
+        "table_result": result.table_result,
+        "scatter_distance": result.scatter_distance,
+    }
+
+
+def _indirect_fire_damage_effect_record(
+    effect: IndirectFireDamageEffect,
+) -> dict[str, object]:
+    evidence = effect.resolution_evidence
+    return {
+        "operator_id": effect.operator_id,
+        "impact_hex": effect.impact_hex,
+        "weapon_id": effect.weapon_id,
+        "artillery_class": effect.artillery_class.value,
+        "damage_result": effect.damage_result,
+        "suppression_result": effect.suppression_result.value,
+        "destroyed_result": effect.destroyed_result.value,
+        "modifiers": [
+            {"name": value.name, "value": value.value}
+            for value in effect.modifiers
+        ],
+        "resolution_evidence": {
+            "status": evidence.status.value,
+            "blockers": list(evidence.blockers),
+            "base_table_id": evidence.base_table_id,
+            "base_dice": (
+                None if evidence.base_dice is None else list(evidence.base_dice)
+            ),
+            "base_result": evidence.base_result,
+            "correction_die": evidence.correction_die,
+            "modified_roll": evidence.modified_roll,
+            "result_correction": evidence.result_correction,
+            "table_content_hash": evidence.table_content_hash,
+            "rng_transition": evidence.rng_transition.to_record(),
+            "native_convention_flags": list(evidence.native_convention_flags),
+        },
+    }
 
 
 def _record_sequence(value: Any, field: str) -> tuple[Mapping[str, Any], ...]:
@@ -1808,26 +6278,227 @@ def _unit_domain(value: str) -> UnitDomain:
         return UnitDomain.UNKNOWN
 
 
-def _uses_drone_observation_profile(operator: Any) -> bool:
+def _uses_drone_observation_profile(
+    operator: Any,
+    authority: OperatorLifecycleAuthority,
+) -> bool:
     """Use only explicit canonical platform mappings as rule authority."""
 
-    return str(operator.raw_attributes.get("canonical_type", "")).upper() in {
+    return _operator_canonical_identity(operator, authority) in {
         "DRONE",
         "LOITERING_MUNITION",
     }
 
 
-def _source_visibility_height_m(operator: Any) -> int | None:
+def _source_visibility_height_m(
+    operator: Any,
+    authority: OperatorLifecycleAuthority,
+) -> int | None:
     explicit = operator.raw_attributes.get("visibility_height_m")
     if type(explicit) is int and explicit in {0, 20, 200, 500}:
         return explicit
     domain = _unit_domain(operator.operator_type)
     if domain in {UnitDomain.PERSONNEL, UnitDomain.VEHICLE}:
         return 0
-    canonical = str(operator.raw_attributes.get("canonical_type", "")).upper()
+    canonical = _operator_canonical_identity(operator, authority)
     if canonical in {"DRONE", "LOITERING_MUNITION"}:
         return 200
     altitude = float(operator.altitude)
     if altitude in {0.0, 20.0, 200.0, 500.0} and altitude != 0.0:
         return int(altitude)
     return None
+
+
+def _operator_canonical_identity(
+    operator: Any,
+    authority: OperatorLifecycleAuthority,
+) -> str:
+    """Resolve rule identity from typed authority, then exact Source mapping.
+
+    Finite-lifecycle profiles remain the strongest typed authority.  Ordinary
+    Source-compatible Operators can use their exact ``source-T-S`` subtype
+    through the versioned mapping.  Raw canonical metadata remains a legacy
+    fallback and cannot override either authority source.
+    """
+
+    resolution = resolve_operator_canonical_identity(
+        operator,
+        authority,
+        allow_compatibility_fallback=True,
+    )
+    return resolution.canonical_identity or ""
+
+
+def _world_uses_operator_lifecycle(world: WorldState) -> bool:
+    return any(
+        operator.lifecycle_profile_id is not None
+        for operator in world.operators.values()
+    )
+
+
+def _world_uses_loitering_attack_authority(
+    world: WorldState,
+    authority: LoiteringMunitionAttackAuthority,
+) -> bool:
+    return any(
+        authority.policy_for(
+            lifecycle_profile_id=operator.lifecycle_profile_id,
+            weapon_id=weapon_id,
+        ) is not None
+        for operator in world.operators.values()
+        for weapon_id in operator.weapon_ids
+    )
+
+
+def _source_fire_requested_losses(
+    intent: _SourceFireIntent | _SourceGuidedFireIntent,
+) -> int:
+    if isinstance(intent, _SourceFireIntent):
+        outcome = intent.resolution.outcome
+        if outcome is None:
+            raise RuntimeError("accepted direct fire lacks an outcome")
+        return int(outcome.vehicle_losses) + int(outcome.squad_losses)
+    return sum(
+        int(item.vehicle_losses) + int(item.squad_losses)
+        for item in intent.commit_effect.damage_effects
+    )
+
+
+def _source_fire_suppression(
+    intent: _SourceFireIntent | _SourceGuidedFireIntent,
+) -> bool:
+    if isinstance(intent, _SourceFireIntent):
+        outcome = intent.resolution.outcome
+        if outcome is None:
+            raise RuntimeError("accepted direct fire lacks an outcome")
+        return bool(outcome.suppression_applied)
+    return any(
+        item.suppression_applied
+        for item in intent.commit_effect.damage_effects
+    )
+
+
+def _source_fire_adjudication_id(
+    intent: _SourceFireIntent | _SourceGuidedFireIntent,
+) -> str:
+    if isinstance(intent, _SourceFireIntent):
+        return intent.resolution.adjudication_id
+    return intent.commit_effect.adjudication_id
+
+
+def _source_fire_direct_request(
+    intent: _SourceFireIntent | _SourceGuidedFireIntent,
+) -> DirectFireRequest:
+    if isinstance(intent, _SourceFireIntent):
+        return intent.request
+    return intent.direct_request
+
+
+def _tag_guided_aggregate_event(
+    event: EngineEvent,
+    primary: _SourceFireIntent | _SourceGuidedFireIntent,
+) -> EngineEvent:
+    if isinstance(primary, _SourceFireIntent):
+        return event
+    return EngineEvent(
+        tick=event.tick,
+        event_type=event.event_type,
+        side=event.side,
+        actor_id=event.actor_id,
+        target_id=event.target_id,
+        data={
+            **event.data,
+            "fire_mode": FireMode.GUIDED.value,
+            "guider_id": primary.commit_effect.guider_id,
+        },
+    )
+
+
+def _source_destruction_cause_sort_key(
+    cause: tuple[str, EngineEvent],
+) -> tuple[int, int, str, int, int]:
+    cause_code, event = cause
+    return (
+        int(event.data.get("action_sequence", -1)),
+        int(event.data.get("event_sequence", -1)),
+        cause_code,
+        -1 if event.actor_id is None else event.actor_id,
+        -1 if event.target_id is None else event.target_id,
+    )
+
+
+def _source_destruction_fact(
+    operator: OperatorState,
+    causes: tuple[tuple[str, EngineEvent], ...],
+) -> EngineEvent:
+    """Return one commit fact while retaining every staged death cause."""
+
+    if not causes:
+        raise ValueError("SOURCE_DESTRUCTION_CAUSE_REQUIRED")
+    if len(causes) == 1:
+        return causes[0][1]
+    ordered = tuple(sorted(causes, key=_source_destruction_cause_sort_key))
+    event_time_ms = min(
+        int(event.data.get("event_time_ms", event.tick * 1000))
+        for _, event in ordered
+    )
+    action_sequence = min(
+        int(event.data.get("action_sequence", -1))
+        for _, event in ordered
+    )
+    event_sequence = min(
+        int(event.data.get("event_sequence", -1))
+        for _, event in ordered
+    )
+    blood_before = max(
+        (
+            int(event.data["target_blood_before"])
+            for _, event in ordered
+            if event.data.get("target_blood_before") is not None
+        ),
+        default=int(operator.max_blood),
+    )
+    return EngineEvent(
+        tick=event_time_ms // 1000,
+        event_type=EventType.UNIT_DESTROYED,
+        side=operator.side,
+        actor_id=operator.operator_id,
+        target_id=operator.operator_id,
+        data={
+            "operator_id": operator.operator_id,
+            "target_blood_before": blood_before,
+            "target_blood_after": 0,
+            "destruction_fact_policy": "ONE_EVENT_PER_OPERATOR_PER_COMMIT",
+            "primary_reason_code": None,
+            "cause_codes": [cause_code for cause_code, _ in ordered],
+            "causes": [
+                {
+                    "cause_code": cause_code,
+                    "event": event.to_dict(),
+                }
+                for cause_code, event in ordered
+            ],
+            "event_time_ms": event_time_ms,
+            "action_sequence": action_sequence,
+            "event_sequence": event_sequence,
+        },
+    )
+
+
+def _guided_fire_intent_sort_key(
+    intent: FireIntent,
+) -> tuple[int, int, int, int]:
+    if intent.mode is not FireMode.GUIDED:
+        raise ValueError(
+            f"GUIDED_FIRE_BATCH_REQUIRES_GUIDED_INTENT:{intent.mode.value}"
+        )
+    if not isinstance(intent.target, UnitTarget):
+        raise ValueError("GUIDED_FIRE_REQUIRES_UNIT_TARGET")
+    if intent.guider_id is None:
+        raise ValueError("GUIDER_REQUIRED")
+    return (
+        intent.shooter_id,
+        intent.guider_id,
+        intent.weapon_id,
+        intent.target.unit_id,
+    )

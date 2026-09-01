@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from wargame_native_engine.compat.source_frame.importer import SourceFrameImporter
+from wargame_native_engine.compat.source_frame.mapping import source_identity_codes
 from wargame_native_engine.compat.source_frame.models import SourceFrame
 from wargame_native_engine.io.scenario import NativeScenario
 from wargame_native_engine.io.serialization import json_clone
@@ -16,11 +17,16 @@ def source_frame_template_for_scenario(scenario: NativeScenario) -> SourceFrame:
     units = []
     for value in scenario.operators:
         source = value.raw_attributes.get("source_frame")
+        source_codes = source_identity_codes(value.subtype)
         unit = json_clone(source) if isinstance(source, Mapping) else {
             "obj_id": value.operator_id,
             "color": 0 if value.side == "red" else 1,
-            "type": 2 if value.operator_type.upper() == "VEHICLE" else 1,
-            "sub_type": 0,
+            "type": (
+                source_codes[0]
+                if source_codes is not None
+                else 2 if value.operator_type.upper() == "VEHICLE" else 1
+            ),
+            "sub_type": 0 if source_codes is None else source_codes[1],
             "name": f"fixture-{value.operator_id}",
             "owner": value.side,
             "armor": 0,

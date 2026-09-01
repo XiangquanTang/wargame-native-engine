@@ -11,6 +11,7 @@ from wargame_native_engine.io.replay import (
     UnsupportedReplaySemanticsError,
     replay_actions,
 )
+from wargame_native_engine.io.serialization import file_sha256
 from wargame_native_engine.session.episode import EpisodeRunner
 from wargame_native_engine.session.game_session import GameSession
 
@@ -43,6 +44,49 @@ def test_replay_round_trip(scenario, tmp_path) -> None:
     assert verification.matches
     assert verification.ticks == outcome.result["ticks"]
     assert (output / "checksums.sha256").is_file()
+
+
+def test_reader_keeps_legacy_tick_named_snapshot_archives_compatible(
+    scenario,
+    tmp_path,
+) -> None:
+    output = tmp_path / "legacy-tick-snapshots"
+    _run(scenario, output)
+    snapshots = sorted((output / "snapshots").glob("step-*.json"))
+    assert snapshots
+    replacements = []
+    for source in snapshots:
+        snapshot = json.loads(source.read_text(encoding="utf-8"))
+        target = source.with_name(f"tick-{snapshot['world']['tick']:08d}.json")
+        assert not target.exists()
+        source.rename(target)
+        replacements.append((source, target))
+
+    manifest_path = output / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    hashes = manifest["collection_hashes"]
+    for source, target in replacements:
+        hashes.pop(str(source.relative_to(output)))
+        hashes[str(target.relative_to(output))] = file_sha256(target)
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    archive_files = sorted(
+        path for path in output.rglob("*")
+        if path.is_file() and path.name != "checksums.sha256"
+    )
+    (output / "checksums.sha256").write_text(
+        "\n".join(
+            f"{file_sha256(path)}  {path.relative_to(output)}"
+            for path in archive_files
+        ) + "\n",
+        encoding="utf-8",
+    )
+
+    bundle = ReplayReader().read(output)
+    assert len(bundle["snapshots"]) == len(bundle["steps"]) + 1
+    assert replay_actions(scenario, output, strict=True).matches is True
 
 
 def test_strict_replay_rejects_incompatible_semantics_before_engine_step(

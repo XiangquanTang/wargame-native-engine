@@ -1,0 +1,19 @@
+{
+  "schema": "native-demo-expected/1.0",
+  "demo_id": "objective_control_basic",
+  "seed": 42,
+  "objective_id": 1,
+  "actors": {
+    "red_id": 1,
+    "blue_id": 2
+  },
+  "cases": [
+    {"case_id": "red_enters", "controlling_side": "red", "score_increases_for": "red"},
+    {"case_id": "blue_enters", "controlling_side": "blue", "score_increases_for": "blue"},
+    {"case_id": "contested", "controlling_side": null, "score_increases_for": null}
+  ],
+  "outcome": {
+    "event_type": "objective_controlled",
+    "strict_replay_matches": true
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "schema": "native-operator-lifecycle-profiles/1.0",
+  "authority_version": "native-operator-lifecycle-authority/1.0",
+  "assignment_policy": "EXPLICIT_OPERATOR_PROFILE_ONLY",
+  "profiles": [
+    {
+      "profile_id": "LOITERING_MUNITION_PREDEPLOYED_V1",
+      "canonical_identity": "LOITERING_MUNITION",
+      "operator_domain": "AIR",
+      "source_type_code": 3,
+      "source_subtype_code": 7,
+      "maximum_lifetime_ms": 1200000,
+      "expiry_behavior": "DESTROY_OPERATOR",
+      "source_rules": [
+        "docs/rules/推演规则_完整纯文本_Final.md#10-a",
+        "docs/rules/推演规则_完整纯文本_Final.md#10-b",
+        "docs/rules/推演规则_完整纯文本_Final.md#10-g"
+      ]
+    }
+  ]
+}

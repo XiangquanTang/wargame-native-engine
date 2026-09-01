@@ -8,10 +8,16 @@ initial_state.json
 actions.jsonl
 events.jsonl
 steps.jsonl
-snapshots/tick-XXXXXXXX.json
+snapshots/step-XXXXXXXX.json
 episode_summary.json
 checksums.sha256
 ```
+
+`step-XXXXXXXX` is a replay-local, monotonic storage sequence. It is not an
+Engine clock and does not replace `world.tick` or `elapsed_time_ms` inside the
+snapshot. This keeps every recorded state unique when several steps occur in
+the same integer second. The reader continues to accept legacy archives whose
+snapshot files use `tick-XXXXXXXX.json`.
 
 An action line records submitted intent and acceptance. An event line records
 Native adjudication. The two collections have independent schema identifiers;
@@ -36,8 +42,9 @@ and emits `RuntimeWarning`; it never silently substitutes another ruleset.
 Accepted actions are grouped by tick and replayed through `NativeEngine`, then
 the final world hash is compared with the recorded result.
 
-`native-joint-prestate/1.0` identifies sealed-batch validation against one
-tick-start state plus deterministic aggregate-then-apply effects. A replay
+`native-joint-prestate/1.1` identifies sealed-batch validation against one
+tick-start state plus deterministic aggregate-then-apply effects and the
+explicit concealment-posture action/exposure contract. A replay
 without that identity, or with the former ordered-sequential meaning, fails
 strict compatibility at step zero. This release does not provide a legacy
 semantics executor.

@@ -10,7 +10,10 @@ from wargame_native_engine.training.models import EncodedActionSpace
 
 
 class NativeActionEncoder:
-    """Preserve the engine's canonical valid-action order in a fixed mask."""
+    """Legacy valid-action compatibility wrapper.
+
+    New training code uses ``DecisionActionEncoder`` over ActionCatalogSnapshot.
+    """
 
     def __init__(self, max_actions: int = 256) -> None:
         if type(max_actions) is not int or max_actions <= 0:

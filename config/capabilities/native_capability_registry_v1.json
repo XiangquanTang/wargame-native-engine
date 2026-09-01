@@ -1,0 +1,223 @@
+{
+  "schema": "native-capability-registry/v1",
+  "capabilities": [
+    {
+      "capability_id": "boarding",
+      "category": "MOBILITY",
+      "engine_status": "IMPLEMENTED",
+      "demo_status": "PASS",
+      "demo_id": "boarding_basic",
+      "demo_feature": "BOARDING",
+      "replay_support": true,
+      "replay_evidence": "explicit BOARD/UNLOAD inputs, formal lifecycle events and strict replay",
+      "human_support": true,
+      "agent_support": true,
+      "implementation_refs": [
+        "src/wargame_native_engine/core/engine.py::NativeEngine.get_board_capabilities",
+        "src/wargame_native_engine/core/engine.py::NativeEngine.get_unload_capabilities"
+      ],
+      "rule_refs": [
+        "docs/design/boarding_capability_contract_v1.md"
+      ],
+      "test_refs": [
+        "tests/test_boarding_agent.py",
+        "tests/test_boarding_lifecycle.py",
+        "tests/test_boarding_ui_contract.py"
+      ],
+      "notes": "Single-passenger ground BOARD/UNLOAD with a 75-second transition and fail-closed authority profile."
+    },
+    {
+      "capability_id": "concealment",
+      "category": "OBSERVATION",
+      "engine_status": "IMPLEMENTED",
+      "demo_status": "PASS",
+      "demo_id": "concealment_basic",
+      "demo_feature": "CONCEALMENT",
+      "replay_support": true,
+      "replay_evidence": "explicit ENTER_CONCEALMENT input, posture events and strict replay",
+      "human_support": true,
+      "agent_support": true,
+      "implementation_refs": [
+        "src/wargame_native_engine/core/engine.py::NativeEngine._stage_source_concealment",
+        "src/wargame_native_engine/core/engine.py::NativeEngine.get_concealment_capabilities"
+      ],
+      "rule_refs": [
+        "docs/design/concealment_action_audit_v1.md"
+      ],
+      "test_refs": [
+        "tests/test_concealment_action.py"
+      ],
+      "notes": "Explicit ground-unit concealment posture; MOVE, DIRECT shooter and GUIDED shooter expose it."
+    },
+    {
+      "capability_id": "direct_fire",
+      "category": "COMBAT",
+      "engine_status": "IMPLEMENTED",
+      "demo_status": "PASS",
+      "demo_id": "direct_fire_basic",
+      "demo_feature": "DIRECT_FIRE",
+      "replay_support": true,
+      "replay_evidence": "formal direct-fire events plus strict replay state verification",
+      "human_support": true,
+      "agent_support": true,
+      "implementation_refs": [
+        "src/wargame_native_engine/adjudication/direct_fire.py::DirectFireAdjudicator",
+        "src/wargame_native_engine/core/engine.py::NativeEngine._stage_source_shoot"
+      ],
+      "rule_refs": [
+        "docs/rules/Native兵棋裁决知识库_Final.md"
+      ],
+      "test_refs": [
+        "tests/test_demo_direct_fire.py",
+        "tests/test_direct_fire_adjudication.py"
+      ],
+      "notes": "Legacy SHOOT remains DIRECT fire and carries an explicit weapon_id."
+    },
+    {
+      "capability_id": "drone",
+      "category": "OBSERVATION",
+      "engine_status": "IMPLEMENTED",
+      "demo_status": "PASS",
+      "demo_id": "drone_basic",
+      "demo_feature": "DRONE",
+      "replay_support": true,
+      "replay_evidence": "predeployed Source 3_5 AIR Operator, ordinary MOVE input, observation refresh and strict replay",
+      "human_support": true,
+      "agent_support": true,
+      "implementation_refs": [
+        "src/wargame_native_engine/core/engine.py::_operator_canonical_identity",
+        "src/wargame_native_engine/movement/planner.py::MovementPlanner",
+        "src/wargame_native_engine/visibility/profiles.py::ObservationProfiles"
+      ],
+      "rule_refs": [
+        "docs/design/drone_operator_reuse_audit_v1.md",
+        "docs/rules/推演规则_完整纯文本_Final.md"
+      ],
+      "test_refs": [
+        "tests/test_drone_demo.py",
+        "tests/test_drone_operator.py"
+      ],
+      "notes": "Predeployed, unarmed AIR Operator using generic MOVE/WAIT and the shared Drone observation profile; no finite lifecycle or attack authority."
+    },
+    {
+      "capability_id": "guided_fire",
+      "category": "COMBAT",
+      "engine_status": "IMPLEMENTED",
+      "demo_status": "PASS",
+      "demo_id": "guided_fire_basic",
+      "demo_feature": "GUIDED_FIRE",
+      "replay_support": true,
+      "replay_evidence": "guided_fire_resolved GREEN evidence plus strict replay",
+      "human_support": true,
+      "agent_support": true,
+      "implementation_refs": [
+        "src/wargame_native_engine/adjudication/guided_fire.py::GuidedFireResolver",
+        "src/wargame_native_engine/core/engine.py::NativeEngine.get_guided_fire_capabilities"
+      ],
+      "rule_refs": [
+        "docs/rules/Native兵棋裁决知识库_Final.md"
+      ],
+      "test_refs": [
+        "tests/test_guided_fire_commit.py",
+        "tests/test_guided_fire_demo.py"
+      ],
+      "notes": "Capability, Human projection and formal transactional execution are implemented."
+    },
+    {
+      "capability_id": "indirect_fire",
+      "category": "COMBAT",
+      "engine_status": "IMPLEMENTED",
+      "demo_status": "PASS",
+      "demo_id": "indirect_fire_basic",
+      "demo_feature": "INDIRECT_FIRE",
+      "replay_support": true,
+      "replay_evidence": "explicit FIRE/INDIRECT input, mission lifecycle evidence and strict replay",
+      "human_support": true,
+      "agent_support": true,
+      "implementation_refs": [
+        "src/wargame_native_engine/adjudication/indirect_fire.py::resolve_indirect_fire_effects",
+        "src/wargame_native_engine/core/engine.py::NativeEngine._stage_source_indirect_fire"
+      ],
+      "rule_refs": [
+        "docs/rules/推演规则_完整纯文本_Final.md"
+      ],
+      "test_refs": [
+        "tests/test_indirect_fire_action_replay.py",
+        "tests/test_indirect_fire_active_area.py"
+      ],
+      "notes": "Explicit global-hex planning, deterministic scatter, ACTIVE area, atomic commit and strict replay are implemented."
+    },
+    {
+      "capability_id": "loitering_munition",
+      "category": "COMBAT",
+      "engine_status": "IMPLEMENTED",
+      "demo_status": "PASS",
+      "demo_id": "loitering_munition_basic",
+      "demo_feature": "LOITERING_MUNITION",
+      "replay_support": true,
+      "replay_evidence": "ordinary MOVE/SHOOT inputs, authoritative elapsed time, destruction facts and strict replay",
+      "human_support": true,
+      "agent_support": true,
+      "implementation_refs": [
+        "src/wargame_native_engine/core/engine.py::NativeEngine._advance_source_operator_time",
+        "src/wargame_native_engine/core/engine.py::NativeEngine._stage_source_shoot",
+        "src/wargame_native_engine/rules/loitering_munition.py::LoiteringMunitionAttackPolicy"
+      ],
+      "rule_refs": [
+        "docs/design/loitering_munition_v1.md",
+        "docs/rules/推演规则_完整纯文本_Final.md"
+      ],
+      "test_refs": [
+        "tests/test_loitering_munition.py",
+        "tests/test_loitering_munition_demo.py"
+      ],
+      "notes": "Predeployed AIR Operator using ordinary MOVE/SHOOT, Source weapon 76, SELF_AS_MUNITION, and a 1200-second finite lifecycle."
+    },
+    {
+      "capability_id": "objective_control",
+      "category": "OBJECTIVE",
+      "engine_status": "SIMPLIFIED_IMPLEMENTATION",
+      "demo_status": "PASS",
+      "demo_id": "objective_control_basic",
+      "demo_feature": "OBJECTIVE_CONTROL",
+      "replay_support": true,
+      "replay_evidence": "authoritative state hash and strict replay of movement-driven control",
+      "human_support": true,
+      "agent_support": true,
+      "implementation_refs": [
+        "src/wargame_native_engine/core/engine.py::NativeEngine._score_objectives"
+      ],
+      "rule_refs": [
+        "docs/rules/推演规则_完整纯文本_Final.md"
+      ],
+      "test_refs": [
+        "tests/test_demo_objective.py"
+      ],
+      "notes": "Automatic occupancy/control/scoring only; there is no CAPTURE action."
+    },
+    {
+      "capability_id": "visibility",
+      "category": "OBSERVATION",
+      "engine_status": "IMPLEMENTED",
+      "demo_status": "PASS",
+      "demo_id": "visibility_blocking",
+      "demo_feature": "VISIBILITY",
+      "replay_support": true,
+      "replay_evidence": "GREEN authoritative frames, side observation evidence and strict replay",
+      "human_support": true,
+      "agent_support": true,
+      "implementation_refs": [
+        "src/wargame_native_engine/core/engine.py::NativeEngine._refresh_source_observation",
+        "src/wargame_native_engine/visibility/observation.py::evaluate_visibility"
+      ],
+      "rule_refs": [
+        "docs/rules/Native兵棋裁决知识库_Final.md"
+      ],
+      "test_refs": [
+        "tests/test_demo_visibility.py",
+        "tests/test_source_visibility.py"
+      ],
+      "notes": "Covers LOS, elevation blocking, terrain modifiers and detached side contacts."
+    }
+  ]
+}

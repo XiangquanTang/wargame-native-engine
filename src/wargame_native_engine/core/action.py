@@ -14,7 +14,11 @@ class ActionType(str, Enum):
     CHANGE_STATE = "CHANGE_STATE"
     ATTACK = "ATTACK"
     SHOOT = "SHOOT"
+    FIRE = "FIRE"
     STOP_MOVE = "STOP_MOVE"
+    BOARD = "BOARD"
+    UNLOAD = "UNLOAD"
+    ENTER_CONCEALMENT = "ENTER_CONCEALMENT"
     WEAPON_LOCK = "WEAPON_LOCK"
     WEAPON_UNFOLD = "WEAPON_UNFOLD"
     WAIT = "WAIT"
@@ -88,7 +92,11 @@ ACTION_PRIORITY = {
     ActionType.END_DEPLOYMENT: 1,
     ActionType.ATTACK: 0,
     ActionType.SHOOT: 0,
+    ActionType.FIRE: 0,
     ActionType.STOP_MOVE: 1,
+    ActionType.BOARD: 2,
+    ActionType.UNLOAD: 2,
+    ActionType.ENTER_CONCEALMENT: 2,
     ActionType.WEAPON_LOCK: 2,
     ActionType.WEAPON_UNFOLD: 2,
     ActionType.MOVE: 1,

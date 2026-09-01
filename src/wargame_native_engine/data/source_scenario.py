@@ -28,6 +28,9 @@ from wargame_native_engine.io.native_map_converter import (
 from wargame_native_engine.io.scenario import NativeScenario, scenario_from_dict
 from wargame_native_engine.io.serialization import canonical_hash, canonical_json, json_clone
 from wargame_native_engine.rules.terminal_rules import TerminalRules
+from wargame_native_engine.rules.operator_lifecycle import (
+    load_operator_lifecycle_authority,
+)
 
 
 SOURCE_SCENARIO_CONVERSION_SCHEMA = "source-scenario-conversion/1.0"
@@ -398,6 +401,7 @@ def _convert_operators(
     if not raw_operators:
         raise SourceScenarioConversionError("operators_required", "operators must not be empty")
     platform_profiles = _mapping(profile.get("platform_profiles"), "platform_profiles")
+    lifecycle_authority = load_operator_lifecycle_authority()
     armor_profiles = _mapping(profile.get("armor_profiles"), "armor_profiles")
     weapon_profiles = _mapping(profile.get("weapon_profiles"), "weapon_profiles")
     defaults = _mapping(profile.get("initial_state_defaults"), "initial_state_defaults")
@@ -451,6 +455,27 @@ def _convert_operators(
                 f"operator {operator_id} name does not match exact profile {profile_key}",
             )
         canonical_type = _nonempty_string(platform.get("canonical_type"), "canonical_type")
+        mapped_identity = mappings.canonical_identity(type_code, subtype_code)
+        if (
+            mapped_identity.status != "UNMAPPED"
+            and mapped_identity.native_effective_value != canonical_type.upper()
+        ):
+            raise SourceScenarioConversionError(
+                "platform_identity_conflict",
+                f"profile {profile_key} conflicts with versioned Source identity mapping",
+            )
+        lifecycle_profile = lifecycle_authority.profile_for_source_codes(
+            type_code,
+            subtype_code,
+        )
+        if (
+            lifecycle_profile is not None
+            and lifecycle_profile.canonical_identity != canonical_type.upper()
+        ):
+            raise SourceScenarioConversionError(
+                "lifecycle_identity_conflict",
+                f"profile {profile_key} conflicts with lifecycle authority",
+            )
         sensor_range = _finite_nonnegative(platform.get("sensor_range"), "sensor_range")
         current_hex = _exact_nonnegative_int(item.get("cur_hex"), "cur_hex")
         if current_hex not in native_map_ids:
@@ -574,6 +599,14 @@ def _convert_operators(
             stopped=default_stopped,
             weapon_locked=default_weapon_locked,
             weapon_unfolded=unfolded,
+            lifecycle_profile_id=(
+                None if lifecycle_profile is None else lifecycle_profile.profile_id
+            ),
+            lifecycle_remaining_ms=(
+                None
+                if lifecycle_profile is None
+                else lifecycle_profile.maximum_lifetime_ms
+            ),
         )
         operators.append(operator)
         records.append({

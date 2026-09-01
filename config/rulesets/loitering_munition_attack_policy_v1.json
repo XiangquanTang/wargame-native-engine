@@ -1,0 +1,31 @@
+{
+  "schema": "native-loitering-munition-attack-policies/1.0",
+  "authority_version": "native-loitering-munition-attack-authority/1.0",
+  "assignment_policy": "EXPLICIT_LIFECYCLE_PROFILE_AND_WEAPON",
+  "policies": [
+    {
+      "policy_id": "LOITERING_MUNITION_WEAPON_76_V1",
+      "canonical_identity": "LOITERING_MUNITION",
+      "lifecycle_profile_id": "LOITERING_MUNITION_PREDEPLOYED_V1",
+      "weapon_id": 76,
+      "weapon_class": "loitering_munition",
+      "maximum_range": 2,
+      "target_domains": [
+        "PERSONNEL",
+        "VEHICLE"
+      ],
+      "requires_observable_target": true,
+      "can_interrupt_movement_route": true,
+      "resource_policy": "SELF_AS_MUNITION",
+      "consume_condition": "ATTACK_RESOLUTION_COMMITTED",
+      "destruction_reason_code": "LOITERING_MUNITION_CONSUMED",
+      "source_rules": [
+        "USER_AUTHORITY:2026-08-26:ATTACK_RESOLUTION_COMMITTED",
+        "USER_AUTHORITY:2026-08-26:SELF_AS_MUNITION",
+        "config/adjudication/source_tables_v1/native_adjudication_tables_final.json#direct_fire",
+        "docs/rules/推演规则_完整纯文本_Final.md#10-b",
+        "docs/rules/推演规则_完整纯文本_Final.md#10-f"
+      ]
+    }
+  ]
+}

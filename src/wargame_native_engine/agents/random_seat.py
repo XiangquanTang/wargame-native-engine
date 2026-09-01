@@ -13,11 +13,18 @@ from wargame_native_engine.agents.seat import (
 )
 from wargame_native_engine.core.rng import NativeRNG
 from wargame_native_engine.io.serialization import canonical_hash
+from wargame_native_engine.projection.decision_semantic import (
+    CapabilityAvailabilityStatus,
+    DecisionCapabilityFamily,
+)
 
 
 _PRODUCT_ACTION_TYPES = frozenset({
     "MOVE",
     "SHOOT",
+    "BOARD",
+    "UNLOAD",
+    "ENTER_CONCEALMENT",
     "WEAPON_LOCK",
     "WEAPON_UNFOLD",
 })
@@ -67,12 +74,24 @@ class RandomProductSeatAgent:
             for value in context.observation.get("legal_action_ids", ())
             if isinstance(value, str)
         }
-        allowed_types = set(context.operation_capabilities.operation_types)
-        controllable = set(
-            context.operation_capabilities.controllable_actor_ids
-        )
+        if context.decision_semantic is not None and context.action_catalog is not None:
+            allowed_types = _available_operation_types(context)
+            controllable = {
+                value.operator_reference
+                for value in context.decision_semantic.own_operators
+            }
+            action_records = tuple(
+                _catalog_action_record(value, context.side)
+                for value in context.action_catalog.entries
+            )
+        else:
+            allowed_types = set(context.operation_capabilities.operation_types)
+            controllable = set(
+                context.operation_capabilities.controllable_actor_ids
+            )
+            action_records = context.operation_capabilities.frozen_actions
         candidates: list[tuple[tuple[object, ...], SeatOperation]] = []
-        for record in context.operation_capabilities.frozen_actions:
+        for record in action_records:
             if not isinstance(record, Mapping):
                 continue
             action_id = record.get("action_id")
@@ -109,6 +128,35 @@ class RandomProductSeatAgent:
 
     def close(self) -> None:
         return None
+
+
+def _available_operation_types(context: AgentDecisionContext) -> set[str]:
+    result: set[str] = set()
+    assert context.decision_semantic is not None
+    for operator in context.decision_semantic.capabilities.operators:
+        for value in operator.families:
+            if value.status is not CapabilityAvailabilityStatus.AVAILABLE:
+                continue
+            result.add(
+                "SHOOT"
+                if value.family is DecisionCapabilityFamily.DIRECT_FIRE
+                else value.family.value
+            )
+    return result
+
+
+def _catalog_action_record(value, side: str) -> dict[str, object]:
+    return {
+        "action_id": value.action_id,
+        "action": {
+            "side": side,
+            "actor_id": value.actor_reference,
+            "action_type": value.action_type,
+            "target_id": value.target_reference,
+            "target_position": value.target_position,
+            "parameters": value.parameters(),
+        },
+    }
 
 
 def _product_operation(
@@ -162,5 +210,14 @@ def _product_operation(
             (actor_id,),
             target_id=target_id,
             weapon_choices=choices,
+        )
+    if operation_type in {"BOARD", "UNLOAD"}:
+        target_id = action.get("target_id")
+        if type(target_id) is not int:
+            return None
+        return SeatOperation(
+            operation_type,
+            (actor_id,),
+            target_id=target_id,
         )
     return SeatOperation(operation_type, (actor_id,))

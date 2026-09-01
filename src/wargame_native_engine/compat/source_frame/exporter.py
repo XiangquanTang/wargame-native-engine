@@ -16,6 +16,10 @@ class SourceFrameExporter:
                adjudication: Mapping[str, Any] | None = None) -> dict[str, Any]:
         root = json_clone(template.raw)
         source_units = {item.obj_id: item for item in template.all_units}
+        lifecycle_projection = any(
+            state.lifecycle_profile_id is not None
+            for state in world.operators.values()
+        )
         operators: list[dict[str, Any]] = []
         passengers: list[dict[str, Any]] = []
         for operator_id, state in sorted(world.operators.items()):
@@ -44,6 +48,20 @@ class SourceFrameExporter:
                 "see_enemy_bop_ids": list(state.raw_attributes.get(
                     "see_enemy_bop_ids", [])),
             })
+            if lifecycle_projection:
+                # This is version-gated by the lifecycle authority carried in
+                # the snapshot/replay manifest.  Legacy Source frame bytes are
+                # intentionally untouched.
+                raw["alive"] = state.alive
+                raw["remain_bullet_nums"] = json_clone(
+                    state.raw_attributes.get("ammunition", {})
+                )
+            if state.passenger_id is not None:
+                raw["passenger_ids"] = [state.passenger_id]
+            if state.mounted_on is not None:
+                raw["car"] = state.mounted_on
+                raw["on_board"] = True
+                raw["is_passenger"] = True
             extra = raw.setdefault("extra", {})
             if not isinstance(extra, dict):
                 extra = {}
@@ -57,7 +75,26 @@ class SourceFrameExporter:
                 "transition_remaining_ms": state.transition_remaining_ms,
                 "cur_pos_millionths": state.cur_pos_millionths,
             }
-            if source is not None and source.is_passenger:
+            if (
+                state.boarding_profile_id is not None
+                or state.mounted_on is not None
+                or state.passenger_id is not None
+                or state.movement_locked
+            ):
+                extra["native"].update({
+                    "boarding_profile_id": state.boarding_profile_id,
+                    "mounted_on": state.mounted_on,
+                    "passenger_id": state.passenger_id,
+                    "movement_locked": state.movement_locked,
+                })
+            if state.lifecycle_profile_id is not None:
+                extra["native"].update({
+                    "lifecycle_profile_id": state.lifecycle_profile_id,
+                    "lifecycle_remaining_ms": state.lifecycle_remaining_ms,
+                })
+            if state.mounted_on is not None or (
+                source is not None and source.is_passenger
+            ):
                 passengers.append(raw)
             else:
                 operators.append(raw)

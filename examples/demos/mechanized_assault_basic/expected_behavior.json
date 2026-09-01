@@ -1,0 +1,34 @@
+{
+  "schema": "native-demo-expected/1.0",
+  "demo_id": "mechanized_assault_basic",
+  "seed": 42,
+  "side": "red",
+  "actors": {
+    "passenger_id": 101,
+    "carrier_id": 102,
+    "target_id": 201,
+    "weapon_id": 36,
+    "objective_id": 1,
+    "destination_hex": 102
+  },
+  "preconditions": {
+    "same_hex": true,
+    "initial_target_visible": false
+  },
+  "outcome": {
+    "transition_duration_ms": 75000,
+    "objective_controlling_side": "red",
+    "target_visible_after_advance": true,
+    "target_state_changes": true,
+    "events": [
+      "board_started",
+      "board_completed",
+      "unload_started",
+      "unload_completed",
+      "direct_fire_requested",
+      "direct_fire_validated",
+      "losses_applied"
+    ],
+    "strict_replay_matches": true
+  }
+}

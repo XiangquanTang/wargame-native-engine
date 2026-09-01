@@ -1,0 +1,34 @@
+{
+  "schema_version": "native-indirect-fire-execution-policy/1.0",
+  "policy_id": "native-indirect-fire-execution-policy",
+  "policy_version": "1.0.0",
+  "authority_status": "EXECUTABLE_AUTHORITY_READY",
+  "ammo_policy": {
+    "consume_timing": "MISSION_CREATE",
+    "refund_policy": "NO_REFUND"
+  },
+  "scatter_policy": {
+    "direction_policy": "HEX_NEIGHBOR_6WAY_RANDOM",
+    "direction_draw_policy": "UNIFORM_NATIVE_RNG_D6",
+    "distance_policy": "TWO_D6_TABLE",
+    "distance_table_reference": "indirect_fire.*_dispersion",
+    "planned_hex_field": "planned_hex",
+    "impact_hex_field": "impact_hex"
+  },
+  "cancellation_policy": {
+    "allowed_phases": [
+      "FLYING"
+    ],
+    "reasons": [
+      "USER_CANCELLED",
+      "SHOOTER_DESTROYED",
+      "MISSION_INVALIDATED"
+    ],
+    "refund_policy": "NO_REFUND"
+  },
+  "impact_policy": {
+    "affected_hex_policy": "IMPACT_HEX_ONLY",
+    "one_hit_per_unit": true,
+    "multi_target_order": "OPERATOR_ID_ASCENDING"
+  }
+}

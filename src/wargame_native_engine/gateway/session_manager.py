@@ -17,18 +17,24 @@ from wargame_native_engine.analysis import (
     LiveAnalysisDesynchronizedError,
     LiveAnalyzedSession,
 )
+from wargame_native_engine.analysis.models import FrameAnalysis
 from wargame_native_engine.agents.protocol import (
     AgentResetContext,
     AgentStepContext,
 )
 from wargame_native_engine.core.action import EngineAction, ValidAction
+from wargame_native_engine.core.fire_capability import IndirectFireCapability
 from wargame_native_engine.core.observation import SideObservation
+from wargame_native_engine.core.result import GameResult
 from wargame_native_engine.core.tactical_overlay import UnitTacticalOverlay
 from wargame_native_engine.gateway.models import (
     CommandGatewayError,
     ControllerView,
     SessionDescriptor,
     SessionPublication,
+)
+from wargame_native_engine.gateway.controller_decision import (
+    build_controller_decision_core,
 )
 from wargame_native_engine.io.serialization import canonical_hash, json_clone
 from wargame_native_engine.movement.models import MovementMode, RoutePlan
@@ -42,6 +48,11 @@ from wargame_native_engine.core.time import (
 )
 from wargame_native_engine.session.deployment import SessionLifecycleState
 from wargame_native_engine.version import ENGINE_VERSION
+from wargame_native_engine.projection.decision_semantic import (
+    DecisionProjectionContractError,
+    DecisionSide,
+    DecisionSnapshotIdentity,
+)
 
 
 EnvironmentFactory = Callable[[], SourceCompatibleEnvironment]
@@ -159,11 +170,53 @@ class SessionManager:
                 truncated=native_result.truncated,
             )
 
-    def controller_view(self, session_id: str, side: str) -> ControllerView:
+    def native_result(self, session_id: str) -> GameResult:
+        """Return the immutable authoritative result without exposing World."""
+
         managed = self._managed(session_id)
         with managed.lock:
             self._require_usable(managed)
-            return self._controller_view(managed, side)
+            return deepcopy(managed.environment.session.result())
+
+    def frame_analysis(
+        self, session_id: str, frame_index: int
+    ) -> FrameAnalysis:
+        """Return one detached committed GREEN analysis, never live World state."""
+
+        if type(frame_index) is not int or frame_index < 0:
+            raise TypeError("frame_index must be a non-negative exact int")
+        managed = self._managed(session_id)
+        with managed.lock:
+            self._require_usable(managed)
+            matches = tuple(
+                value for value in managed.live.frame_analyses
+                if value.provenance.frame_index == frame_index
+            )
+            if len(matches) != 1:
+                raise RuntimeError("committed_frame_analysis_missing")
+            return deepcopy(matches[0])
+
+    def controller_view(
+        self,
+        session_id: str,
+        side: str,
+        *,
+        decision_window_index: int | None = None,
+        frozen_valid_actions: Sequence[ValidAction] | None = None,
+        frame_index: int | None = None,
+        sim_time_ms: int | None = None,
+    ) -> ControllerView:
+        managed = self._managed(session_id)
+        with managed.lock:
+            self._require_usable(managed)
+            return self._controller_view(
+                managed,
+                side,
+                decision_window_index=decision_window_index,
+                frozen_valid_actions=frozen_valid_actions,
+                frame_index=frame_index,
+                sim_time_ms=sim_time_ms,
+            )
 
     def valid_actions(
         self,
@@ -227,6 +280,79 @@ class SessionManager:
             if session.snapshot() != before:
                 raise RuntimeError("tactical_overlay_query_modified_engine_state")
             return deepcopy(result)
+
+    def get_indirect_fire_capabilities(
+        self,
+        session_id: str,
+        side: str,
+    ) -> tuple[IndirectFireCapability, ...]:
+        """Run one mutation-guarded, side-bound authority query."""
+
+        managed = self._managed(session_id)
+        with managed.lock:
+            self._require_usable(managed)
+            _require_side(managed, side)
+            session = managed.environment.session
+            before = deepcopy(session.snapshot())
+            result = session.get_indirect_fire_capabilities(side)
+            if session.snapshot() != before:
+                raise RuntimeError(
+                    "indirect_fire_capability_query_modified_engine_state"
+                )
+            return deepcopy(result)
+
+    def get_indirect_fire_active_areas(
+        self,
+        session_id: str,
+        side: str,
+    ) -> tuple[object, ...]:
+        """Return a mutation-guarded, side-filtered ACTIVE-area projection."""
+
+        managed = self._managed(session_id)
+        with managed.lock:
+            self._require_usable(managed)
+            _require_side(managed, side)
+            session = managed.environment.session
+            before = deepcopy(session.snapshot())
+            result = session.get_indirect_fire_active_areas(side)
+            if session.snapshot() != before:
+                raise RuntimeError(
+                    "indirect_fire_active_area_query_modified_engine_state"
+                )
+            return deepcopy(result)
+
+    def plan_indirect_fire(
+        self,
+        session_id: str,
+        side: str,
+        shooter_id: int,
+        weapon_id: int,
+        target_hex: int,
+    ) -> tuple[EngineAction, str]:
+        """Create one mutation-guarded, Engine-authorized INDIRECT action."""
+
+        managed = self._managed(session_id)
+        with managed.lock:
+            self._require_usable(managed)
+            _require_side(managed, side)
+            session = managed.environment.session
+            before = deepcopy(session.snapshot())
+            state_hash = canonical_hash(before["world"])
+            capability = next((
+                value
+                for value in session.get_indirect_fire_capabilities(side)
+                if value.shooter_id == shooter_id
+                and value.weapon_id == weapon_id
+                and value.status.value == "AVAILABLE"
+            ), None)
+            if capability is None:
+                raise ValueError("CAPABILITY_BLOCKED")
+            action = session.indirect_fire_action(capability, target_hex)
+            if session.snapshot() != before:
+                raise RuntimeError(
+                    "indirect_fire_planning_modified_engine_state"
+                )
+            return deepcopy(action), state_hash
 
     def query_unit_tactical_overlay_from_projection(
         self,
@@ -491,10 +617,46 @@ class SessionManager:
     def _controller_view(
         managed: _ManagedSession,
         side: str,
+        *,
+        decision_window_index: int | None = None,
+        frozen_valid_actions: Sequence[ValidAction] | None = None,
+        frame_index: int | None = None,
+        sim_time_ms: int | None = None,
     ) -> ControllerView:
         _require_side(managed, side)
         session = managed.environment.session
-        observation = session.observe(side).to_dict()
+        observation_value = session.observe(side)
+        current_frame = managed.step_index
+        current_sim_time = _managed_sim_time_ms(managed)
+        window = current_frame if decision_window_index is None else (
+            decision_window_index
+        )
+        bound_frame = current_frame if frame_index is None else frame_index
+        bound_time = current_sim_time if sim_time_ms is None else sim_time_ms
+        for value, name in (
+            (window, "decision_window_index"),
+            (bound_frame, "frame_index"),
+            (bound_time, "sim_time_ms"),
+        ):
+            if type(value) is not int or value < 0:
+                raise DecisionProjectionContractError(
+                    f"{name} must be a non-negative exact int"
+                )
+        if bound_frame != current_frame:
+            raise DecisionProjectionContractError(
+                "ControllerView frame is not the current frozen frame"
+            )
+        if bound_time != current_sim_time:
+            raise DecisionProjectionContractError(
+                "ControllerView sim time is not the current frozen time"
+            )
+        actions = tuple(
+            session.valid_actions(side)
+            if frozen_valid_actions is None
+            else frozen_valid_actions
+        )
+        if any(type(value) is not ValidAction for value in actions):
+            raise TypeError("frozen_valid_actions must contain ValidAction values")
         source_frame = (
             managed.environment.last_bundle.red
             if side == "red"
@@ -502,24 +664,41 @@ class SessionManager:
         )
         valid_actions = tuple(
             json_clone(item.to_dict())
-            for item in session.valid_actions(side)
+            for item in actions
         )
         terminal = session.is_terminal()
         result = session.result()
+        snapshot = DecisionSnapshotIdentity(
+            side=DecisionSide(side),
+            decision_window_index=window,
+            frame_index=bound_frame,
+            sim_time_ms=bound_time,
+            stage=observation_value.stage,
+            terminated=result.terminal,
+            truncated=result.truncated,
+        )
+        core = build_controller_decision_core(
+            session=session,
+            observation=observation_value,
+            snapshot_identity=snapshot,
+            frozen_valid_actions=actions,
+        )
         return ControllerView(
             session_id=managed.external_id,
             perspective=side.upper(),
-            step_index=managed.step_index,
-            observation=json_clone(observation),
+            step_index=window,
+            observation=json_clone(observation_value.to_dict()),
             source_frame=json_clone(source_frame),
             valid_actions=valid_actions,
             terminal=terminal,
             winner=None if not terminal else result.winner,
             outcome=None if not terminal else result.outcome,
-            frame_index=managed.step_index,
-            sim_time_ms=_managed_sim_time_ms(managed),
+            frame_index=bound_frame,
+            sim_time_ms=bound_time,
             terminated=result.terminal,
             truncated=result.truncated,
+            decision_semantic=core.decision_semantic,
+            action_catalog=core.action_catalog,
         )
 
 
@@ -582,6 +761,14 @@ def _recorder_metadata(
     }
     if "map_runtime_data" in native:
         value["map_runtime_data"] = json_clone(native["map_runtime_data"])
+    for name in (
+        "operator_lifecycle_authority_version",
+        "operator_lifecycle_authority_hash",
+        "loitering_munition_attack_authority_version",
+        "loitering_munition_attack_authority_hash",
+    ):
+        if name in native:
+            value[name] = native[name]
     return value
 
 

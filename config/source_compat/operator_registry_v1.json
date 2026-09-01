@@ -1,0 +1,294 @@
+{
+  "schema": "operator-registry/v1",
+  "registry_id": "source-compatible-operators-v1",
+  "registry_version": "1.0.0",
+  "identity_policy": "EXACT_TYPE_AND_SUBTYPE_ONLY",
+  "unknown_policy": "RETURN_UNKNOWN_WITHOUT_NAME_INFERENCE",
+  "provenance": {
+    "operator_identity": "curated Source-compatible operator statistics",
+    "weapon_identity": "config/source_compat/weapon_id_mapping_v1.json",
+    "weapon_profiles": "config/source_scenario_conversion/scenarios/2201010105.native-supplement.json and config/adjudication/source_tables_v1/native_adjudication_tables_final.json",
+    "rules_note": "Viewer and Agent description metadata only; this registry does not authorize or replace Native simplified adjudication."
+  },
+  "weapon_profiles": {
+    "1": {
+      "weapon_id": 1,
+      "name": "防空高炮",
+      "weapon_class": "anti_air_cannon",
+      "range": 20,
+      "target_domain": ["AIR"],
+      "requires_unfolded": null,
+      "can_fire_while_moving": null,
+      "status": "TABLE_ONLY"
+    },
+    "4": {
+      "weapon_id": 4,
+      "name": "速射炮（对地）",
+      "weapon_class": "rapid_fire_gun_ground",
+      "range": 10,
+      "target_domain": ["PERSONNEL"],
+      "requires_unfolded": true,
+      "can_fire_while_moving": false,
+      "status": "CURATED_PROFILE"
+    },
+    "5": {
+      "weapon_id": 5,
+      "name": "便携导弹（对地）",
+      "weapon_class": "portable_missile_ground",
+      "range": 0,
+      "target_domain": [],
+      "requires_unfolded": false,
+      "can_fire_while_moving": false,
+      "status": "CURATED_PROFILE_UNSUPPORTED_BY_DIRECT_FIRE"
+    },
+    "16": {
+      "weapon_id": 16,
+      "name": "UNKNOWN",
+      "weapon_class": "UNKNOWN",
+      "range": null,
+      "target_domain": [],
+      "requires_unfolded": null,
+      "can_fire_while_moving": null,
+      "status": "UNKNOWN"
+    },
+    "29": {
+      "weapon_id": 29,
+      "name": "步兵轻武器",
+      "weapon_class": "infantry_light_weapon",
+      "range": 3,
+      "target_domain": ["PERSONNEL", "VEHICLE"],
+      "requires_unfolded": false,
+      "can_fire_while_moving": false,
+      "status": "CURATED_PROFILE"
+    },
+    "35": {
+      "weapon_id": 35,
+      "name": "火箭筒",
+      "weapon_class": "rocket_launcher",
+      "range": 4,
+      "target_domain": ["VEHICLE"],
+      "requires_unfolded": false,
+      "can_fire_while_moving": false,
+      "status": "CURATED_PROFILE"
+    },
+    "36": {
+      "weapon_id": 36,
+      "name": "大号直瞄炮",
+      "weapon_class": "large_direct_fire_gun",
+      "range": 10,
+      "target_domain": ["PERSONNEL", "VEHICLE"],
+      "requires_unfolded": true,
+      "can_fire_while_moving": false,
+      "status": "CURATED_PROFILE"
+    },
+    "43": {
+      "weapon_id": 43,
+      "name": "车载轻武器",
+      "weapon_class": "vehicle_light_weapon",
+      "range": 10,
+      "target_domain": ["PERSONNEL"],
+      "requires_unfolded": true,
+      "can_fire_while_moving": false,
+      "status": "CURATED_PROFILE"
+    },
+    "54": {
+      "weapon_id": 54,
+      "name": "小号直瞄炮",
+      "weapon_class": "small_direct_fire_gun",
+      "range": 10,
+      "target_domain": ["PERSONNEL", "VEHICLE"],
+      "requires_unfolded": true,
+      "can_fire_while_moving": false,
+      "status": "CURATED_PROFILE"
+    },
+    "72": {
+      "weapon_id": 72,
+      "name": "重型炮",
+      "weapon_class": "heavy_artillery",
+      "range": 0,
+      "target_domain": [],
+      "requires_unfolded": true,
+      "can_fire_while_moving": false,
+      "status": "CURATED_PROFILE_UNSUPPORTED_BY_DIRECT_FIRE"
+    },
+    "73": {
+      "weapon_id": 73,
+      "name": "重型导弹",
+      "weapon_class": "heavy_missile",
+      "range": 20,
+      "target_domain": ["VEHICLE"],
+      "requires_unfolded": true,
+      "can_fire_while_moving": false,
+      "status": "CURATED_PROFILE"
+    },
+    "74": {
+      "weapon_id": 74,
+      "name": "中型导弹（便携）",
+      "weapon_class": "medium_missile_portable",
+      "range": 10,
+      "target_domain": ["VEHICLE"],
+      "requires_unfolded": null,
+      "can_fire_while_moving": null,
+      "status": "TABLE_ONLY"
+    },
+    "76": {
+      "weapon_id": 76,
+      "name": "巡飞导弹",
+      "weapon_class": "loitering_munition",
+      "range": 2,
+      "target_domain": ["PERSONNEL", "VEHICLE"],
+      "requires_unfolded": false,
+      "can_fire_while_moving": true,
+      "status": "CURATED_SELF_AS_MUNITION"
+    }
+  },
+  "operators": {
+    "1_2": {
+      "identity": {"type_code": 1, "subtype_code": 2},
+      "display_name": "步兵",
+      "category": "personnel",
+      "symbol": {"base": "infantry", "modifiers": []},
+      "weapons": [{"weapon_id": 5}, {"weapon_id": 29}, {"weapon_id": 35}]
+    },
+    "1_16": {
+      "identity": {"type_code": 1, "subtype_code": 16},
+      "display_name": "便携防空导弹排",
+      "category": "personnel",
+      "symbol": {"base": "manpad", "modifiers": []},
+      "weapons": [{"weapon_id": 1}, {"weapon_id": 16}]
+    },
+    "2_0": {
+      "identity": {"type_code": 2, "subtype_code": 0},
+      "display_name": "重型坦克",
+      "category": "vehicle",
+      "symbol": {"base": "tank", "modifiers": ["armor_heavy"]},
+      "weapons": [{"weapon_id": 43}, {"weapon_id": 36}]
+    },
+    "2_1": {
+      "identity": {"type_code": 2, "subtype_code": 1},
+      "display_name": "重型战车",
+      "category": "vehicle",
+      "symbol": {"base": "armored_vehicle", "modifiers": ["armor_heavy"]},
+      "weapons": [{"weapon_id": 43}, {"weapon_id": 4}, {"weapon_id": 54}, {"weapon_id": 73}]
+    },
+    "2_3": {
+      "identity": {"type_code": 2, "subtype_code": 3},
+      "display_name": "炮兵",
+      "category": "vehicle",
+      "symbol": {"base": "artillery", "modifiers": []},
+      "weapons": [{"weapon_id": 72}]
+    },
+    "2_4": {
+      "identity": {"type_code": 2, "subtype_code": 4},
+      "display_name": "无人战车",
+      "category": "vehicle",
+      "symbol": {"base": "ugv", "modifiers": ["unmanned"]},
+      "weapons": [{"weapon_id": 43}, {"weapon_id": 4}, {"weapon_id": 74}]
+    },
+    "2_9": {
+      "identity": {"type_code": 2, "subtype_code": 9},
+      "display_name": "侦察型战车",
+      "category": "vehicle",
+      "symbol": {"base": "recon_vehicle", "modifiers": []},
+      "weapons": []
+    },
+    "2_10": {
+      "identity": {"type_code": 2, "subtype_code": 10},
+      "display_name": "炮兵校射雷达车",
+      "category": "vehicle",
+      "symbol": {"base": "artillery_radar_vehicle", "modifiers": []},
+      "weapons": []
+    },
+    "2_13": {
+      "identity": {"type_code": 2, "subtype_code": 13},
+      "display_name": "布雷车",
+      "category": "vehicle",
+      "symbol": {"base": "mine_layer_vehicle", "modifiers": []},
+      "weapons": []
+    },
+    "2_14": {
+      "identity": {"type_code": 2, "subtype_code": 14},
+      "display_name": "扫雷车",
+      "category": "vehicle",
+      "symbol": {"base": "mine_clear_vehicle", "modifiers": []},
+      "weapons": []
+    },
+    "2_15": {
+      "identity": {"type_code": 2, "subtype_code": 15},
+      "display_name": "防空高炮",
+      "category": "vehicle",
+      "symbol": {"base": "anti_aircraft_gun", "modifiers": []},
+      "weapons": []
+    },
+    "2_17": {
+      "identity": {"type_code": 2, "subtype_code": 17},
+      "display_name": "车载防空导弹车",
+      "category": "vehicle",
+      "symbol": {"base": "sam_vehicle", "modifiers": []},
+      "weapons": []
+    },
+    "2_18": {
+      "identity": {"type_code": 2, "subtype_code": 18},
+      "display_name": "皮卡车",
+      "category": "vehicle",
+      "symbol": {"base": "pickup", "modifiers": []},
+      "weapons": []
+    },
+    "3_5": {
+      "identity": {"type_code": 3, "subtype_code": 5},
+      "display_name": "无人机",
+      "category": "air",
+      "symbol": {"base": "drone", "modifiers": []},
+      "weapons": []
+    },
+    "3_6": {
+      "identity": {"type_code": 3, "subtype_code": 6},
+      "display_name": "武装直升机",
+      "category": "air",
+      "symbol": {"base": "attack_helicopter", "modifiers": []},
+      "weapons": []
+    },
+    "3_7": {
+      "identity": {"type_code": 3, "subtype_code": 7},
+      "display_name": "巡飞弹",
+      "category": "air",
+      "symbol": {"base": "loitering_munition", "modifiers": []},
+      "weapons": [{"weapon_id": 76}]
+    },
+    "3_8": {
+      "identity": {"type_code": 3, "subtype_code": 8},
+      "display_name": "运输直升机",
+      "category": "air",
+      "symbol": {"base": "transport_helicopter", "modifiers": []},
+      "weapons": []
+    },
+    "4_11": {
+      "identity": {"type_code": 4, "subtype_code": 11},
+      "display_name": "人员战斗工事",
+      "category": "fortification",
+      "symbol": {"base": "fortification", "modifiers": []},
+      "weapons": []
+    },
+    "4_12": {
+      "identity": {"type_code": 4, "subtype_code": 12},
+      "display_name": "车辆工事",
+      "category": "fortification",
+      "symbol": {"base": "fortification", "modifiers": []},
+      "weapons": []
+    },
+    "4_20": {
+      "identity": {"type_code": 4, "subtype_code": 20},
+      "display_name": "人员隐蔽工事",
+      "category": "fortification",
+      "symbol": {"base": "fortification", "modifiers": []},
+      "weapons": []
+    },
+    "5_19": {
+      "identity": {"type_code": 5, "subtype_code": 19},
+      "display_name": "天基侦察算子",
+      "category": "space",
+      "symbol": {"base": "space_asset", "modifiers": []},
+      "weapons": []
+    }
+  }
+}

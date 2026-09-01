@@ -27,8 +27,11 @@ from wargame_native_engine.analysis.models import (
     SideAnalysis,
     UnitFactorAnalysis,
 )
+from wargame_native_engine.analysis.semantic_identity import (
+    FRAME_ANALYSIS_SCHEMA_VERSION,
+)
 
-ANALYSIS_SCHEMA = "native-eight-factor-frame-analysis/1.0"
+ANALYSIS_SCHEMA = FRAME_ANALYSIS_SCHEMA_VERSION
 
 
 class AnalysisSidecarFormatError(ValueError):

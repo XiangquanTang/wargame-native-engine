@@ -85,6 +85,12 @@ def test_complete_training_package_appears_only_with_all_verified_members(
         assert summary["terminal"] is False
         assert summary["truncated"] is True
         assert summary["agent_profile"] == "wait-v1"
+        assert summary["reward_replay_match"] is True
+        assert summary["reward_record_count"] == 1
+        assert summary["reward_policy"]["policy_id"] == (
+            "native-sparse-terminal-zero-sum"
+        )
+        assert result.reward_replay_match is True
         assert [item["side"] for item in transitions] == ["red", "blue"]
         assert all(
             item["run_namespace"] == "publication-worker-000"

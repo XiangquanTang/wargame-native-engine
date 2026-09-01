@@ -1,0 +1,189 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "native-indirect-fire-authority/1.1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "config_id",
+    "config_version",
+    "authority_status",
+    "unknown_policy",
+    "source",
+    "profiles",
+    "resource_policies",
+    "mission_policies",
+    "scatter_profiles",
+    "impact_profiles",
+    "unresolved_authority"
+  ],
+  "properties": {
+    "schema_version": {"const": "native-indirect-fire-authority/1.1"},
+    "config_id": {"type": "string", "minLength": 1},
+    "config_version": {"type": "string", "minLength": 1},
+    "authority_status": {"const": "EXECUTABLE_AUTHORITY_READY"},
+    "unknown_policy": {"const": "PRESERVE_UNKNOWN_REJECT_EXECUTION"},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "machine_table",
+        "table_set_id",
+        "table_revision",
+        "table_content_sha256",
+        "guide",
+        "context"
+      ],
+      "properties": {
+        "machine_table": {"type": "string", "minLength": 1},
+        "table_set_id": {"type": "string", "minLength": 1},
+        "table_revision": {"type": "string", "minLength": 1},
+        "table_content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "guide": {"type": "string", "minLength": 1},
+        "context": {"type": "string", "minLength": 1}
+      }
+    },
+    "profiles": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {"$ref": "#/$defs/indirectFireProfile"}
+    },
+    "resource_policies": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {"$ref": "#/$defs/resourcePolicy"}
+    },
+    "mission_policies": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {"$ref": "#/$defs/missionPolicy"}
+    },
+    "scatter_profiles": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {"$ref": "#/$defs/scatterProfile"}
+    },
+    "impact_profiles": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {"$ref": "#/$defs/impactProfile"}
+    },
+    "unresolved_authority": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    }
+  },
+  "$defs": {
+    "nullableRange": {
+      "oneOf": [
+        {"type": "integer", "minimum": 0},
+        {"type": "null"}
+      ]
+    },
+    "indirectFireProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profile_id",
+        "weapon_id",
+        "artillery_class",
+        "supported_fire_mode",
+        "target_domain",
+        "range_policy",
+        "minimum_range",
+        "maximum_range",
+        "flight_time_seconds",
+        "active_duration_seconds",
+        "planned_cooldown_seconds",
+        "scatter_model_id",
+        "effect_model_id",
+        "resource_policy_id",
+        "mission_policy_id"
+      ],
+      "properties": {
+        "profile_id": {"type": "string", "minLength": 1},
+        "weapon_id": {"type": "integer", "minimum": 0},
+        "artillery_class": {"enum": ["LIGHT", "MEDIUM", "HEAVY"]},
+        "supported_fire_mode": {"const": "INDIRECT"},
+        "target_domain": {"const": "AREA"},
+        "range_policy": {"const": "SCENARIO_DEFINED_GLOBAL_HEX"},
+        "minimum_range": {"$ref": "#/$defs/nullableRange"},
+        "maximum_range": {"$ref": "#/$defs/nullableRange"},
+        "flight_time_seconds": {"type": "integer", "minimum": 0},
+        "active_duration_seconds": {"type": "integer", "minimum": 0},
+        "planned_cooldown_seconds": {"type": "integer", "minimum": 0},
+        "scatter_model_id": {"type": "string", "minLength": 1},
+        "effect_model_id": {"type": "string", "minLength": 1},
+        "resource_policy_id": {"type": "string", "minLength": 1},
+        "mission_policy_id": {"type": "string", "minLength": 1}
+      }
+    },
+    "resourcePolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["policy_id", "ammo_cost", "cooldown_policy", "cancel_policy"],
+      "properties": {
+        "policy_id": {"type": "string", "minLength": 1},
+        "ammo_cost": {
+          "oneOf": [
+            {"type": "integer", "minimum": 0},
+            {"const": "UNRESOLVED"}
+          ]
+        },
+        "cooldown_policy": {"type": "string", "minLength": 1},
+        "cancel_policy": {"type": "string", "minLength": 1}
+      }
+    },
+    "missionPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["policy_id", "states", "flight_duration_seconds", "active_duration_seconds", "can_cancel_during_flight"],
+      "properties": {
+        "policy_id": {"type": "string", "minLength": 1},
+        "states": {
+          "type": "array",
+          "prefixItems": [
+            {"const": "PLANNED"},
+            {"const": "FLYING"},
+            {"const": "ACTIVE"},
+            {"const": "RESOLVED"},
+            {"const": "CANCELLED"}
+          ],
+          "items": false,
+          "minItems": 5,
+          "maxItems": 5
+        },
+        "flight_duration_seconds": {"type": "integer", "minimum": 0},
+        "active_duration_seconds": {"type": "integer", "minimum": 0},
+        "can_cancel_during_flight": {"type": "boolean"}
+      }
+    },
+    "scatterProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scatter_model_id", "dice_expression", "table_reference", "direction_policy", "distance_policy"],
+      "properties": {
+        "scatter_model_id": {"type": "string", "minLength": 1},
+        "dice_expression": {"const": "2d6"},
+        "table_reference": {"type": "string", "minLength": 1},
+        "direction_policy": {"enum": ["HEX_NEIGHBOR_6WAY_RANDOM"]},
+        "distance_policy": {"type": "string", "minLength": 1}
+      }
+    },
+    "impactProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["profile_id", "affected_area", "resolution_scope", "friendly_fire", "one_hit_per_unit", "planned_hex_field", "impact_hex_field"],
+      "properties": {
+        "profile_id": {"type": "string", "minLength": 1},
+        "affected_area": {"const": "RESOLVED_HEX_ONLY"},
+        "resolution_scope": {"const": "INITIAL_OCCUPANTS_AND_ACTIVE_HEX_ENTRANTS"},
+        "friendly_fire": {"const": true},
+        "one_hit_per_unit": {"const": true},
+        "planned_hex_field": {"const": "planned_hex"},
+        "impact_hex_field": {"const": "impact_hex"}
+      }
+    }
+  }
+}

@@ -5,6 +5,7 @@ from typing import Mapping, Sequence
 from wargame_native_engine.agents.protocol import AgentAction, AgentStepContext
 from wargame_native_engine.backends.protocol import EngineBackend
 from wargame_native_engine.core.action import EngineAction, ValidAction
+from wargame_native_engine.core.fire_capability import IndirectFireCapability
 from wargame_native_engine.core.observation import SideObservation
 from wargame_native_engine.core.result import GameResult, StepResult
 from wargame_native_engine.core.tactical_overlay import UnitTacticalOverlay
@@ -84,6 +85,57 @@ class GameSession:
         return self.backend.query_unit_tactical_overlay_from_projection(
             side, unit_id, observation, source_frame, valid_actions
         )
+
+    def get_indirect_fire_capabilities(
+        self, side: str,
+    ) -> tuple[IndirectFireCapability, ...]:
+        """Return detached authority records without creating an action."""
+
+        self._require_active()
+        return self.backend.get_indirect_fire_capabilities(side)
+
+    def get_guided_fire_capabilities(self, side: str):
+        self._require_active()
+        return self.backend.get_guided_fire_capabilities(side)
+
+    def get_board_capabilities(self, side: str):
+        self._require_active()
+        return self.backend.get_board_capabilities(side)
+
+    def get_unload_capabilities(self, side: str):
+        self._require_active()
+        return self.backend.get_unload_capabilities(side)
+
+    def get_concealment_capabilities(self, side: str):
+        self._require_active()
+        return self.backend.get_concealment_capabilities(side)
+
+    def authoritative_operator_lifecycle_views(self, side: str):
+        """Return detached authoritative-derived OWN lifecycle values."""
+
+        self._require_active()
+        producer = getattr(
+            self.backend, "authoritative_operator_lifecycle_views", None
+        )
+        if not callable(producer):
+            raise RuntimeError("backend_lifecycle_projection_unavailable")
+        return producer(side)
+
+    def get_indirect_fire_active_areas(self, side: str):
+        """Return detached own-side ACTIVE artillery areas."""
+
+        self._require_active()
+        return self.backend.get_indirect_fire_active_areas(side)
+
+    def indirect_fire_action(
+        self,
+        capability: IndirectFireCapability,
+        planned_hex: int,
+    ) -> EngineAction:
+        """Build one Engine-validated explicit FIRE/INDIRECT action."""
+
+        self._require_active()
+        return self.backend.indirect_fire_action(capability, planned_hex)
 
     def step(self, action_batch: Mapping[
             str, AgentAction | EngineAction | None] | Sequence[EngineAction], *,

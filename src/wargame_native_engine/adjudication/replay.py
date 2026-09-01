@@ -10,7 +10,11 @@ from wargame_native_engine.adjudication.dice import DiceRoller
 from wargame_native_engine.adjudication.direct_fire import (
     DirectFireAdjudicator, DirectFireResolution,
 )
-from wargame_native_engine.adjudication.request import DirectFireRequest, WeaponProfile
+from wargame_native_engine.adjudication.request import (
+    DirectFireRequest,
+    DirectFireResourcePolicy,
+    WeaponProfile,
+)
 from wargame_native_engine.adjudication.table_loader import AdjudicationTableSet
 from wargame_native_engine.compat.source_frame.models import ArmorClass, UnitDomain
 from wargame_native_engine.core.operator import OperatorState
@@ -37,7 +41,7 @@ def direct_fire_request_to_dict(request: DirectFireRequest) -> dict[str, Any]:
     target = OperatorState.from_dict(request.target.to_dict()).to_dict()
     passengers = [OperatorState.from_dict(item.to_dict()).to_dict()
                   for item in request.carried_passengers]
-    return {
+    result = {
         "tick": request.tick, "episode_seed": request.episode_seed,
         "action_id": request.action_id,
         "attacker": attacker, "target": target,
@@ -71,6 +75,9 @@ def direct_fire_request_to_dict(request: DirectFireRequest) -> dict[str, Any]:
         "carried_passengers": passengers,
         "metadata": json_clone(request.metadata),
     }
+    if request.resource_policy is not DirectFireResourcePolicy.AMMUNITION_KEY:
+        result["resource_policy"] = request.resource_policy.value
+    return result
 
 
 def direct_fire_request_from_dict(value: Mapping[str, Any]) -> DirectFireRequest:
@@ -86,7 +93,8 @@ def direct_fire_request_from_dict(value: Mapping[str, Any]) -> DirectFireRequest
             maximum_range=int(weapon["maximum_range"]),
             target_domains=frozenset(UnitDomain(str(item))
                                      for item in weapon["target_domains"]),
-            ammunition_key=str(weapon["ammunition_key"]),
+            ammunition_key=(None if weapon.get("ammunition_key") is None
+                            else str(weapon["ammunition_key"])),
             cooldown_ticks=(None if weapon.get("cooldown_ticks") is None
                             else int(weapon["cooldown_ticks"])),
             requires_unfolded=bool(weapon["requires_unfolded"]),
@@ -101,7 +109,8 @@ def direct_fire_request_from_dict(value: Mapping[str, Any]) -> DirectFireRequest
         distance=int(value["distance"]),
         target_domain=UnitDomain(str(value["target_domain"])),
         target_armor=ArmorClass(str(value["target_armor"])),
-        ammunition_before=int(value["ammunition_before"]),
+        ammunition_before=(None if value.get("ammunition_before") is None
+                            else int(value["ammunition_before"])),
         weapon_cooldown_before=int(value["weapon_cooldown_before"]),
         weapon_unfolded=bool(value["weapon_unfolded"]),
         elevation_difference=int(value["elevation_difference"]),
@@ -120,6 +129,9 @@ def direct_fire_request_from_dict(value: Mapping[str, Any]) -> DirectFireRequest
         carried_passengers=tuple(OperatorState.from_dict(item)
                                  for item in value["carried_passengers"]),
         metadata=json_clone(value.get("metadata", {})),
+        resource_policy=DirectFireResourcePolicy(str(value.get(
+            "resource_policy", DirectFireResourcePolicy.AMMUNITION_KEY.value
+        ))),
     )
 
 

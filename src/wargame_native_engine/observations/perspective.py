@@ -2,12 +2,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import IntEnum
-import json
-from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from wargame_native_engine.core.observation import SideObservation
+from wargame_native_engine.core.observation import (
+    SideObservation,
+    side_safe_enemy_observation,
+)
 from wargame_native_engine.io.serialization import canonical_hash, json_clone
+from wargame_native_engine.rules.perspective import (
+    PerspectivePolicy,
+    load_perspective_policy,
+)
 
 
 class Perspective(IntEnum):
@@ -19,64 +24,6 @@ class Perspective(IntEnum):
     @property
     def side(self) -> str | None:
         return {Perspective.RED: "red", Perspective.BLUE: "blue"}.get(self)
-
-
-@dataclass(frozen=True, slots=True)
-class PerspectivePolicy:
-    document: Mapping[str, Any]
-    content_hash: str
-
-    @property
-    def policy_id(self) -> str:
-        return str(self.document["policy_id"])
-
-    @property
-    def policy_version(self) -> str:
-        return str(self.document["policy_version"])
-
-    @property
-    def relation_id_fields(self) -> frozenset[str]:
-        return frozenset(str(value) for value in self.document["relation_id_fields"])
-
-    @property
-    def side_extra_allowlist(self) -> frozenset[str]:
-        return frozenset(str(value) for value in
-                         self.document["side_extra_native_allowlist"])
-
-    def to_provenance(self) -> dict[str, str]:
-        return {
-            "perspective_policy_id": self.policy_id,
-            "perspective_policy_version": self.policy_version,
-            "perspective_policy_hash": self.content_hash,
-        }
-
-
-def load_perspective_policy(path: str | Path | None = None) -> PerspectivePolicy:
-    source = (Path(path) if path is not None else Path(__file__).resolve().parents[3]
-              / "config/source_compat/source_perspective_policy_v1.json")
-    value = json.loads(source.read_text(encoding="utf-8"))
-    if not isinstance(value, Mapping):
-        raise ValueError("perspective policy root must be an object")
-    required = {
-        "policy_id", "policy_version", "schema_version", "perspectives",
-        "own_unit_field_policy", "visible_enemy_field_policy",
-        "actions_visibility", "judge_info_visibility", "communication_visibility",
-        "scores_visibility", "cities_visibility", "landmark_visibility",
-        "jm_point_visibility", "role_and_grouping_visibility",
-        "native_evidence_visibility", "unknown_field_policy",
-        "relation_id_fields", "side_extra_native_allowlist",
-        "visible_enemy_safe_fields",
-    }
-    missing = sorted(required - set(value))
-    if missing:
-        raise ValueError(f"perspective policy missing fields: {missing}")
-    if value["schema_version"] != "source-perspective-policy/1.0":
-        raise ValueError("unsupported perspective policy schema")
-    if value["perspectives"] != {"RED": 0, "BLUE": 1, "GREEN": -1}:
-        raise ValueError("perspective numeric contract mismatch")
-    if value["unknown_field_policy"] != "UNKNOWN_DO_NOT_COPY_FROM_GREEN":
-        raise ValueError("unsafe perspective unknown-field policy")
-    return PerspectivePolicy(json_clone(value), canonical_hash(value))
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,8 +115,13 @@ class PerspectiveProjector:
             raise ValueError("side projection requires RED or BLUE")
         observation = context.observation(perspective)
         friendly_ids = {value.operator_id for value in observation.friendly_operators}
-        visible_by_id = {value.operator_id: value
-                         for value in observation.visible_enemies}
+        visible_by_id = {
+            value.operator_id: side_safe_enemy_observation(
+                value,
+                policy=self.policy,
+            )
+            for value in observation.visible_enemies
+        }
         included_ids = friendly_ids | set(visible_by_id)
         source_units = {
             int(item["obj_id"]): item
@@ -191,7 +143,14 @@ class PerspectiveProjector:
                 projected = self._clean_relations(source, included_ids)
             else:
                 projected = self._visible_enemy(visible_by_id[operator_id], perspective)
-            (passengers if operator_id in passenger_ids else operators).append(projected)
+            if operator_id in friendly_ids and operator_id in passenger_ids:
+                passengers.append(projected)
+            else:
+                # Enemy collection membership must not be backfilled from the
+                # GREEN passenger ledger.  A current observed contact is one
+                # side-safe operator record; hidden boarding relations remain
+                # invisible.
+                operators.append(projected)
         result = self._stable_root(frame)
         result.update({
             "operators": operators,
@@ -233,18 +192,28 @@ class PerspectiveProjector:
     def _visible_enemy(value: Any, perspective: Perspective) -> dict[str, Any]:
         x, y = value.position
         current_hex = int(round(y)) * 100 + int(round(x))
+        stopped = (
+            True if value.motion_state == "STATIONARY" else
+            False if value.motion_state == "MOVING" else None
+        )
         return {
             "obj_id": value.operator_id,
             "color": 1 if perspective is Perspective.RED else 0,
-            "type": -1, "sub_type": -1, "name": "UNKNOWN", "owner": None,
+            "type": (-1 if value.source_type_code is None
+                     else value.source_type_code),
+            "sub_type": (-1 if value.source_subtype_code is None
+                         else value.source_subtype_code),
+            "name": (value.canonical_identity or value.subtype or "UNKNOWN"),
+            "owner": None,
             "armor": -1, "A1": None, "value": None,
             "cur_hex": current_hex, "cur_pos": 0.0,
             "basic_speed": None, "speed": None, "move_state": None,
-            "stop": None, "move_path": [], "move_to_stop_remain_time": None,
+            "stop": stopped, "move_path": [],
+            "move_to_stop_remain_time": None,
             "blood": None, "max_blood": None, "stack": None, "keep": None,
             "keep_remain_time": None, "close_combat": None,
             "alive_remain_time": None, "alive": bool(value.alive),
-            "altitude": value.altitude, "state": value.state,
+            "altitude": value.altitude, "state": value.motion_state,
             "carry_weapon_ids": [], "remain_bullet_nums": {},
             "remain_bullet_nums_bk": {}, "observe_distance": [],
             "weapon_cool_time": None, "weapon_unfold_time": None,
@@ -254,9 +223,14 @@ class PerspectiveProjector:
             "valid_passenger_types": [], "max_passenger_nums": None,
             "see_enemy_bop_ids": [],
             "extra": {"observation": {
-                "health": value.health, "max_health": value.max_health,
                 "operator_type": value.operator_type,
                 "subtype": value.subtype,
+                "source_type_code": value.source_type_code,
+                "source_subtype_code": value.source_subtype_code,
+                "canonical_identity": value.canonical_identity,
+                "canonical_status": value.canonical_status,
+                "domain": value.domain,
+                "motion_state": value.motion_state,
                 "mapping_status": "SIDE_OBSERVATION",
             }},
         }
@@ -389,8 +363,7 @@ class PerspectiveProjector:
             "perspective": perspective.name,
             "current_step": current_step,
             "session_id": context.session_id,
-            "perspective_policy_id": self.policy.policy_id,
-            "perspective_policy_version": self.policy.policy_version,
+            **self.policy.to_provenance(),
         }
         return {"native": {key: candidates[key]
                            for key in sorted(self.policy.side_extra_allowlist)

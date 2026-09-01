@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Native PPO Observation Preprocessor",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "preprocessor_id", "preprocessor_version", "strategy",
+    "input_encoder", "output", "scaling_constants", "source_authorities",
+    "policies", "clipping", "batch_statistics", "running_state"
+  ],
+  "properties": {
+    "schema_version": {"const": "native-ppo-observation-preprocessor/1.0"},
+    "preprocessor_id": {"const": "native-decision-fixed-scaling"},
+    "preprocessor_version": {"const": "1.0.0"},
+    "strategy": {"const": "DETERMINISTIC_FIXED_SCALING"},
+    "input_encoder": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version", "contract_hash", "shape", "dtype",
+        "max_objectives", "max_own_operators", "max_observed_enemies",
+        "max_actions"
+      ],
+      "properties": {
+        "schema_version": {"const": "native-decision-observation-encoder/1.0"},
+        "contract_hash": {
+          "const": "a477d7953c4f3e0a52f13aa2bc12ea08d1327fff7a8bdfe8d91c41a9e51ed750"
+        },
+        "shape": {"const": [8302]},
+        "dtype": {"const": "float64"},
+        "max_objectives": {"const": 32},
+        "max_own_operators": {"const": 64},
+        "max_observed_enemies": {"const": 64},
+        "max_actions": {"const": 256}
+      }
+    },
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["shape", "dtype", "default_device"],
+      "properties": {
+        "shape": {"const": [8302]},
+        "dtype": {"const": "float32"},
+        "default_device": {"const": "cpu"}
+      }
+    },
+    "scaling_constants": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "milliseconds_per_second", "progress_millionths",
+        "limited_lifecycle_maximum_ms"
+      ],
+      "properties": {
+        "milliseconds_per_second": {"const": 1000.0},
+        "progress_millionths": {"const": 1000000.0},
+        "limited_lifecycle_maximum_ms": {"const": 1200000.0}
+      }
+    },
+    "source_authorities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operator_lifecycle_authority_version",
+        "operator_lifecycle_authority_hash",
+        "unit_conversion",
+        "progress_contract"
+      ],
+      "properties": {
+        "operator_lifecycle_authority_version": {
+          "const": "native-operator-lifecycle-authority/1.0"
+        },
+        "operator_lifecycle_authority_hash": {
+          "const": "8ab28ce727680a65c5863af87c5d72ad92e2c6335400f8bb35b580d1447a4623"
+        },
+        "unit_conversion": {"const": "SI_MILLISECONDS_TO_SECONDS_EXACT"},
+        "progress_contract": {"const": "NATIVE_PROGRESS_MILLIONTHS/1.0"}
+      }
+    },
+    "policies": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bounded_ratios", "enum_status_codes", "milliseconds",
+        "limited_lifecycle", "progress_millionths", "formal_counts",
+        "positions", "absolute_health", "entity_masks", "padding"
+      ],
+      "properties": {
+        "bounded_ratios": {"const": "IDENTITY"},
+        "enum_status_codes": {"const": "IDENTITY"},
+        "milliseconds": {
+          "const": "DIVIDE_BY_1000_EXCEPT_LIMITED_LIFECYCLE"
+        },
+        "limited_lifecycle": {"const": "DIVIDE_BY_AUTHORITY_MAXIMUM"},
+        "progress_millionths": {"const": "DIVIDE_BY_1000000"},
+        "formal_counts": {"const": "DIVIDE_BY_ENCODER_CAPACITY"},
+        "positions": {"const": "IDENTITY_NO_GLOBAL_BOUND_AUTHORITY"},
+        "absolute_health": {"const": "IDENTITY"},
+        "entity_masks": {"const": "IDENTITY_EXACT_ZERO_ONE"},
+        "padding": {"const": "PRESERVE_ZERO"}
+      }
+    },
+    "clipping": {"const": "NONE"},
+    "batch_statistics": {"const": "NONE"},
+    "running_state": {"const": "NONE"}
+  }
+}

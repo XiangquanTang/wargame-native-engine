@@ -286,8 +286,10 @@ def test_native_multi_seat_step_is_one_decision_and_ten_fact_frames(
         initial = environment.reset(seed=42)
         assert initial.decision_index == 0
         assert initial.fact_frame_index == 0
-        assert initial.observations["red"]["side"] == "red"
-        assert initial.observations["blue"]["side"] == "blue"
+        assert initial.observations["red"]["snapshot_features"][0] == 1.0
+        assert initial.observations["blue"]["snapshot_features"][0] == 2.0
+        assert initial.action_spaces["red"].side.value == "red"
+        assert initial.action_spaces["blue"].side.value == "blue"
         assert initial.capabilities["red"].side == "red"
         assert initial.capabilities["blue"].side == "blue"
         assert "green" not in str(initial.to_record()).lower()
@@ -302,6 +304,10 @@ def test_native_multi_seat_step_is_one_decision_and_ten_fact_frames(
         assert result.terminated is False
         assert result.truncated is True
         assert result.rewards == {"red": 0.0, "blue": 0.0}
+        assert result.joint_reward_record.red.truncation.limit_kind == (
+            "max_decision_windows"
+        )
+        assert result.joint_reward_record.red.truncation.configured_limit == 1
         assert len(result.transitions) == 2
         assert [value.side for value in result.transitions] == ["red", "blue"]
         assert all(value.decision_index == 0 for value in result.transitions)
@@ -398,6 +404,10 @@ def test_native_terminal_rewards_publish_and_strict_replay(tmp_path: Path) -> No
         assert result.terminated is True
         assert result.truncated is False
         assert result.rewards == {"red": 1.0, "blue": -1.0}
+        assert result.joint_reward_record.winner.value == "red"
+        assert result.joint_reward_record.red.terminal_reason_code == (
+            "side_eliminated"
+        )
         assert result.winner == "red"
         assert result.fact_frame_start == result.fact_frame_end == 1
         publication = environment.publish(output)
@@ -434,13 +444,18 @@ def test_single_seat_adapter_reuses_multi_seat_and_calls_opponent_once(
     )
     try:
         initial = adapter.reset(seed=42)
-        assert initial.observation["side"] == controlled_side
+        assert initial.observation["snapshot_features"][0] == (
+            1.0 if controlled_side == "red" else 2.0
+        )
         result = adapter.step(SeatDecision())
-        assert result.observation["side"] == controlled_side
+        assert result.observation["snapshot_features"][0] == (
+            1.0 if controlled_side == "red" else 2.0
+        )
         assert result.reward == 0.0
         assert result.terminated is False
         assert result.truncated is True
         assert result.transition.side == controlled_side
+        assert result.reward_record == result.transition.reward_record
         assert opponent.reset_count == 1
         assert len(opponent.contexts) == 1
         assert opponent.contexts[0].side != controlled_side

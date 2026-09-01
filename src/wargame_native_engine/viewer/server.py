@@ -10,12 +10,17 @@ from typing import Any
 from urllib.parse import unquote, urlsplit
 
 from wargame_native_engine.viewer.replay_view import ReplayView
+from wargame_native_engine.viewer.static_resources import (
+    load_symbol_static_resource,
+)
 
 
 _STATIC_ROOT = Path(__file__).with_name("static")
 _STATIC_FILES = {
     "/": ("index.html", "text/html; charset=utf-8"),
     "/static/map_renderer.js": ("map_renderer.js", "text/javascript; charset=utf-8"),
+    "/static/unit_symbol_renderer.js": ("unit_symbol_renderer.js", "text/javascript; charset=utf-8"),
+    "/static/unit_symbol_resolver.js": ("unit_symbol_resolver.js", "text/javascript; charset=utf-8"),
     "/static/app.js": ("app.js", "text/javascript; charset=utf-8"),
     "/static/styles.css": ("styles.css", "text/css; charset=utf-8"),
 }
@@ -44,6 +49,10 @@ class ReplayViewerRequestHandler(BaseHTTPRequestHandler):
                 content_type,
             )
             return
+        resource = load_symbol_static_resource(path)
+        if resource is not None:
+            self._send_bytes(HTTPStatus.OK, resource.payload, resource.content_type)
+            return
         if path == "/api/replay":
             self._send_json(HTTPStatus.OK, self.server.view.replay_record())
             return
@@ -64,7 +73,7 @@ class ReplayViewerRequestHandler(BaseHTTPRequestHandler):
 
     def do_HEAD(self) -> None:  # noqa: N802 - stdlib handler API
         path = unquote(urlsplit(self.path).path)
-        if path in _STATIC_FILES or path in {
+        if path in _STATIC_FILES or load_symbol_static_resource(path) is not None or path in {
             "/api/replay", "/api/timeline", "/api/map",
         }:
             self.send_response(HTTPStatus.OK)
@@ -118,7 +127,7 @@ class ReplayViewerRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header(
             "Content-Security-Policy",
-            "default-src 'self'; script-src 'self'; style-src 'self'",
+            "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' blob:",
         )
         self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()

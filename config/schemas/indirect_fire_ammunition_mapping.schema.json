@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "native-indirect-fire-ammunition-mapping/1.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "mapping_id", "version", "authority_status", "authority_basis", "mappings"],
+  "properties": {
+    "schema_version": {"const": "native-indirect-fire-ammunition-mapping/1.0"},
+    "mapping_id": {"type": "string", "minLength": 1},
+    "version": {"type": "string", "minLength": 1},
+    "authority_status": {"const": "EXECUTABLE_AUTHORITY_READY"},
+    "authority_basis": {"type": "string", "minLength": 1},
+    "mappings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["weapon_id", "ammunition_key", "ammo_cost_per_mission", "source_mapping"],
+        "properties": {
+          "weapon_id": {"type": "integer", "minimum": 0},
+          "ammunition_key": {"type": "string", "minLength": 1},
+          "ammo_cost_per_mission": {"type": "integer", "minimum": 1},
+          "source_mapping": {"type": "string", "minLength": 1}
+        }
+      }
+    }
+  }
+}

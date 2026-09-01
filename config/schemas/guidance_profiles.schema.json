@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "config_id",
+    "config_version",
+    "mapping_version",
+    "unknown_policy",
+    "profiles",
+    "source_operator_profiles",
+    "weapon_fire_modes"
+  ],
+  "properties": {
+    "schema_version": {"const": "native-guidance-profiles/1.0"},
+    "config_id": {"type": "string", "minLength": 1},
+    "config_version": {"type": "string", "minLength": 1},
+    "mapping_version": {"type": "string", "minLength": 1},
+    "unknown_policy": {"const": "UNKNOWN"},
+    "profiles": {"type": "object"},
+    "source_operator_profiles": {"type": "object"},
+    "weapon_fire_modes": {"type": "object"}
+  },
+  "additionalProperties": false
+}

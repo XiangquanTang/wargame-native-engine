@@ -79,6 +79,53 @@ class ActionProposal:
             action_id=None if action is None else action.action_id,
         )
 
+    @classmethod
+    def from_indirect_fire(
+        cls,
+        *,
+        session_id: str,
+        decision_window_index: int,
+        side: str,
+        shooter_id: int,
+        target_hex: int,
+        state_hash: str,
+        action: EngineAction,
+    ) -> "ActionProposal":
+        """Wrap one server-issued fire action in the existing window registry.
+
+        ``ActionProposal`` predates non-movement proposals.  Its movement-only
+        presentation fields remain inert here; authority is carried solely by
+        the embedded ``ValidAction`` kept in the private registry.
+        """
+
+        identity = {
+            "operation_type": "INDIRECT_FIRE",
+            "session_id": str(session_id),
+            "decision_window_index": decision_window_index,
+            "side": side,
+            "shooter_id": shooter_id,
+            "target_hex": target_hex,
+            "action_id": action.action_id,
+            "created_from_state_hash": state_hash,
+        }
+        return cls(
+            proposal_id="proposal-" + canonical_hash(identity)[:24],
+            session_id=str(session_id),
+            decision_window_index=decision_window_index,
+            side=side,
+            unit_id=shooter_id,
+            source_hex=None,
+            destination_hex=target_hex,
+            movement_mode="INDIRECT_FIRE",
+            ordered_path=(),
+            estimated_duration_ms=None,
+            segment_details=(),
+            reachable=True,
+            blocked_reason=None,
+            created_from_state_hash=state_hash,
+            action_id=action.action_id,
+        )
+
     def to_record(self) -> dict[str, object]:
         return {
             "proposal_id": self.proposal_id,

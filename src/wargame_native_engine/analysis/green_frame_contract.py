@@ -38,18 +38,12 @@ from wargame_native_engine.analysis.models import (
 from wargame_native_engine.analysis.side_aggregation import (
     aggregate_side_analysis,
 )
-
-# Factor names → formula_id for demo-compatible formulas.
-_RESOLVED_FORMULAS: dict[str, str] = {
-    "base_value": "demo-compatible.base_value.v1",
-    "health": "demo-compatible.health.v1",
-    "weapon": "demo-compatible.weapon.v1",
-    "ammo": "demo-compatible.ammo.v1",
-    "readiness": "demo-compatible.readiness.v1",
-    "mobility": "demo-compatible.mobility.v1",
-    "information": "demo-compatible.information.v1",
-    "status": "demo-compatible.status.v1",
-}
+from wargame_native_engine.analysis.semantic_identity import (
+    ANALYZER_MODEL_HASH,
+    ANALYZER_MODEL_ID,
+    ANALYZER_MODEL_VERSION,
+    FACTOR_FORMULA_IDS,
+)
 
 # factor_name → callable(unit) → float | None
 _FACTOR_DISPATCH = {
@@ -70,9 +64,9 @@ def build_green_frame_analysis(
     frame_index: int,
     frame_hash: str | None = None,
     scenario_hash: str | None = None,
-    model_id: str = "native-eight-factor",
-    model_version: str = "0.1.0-contract",
-    model_hash: str | None = None,
+    model_id: str = ANALYZER_MODEL_ID,
+    model_version: str = ANALYZER_MODEL_VERSION,
+    model_hash: str | None = ANALYZER_MODEL_HASH,
 ) -> FrameAnalysis:
     """Build a GREEN-only ``FrameAnalysis`` from a single frame.
 
@@ -216,7 +210,7 @@ def _build_factor_values(
 
     result: list[FactorValue] = []
     for ev in evidence:
-        formula_id = _RESOLVED_FORMULAS[ev.name]
+        formula_id = FACTOR_FORMULA_IDS[ev.name]
         if ev.status is FactorStatus.UNKNOWN:
             result.append(
                 FactorValue(

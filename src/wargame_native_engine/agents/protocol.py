@@ -6,6 +6,12 @@ from typing import Protocol, Sequence
 from wargame_native_engine.core.action import EngineAction, ValidAction
 from wargame_native_engine.core.observation import SideObservation
 from wargame_native_engine.core.world import Stage
+from wargame_native_engine.projection.decision_capability import (
+    ActionCatalogSnapshot,
+)
+from wargame_native_engine.projection.decision_semantic import (
+    SideDecisionSemanticProjection,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,5 +72,23 @@ class Agent(Protocol):
     def act(self, *, observation: SideObservation,
             valid_actions: Sequence[ValidAction],
             context: AgentStepContext) -> AgentAction | None: ...
+
+    def close(self) -> None: ...
+
+
+class DecisionAgent(Protocol):
+    """Versioned Agent path over the unified machine semantic core."""
+
+    agent_id: str
+
+    def reset(self, context: AgentResetContext) -> None: ...
+
+    def act_decision(
+        self,
+        *,
+        decision_semantic: SideDecisionSemanticProjection,
+        action_catalog: ActionCatalogSnapshot,
+        context: AgentStepContext,
+    ) -> AgentAction | None: ...
 
     def close(self) -> None: ...

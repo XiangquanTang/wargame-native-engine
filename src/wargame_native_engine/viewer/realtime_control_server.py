@@ -9,6 +9,7 @@ the sole fixed-tick authority.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -32,12 +33,21 @@ from wargame_native_engine.gateway import CommandGatewayError
 from wargame_native_engine.gateway.models import ControllerView
 from wargame_native_engine.rendering import RenderScene
 from wargame_native_engine.viewer.live_control import controller_view_record
+from wargame_native_engine.viewer.human_capabilities import (
+    build_human_capabilities,
+)
+from wargame_native_engine.viewer.static_resources import (
+    load_symbol_static_resource,
+)
 
 
 _STATIC_ROOT = Path(__file__).with_name("static")
 _STATIC_FILES = {
     "/static/dual_control.js": ("dual_control.js", "text/javascript; charset=utf-8"),
+    "/static/capability_ui.js": ("capability_ui.js", "text/javascript; charset=utf-8"),
     "/static/map_renderer.js": ("map_renderer.js", "text/javascript; charset=utf-8"),
+    "/static/unit_symbol_renderer.js": ("unit_symbol_renderer.js", "text/javascript; charset=utf-8"),
+    "/static/unit_symbol_resolver.js": ("unit_symbol_resolver.js", "text/javascript; charset=utf-8"),
     "/static/live_actions.js": ("live_actions.js", "text/javascript; charset=utf-8"),
     "/static/live_styles.css": ("live_styles.css", "text/css; charset=utf-8"),
     "/static/styles.css": ("styles.css", "text/css; charset=utf-8"),
@@ -70,6 +80,7 @@ class RealtimeDualControlHTTPServer(ThreadingHTTPServer):
         red_token: str,
         blue_token: str,
         map_data: Mapping[str, object],
+        weapon_profiles: Mapping[str | int, object] | None = None,
     ) -> None:
         if not isinstance(session, RealtimeAgentSession):
             raise TypeError("session must be a RealtimeAgentSession")
@@ -82,6 +93,7 @@ class RealtimeDualControlHTTPServer(ThreadingHTTPServer):
         if len(self.tokens) != 2:
             raise ValueError("RED and BLUE tokens must differ")
         self.map_data = dict(map_data)
+        self.weapon_profiles = deepcopy(dict(weapon_profiles or {}))
         self._previews: dict[str, _StoredRealtimePreview] = {}
         self._execute_requests: dict[
             str, tuple[str, dict[str, object]]
@@ -268,6 +280,12 @@ class RealtimeDualControlRequestHandler(BaseHTTPRequestHandler):
                     content_type,
                 )
                 return
+            resource = load_symbol_static_resource(path)
+            if resource is not None:
+                self._send_bytes(
+                    HTTPStatus.OK, resource.payload, resource.content_type,
+                )
+                return
             if path == "/api/product/bootstrap":
                 side, binding = self._seat(_one(query, "token"))
                 self._send_json(HTTPStatus.OK, self._bootstrap(side, binding))
@@ -311,10 +329,19 @@ class RealtimeDualControlRequestHandler(BaseHTTPRequestHandler):
                         "capabilities requires exactly token and actor_ids"
                     )
                 _side, binding = self._seat(body["token"])
+                base = self.server.realtime_session.operation_capabilities(
+                    binding, body["actor_ids"]
+                )
+                _seat_view, controller_view = (
+                    self.server.realtime_session.controller_snapshot(binding)
+                )
                 self._send_json(
                     HTTPStatus.OK,
-                    self.server.realtime_session.operation_capabilities(
-                        binding, body["actor_ids"]
+                    build_human_capabilities(
+                        base,
+                        controller_view,
+                        body["actor_ids"],
+                        weapon_profiles=self.server.weapon_profiles,
                     ),
                 )
                 return
@@ -355,8 +382,9 @@ class RealtimeDualControlRequestHandler(BaseHTTPRequestHandler):
             if path == "/api/product/preview":
                 allowed = {
                     "token", "request_id", "observation_version", "actor_ids",
-                    "operation_type", "destination_hex", "target_id",
+                    "operation_type", "destination_hex", "target_hex", "target_id",
                     "movement_mode", "weapon_choices", "whole_side_wait",
+                    "fire_mode", "guider_id", "shooter_id", "weapon_id",
                 }
                 required = {
                     "token", "request_id", "observation_version", "actor_ids",
@@ -454,6 +482,11 @@ class RealtimeDualControlRequestHandler(BaseHTTPRequestHandler):
             "selected_unit_ids": [],
             "planned_paths": [],
             "shoot_target_ids": [],
+            "indirect_fire_active_areas": deepcopy(
+                seat_view.capabilities.operation_summary.get(
+                    "indirect_fire", {}
+                ).get("active_areas", [])
+            ),
         }
         return {
             "session_id": self.server.realtime_session.episode_id,
@@ -544,7 +577,7 @@ class RealtimeDualControlRequestHandler(BaseHTTPRequestHandler):
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header(
                 "Content-Security-Policy",
-                "default-src 'self'; script-src 'self'; style-src 'self'",
+                "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' blob:",
             )
             self.end_headers()
             self.wfile.write(payload)
@@ -575,9 +608,7 @@ def _confirmed_contacts(
     )
     if len(selected) != 1:
         raise ValueError("selected unit is absent from the side observation")
-    raw = selected[0].get("raw_attributes")
-    raw = raw if isinstance(raw, Mapping) else {}
-    seen = raw.get("see_enemy_bop_ids", [])
+    seen = selected[0].get("observed_enemy_ids", [])
     if not isinstance(seen, list):
         raise ValueError("selected unit contact IDs must be an array")
     visible = {
@@ -625,6 +656,7 @@ def create_realtime_dual_control_server(
     red_token: str,
     blue_token: str,
     map_data: Mapping[str, object],
+    weapon_profiles: Mapping[str | int, object] | None = None,
     host: str = "127.0.0.1",
     port: int = 8003,
 ) -> RealtimeDualControlHTTPServer:
@@ -636,6 +668,7 @@ def create_realtime_dual_control_server(
         red_token=red_token,
         blue_token=blue_token,
         map_data=map_data,
+        weapon_profiles=weapon_profiles,
     )
 
 
@@ -657,21 +690,52 @@ def _seat_operation(value: Mapping[str, Any]) -> SeatOperation:
     if type(whole_side_wait) is not bool:
         raise ValueError("whole_side_wait must be bool")
     destination = value.get("destination_hex")
+    target_hex = value.get("target_hex")
     target = value.get("target_id")
+    operation_type = _nonempty_text(
+        value["operation_type"], "operation_type"
+    ).upper()
+    guided = operation_type == "GUIDED_FIRE"
+    indirect = operation_type == "INDIRECT_FIRE"
     return SeatOperation(
-        _nonempty_text(value["operation_type"], "operation_type"),
-        tuple(
+        operation_type=operation_type,
+        actor_ids=tuple(
             _exact_nonnegative_int(item, "actor_id")
             for item in raw_actors
         ),
-        (
+        destination_hex=(
             None if destination is None
             else _exact_nonnegative_int(destination, "destination_hex")
         ),
-        None if target is None else _exact_nonnegative_int(target, "target_id"),
-        _nonempty_text(value.get("movement_mode", "NORMAL"), "movement_mode"),
-        choices,
-        whole_side_wait,
+        target_hex=(
+            None if target_hex is None
+            else _exact_nonnegative_int(target_hex, "target_hex")
+        ),
+        target_id=(
+            None if target is None
+            else _exact_nonnegative_int(target, "target_id")
+        ),
+        movement_mode=_nonempty_text(
+            value.get("movement_mode", "NORMAL"), "movement_mode"
+        ),
+        weapon_choices=choices,
+        whole_side_wait=whole_side_wait,
+        fire_mode=(
+            _nonempty_text(value.get("fire_mode"), "fire_mode")
+            if guided or indirect else None
+        ),
+        guider_id=(
+            _exact_nonnegative_int(value.get("guider_id"), "guider_id")
+            if guided else None
+        ),
+        shooter_id=(
+            _exact_nonnegative_int(value.get("shooter_id"), "shooter_id")
+            if guided or indirect else None
+        ),
+        weapon_id=(
+            _exact_nonnegative_int(value.get("weapon_id"), "weapon_id")
+            if guided or indirect else None
+        ),
     )
 
 

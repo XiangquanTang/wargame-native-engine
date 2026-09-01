@@ -1,0 +1,123 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Native Sparse Terminal Reward Policy",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "policy_id",
+    "policy_version",
+    "relation",
+    "units",
+    "base_component",
+    "mapping",
+    "terminal_reason_codes",
+    "native_truncation_reason_codes",
+    "invalid_transition_semantics",
+    "wait_semantics",
+    "shaping"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "native-training-reward-policy/1.0"
+    },
+    "policy_id": {
+      "const": "native-sparse-terminal-zero-sum"
+    },
+    "policy_version": {
+      "const": "1.0.0"
+    },
+    "relation": {
+      "const": "ZERO_SUM"
+    },
+    "units": {
+      "const": "dimensionless"
+    },
+    "base_component": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["namespace", "code"],
+      "properties": {
+        "namespace": {"const": "base"},
+        "code": {"const": "TERMINAL_OUTCOME"}
+      }
+    },
+    "mapping": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "nonterminal",
+        "red_win",
+        "blue_win",
+        "draw",
+        "native_truncation",
+        "training_truncation"
+      ],
+      "properties": {
+        "nonterminal": {"$ref": "#/$defs/zeroPair"},
+        "red_win": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["red", "blue"],
+          "properties": {
+            "red": {"const": 1.0},
+            "blue": {"const": -1.0}
+          }
+        },
+        "blue_win": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["red", "blue"],
+          "properties": {
+            "red": {"const": -1.0},
+            "blue": {"const": 1.0}
+          }
+        },
+        "draw": {"$ref": "#/$defs/zeroPair"},
+        "native_truncation": {"$ref": "#/$defs/zeroPair"},
+        "training_truncation": {"$ref": "#/$defs/zeroPair"}
+      }
+    },
+    "terminal_reason_codes": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "native_truncation_reason_codes": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "invalid_transition_semantics": {
+      "const": "NO_COMMITTED_TRANSITION_NO_REWARD_RECORD"
+    },
+    "wait_semantics": {
+      "const": "NO_ACTION_COST"
+    },
+    "shaping": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "components"],
+      "properties": {
+        "enabled": {"const": false},
+        "components": {
+          "type": "array",
+          "maxItems": 0
+        }
+      }
+    }
+  },
+  "$defs": {
+    "zeroPair": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["red", "blue"],
+      "properties": {
+        "red": {"const": 0.0},
+        "blue": {"const": 0.0}
+      }
+    }
+  }
+}

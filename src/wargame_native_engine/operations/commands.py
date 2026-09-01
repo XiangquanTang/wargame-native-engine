@@ -15,6 +15,9 @@ from wargame_native_engine.io.serialization import json_clone
 COMMAND_ORDER = (
     "MOVE",
     "SHOOT",
+    "BOARD",
+    "UNLOAD",
+    "ENTER_CONCEALMENT",
     "STOP_MOVE",
     "WEAPON_LOCK",
     "WEAPON_UNFOLD",

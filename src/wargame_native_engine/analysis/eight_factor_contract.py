@@ -5,16 +5,9 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Mapping
 
-
-FACTOR_ORDER = (
-    "base_value",
-    "health",
-    "weapon",
-    "ammo",
-    "readiness",
-    "mobility",
-    "information",
-    "status",
+from wargame_native_engine.analysis.semantic_identity import (
+    FACTOR_ORDER,
+    FACTOR_SOURCE_FIELDS,
 )
 
 
@@ -30,18 +23,6 @@ class FactorEvidence:
     source_paths: tuple[str, ...]
     status: FactorStatus
     missing_fields: tuple[str, ...]
-
-
-_FACTOR_FIELDS: dict[str, tuple[str, ...]] = {
-    "base_value": ("value",),
-    "health": ("blood", "max_blood"),
-    "weapon": ("carry_weapon_ids",),
-    "ammo": ("remain_bullet_nums",),
-    "readiness": ("weapon_cool_time", "weapon_unfold_state"),
-    "mobility": ("move_state", "stop", "can_to_move", "on_board"),
-    "information": ("see_enemy_bop_ids",),
-    "status": ("keep", "tire", "lose_control", "close_combat"),
-}
 
 
 def _prefixed(key: str) -> str:
@@ -63,7 +44,7 @@ def extract_unit_factor_evidence(
 
     results: list[FactorEvidence] = []
     for factor_name in FACTOR_ORDER:
-        field_keys = _FACTOR_FIELDS[factor_name]
+        field_keys = FACTOR_SOURCE_FIELDS[factor_name]
         missing: list[str] = []
         present_values: dict[str, Any] = {}
         for key in field_keys:

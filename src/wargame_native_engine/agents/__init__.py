@@ -3,6 +3,7 @@ from wargame_native_engine.agents.first_valid import FirstValidActionAgent
 from wargame_native_engine.agents.protocol import (
     Agent,
     AgentAction,
+    DecisionAgent,
     AgentResetContext,
     AgentStepContext,
 )
@@ -97,6 +98,7 @@ def __getattr__(name: str):
 __all__ = [
     "Agent",
     "AgentAction",
+    "DecisionAgent",
     "AgentExecutionError",
     "AgentResetContext",
     "AgentStepContext",

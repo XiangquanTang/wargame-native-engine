@@ -5,6 +5,7 @@ from pathlib import Path
 
 from wargame_native_engine.core.action import EngineAction, ValidAction
 from wargame_native_engine.core.engine import NativeEngine
+from wargame_native_engine.core.fire_capability import IndirectFireCapability
 from wargame_native_engine.core.observation import SideObservation
 from wargame_native_engine.core.result import GameResult, StepResult
 from wargame_native_engine.core.tactical_overlay import UnitTacticalOverlay
@@ -12,6 +13,10 @@ from wargame_native_engine.core.world import WorldState
 from wargame_native_engine.io.scenario import NativeScenario
 from wargame_native_engine.movement.models import MovementMode, RoutePlan
 from wargame_native_engine.rules.config import Ruleset
+from wargame_native_engine.projection.operator_lifecycle import (
+    AuthoritativeOperatorLifecycleView,
+    project_operator_lifecycle,
+)
 
 if TYPE_CHECKING:
     from wargame_native_engine.data.map_runtime import MapRuntimeData
@@ -70,6 +75,48 @@ class NativeEngineBackend:
         return self.engine.query_unit_tactical_overlay_from_projection(
             side, unit_id, observation, source_frame, valid_actions
         )
+
+    def get_indirect_fire_capabilities(
+        self, side: str,
+    ) -> tuple[IndirectFireCapability, ...]:
+        return self.engine.get_indirect_fire_capabilities(side)
+
+    def get_guided_fire_capabilities(self, side: str):
+        return self.engine.get_guided_fire_capabilities(side)
+
+    def get_board_capabilities(self, side: str):
+        return self.engine.get_board_capabilities(side)
+
+    def get_unload_capabilities(self, side: str):
+        return self.engine.get_unload_capabilities(side)
+
+    def get_concealment_capabilities(self, side: str):
+        return self.engine.get_concealment_capabilities(side)
+
+    def authoritative_operator_lifecycle_views(
+        self, side: str,
+    ) -> tuple[AuthoritativeOperatorLifecycleView, ...]:
+        """Project OWN lifecycle values without exposing mutable WorldState."""
+
+        self.engine._require_side(side)  # noqa: SLF001
+        world = self.engine._require_world()  # noqa: SLF001
+        return tuple(
+            project_operator_lifecycle(world, operator.operator_id)
+            for operator in sorted(
+                world.operators.values(), key=lambda value: value.operator_id
+            )
+            if operator.side == side
+        )
+
+    def get_indirect_fire_active_areas(self, side: str):
+        return self.engine.get_indirect_fire_active_areas(side)
+
+    def indirect_fire_action(
+        self,
+        capability: IndirectFireCapability,
+        planned_hex: int,
+    ) -> EngineAction:
+        return self.engine.indirect_fire_action(capability, planned_hex)
 
     def step(self, actions: Mapping[str, EngineAction | None] | Sequence[EngineAction],
              *, delta_time_seconds: int | float | None = None,

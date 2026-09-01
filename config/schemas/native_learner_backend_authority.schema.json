@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Native Learner Backend Authority",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "backend_id",
+    "backend_version",
+    "backend_kind",
+    "framework",
+    "framework_compatibility",
+    "future_algorithm"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "native-learner-backend-authority/1.0"
+    },
+    "backend_id": {"const": "custom-pytorch-ppo"},
+    "backend_version": {"const": "1.0.0"},
+    "backend_kind": {"const": "CUSTOM_PYTORCH"},
+    "framework": {"const": "pytorch"},
+    "framework_compatibility": {"const": ">=2.2,<3"},
+    "future_algorithm": {"const": "PPO"}
+  }
+}

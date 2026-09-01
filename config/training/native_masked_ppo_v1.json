@@ -1,0 +1,77 @@
+{
+  "schema_version": "native-ppo-config/1.0",
+  "algorithm_id": "native-masked-ppo",
+  "algorithm_version": "1.0.0",
+  "backend_ref": {
+    "id": "custom-pytorch-ppo",
+    "version": "1.0.0",
+    "hash": "1ab3ead1c69ca582f80803487135a4961ecd373fcd0354ffcbfd3745a6fa5a3c"
+  },
+  "observation_preprocessor_ref": {
+    "id": "native-decision-fixed-scaling",
+    "version": "1.0.0",
+    "hash": "8f0520cd00d03d4346146f22b4cc8a35290d5868b1281419e4a5baa500ef1554"
+  },
+  "action_encoder_ref": {
+    "schema_version": "native-decision-action-encoder/1.0",
+    "hash": "aa08ad27d84634f76d607d7890abe953a911b57b4043b311fdc85dd2813b83dc",
+    "capacity": 256
+  },
+  "discount_config_ref": {
+    "id": "native-training-discount",
+    "version": "1.0.0",
+    "hash": "f35a748f9d0232506135b7e2438fa64f5bcc601a7aeb1fc631b182f396e4f06e"
+  },
+  "seed_config_ref": {
+    "id": "native-training-seeds",
+    "version": "1.0.0",
+    "hash": "0bf9ddec709ab6048855f6bf86e2338fe5f3b8ef15fdca99a98e9fdf092aa1f3"
+  },
+  "gae_lambda": 0.95,
+  "clip_epsilon": 0.2,
+  "learning_rate": 0.0003,
+  "entropy_coefficient": 0.01,
+  "value_coefficient": 0.5,
+  "max_grad_norm": 0.5,
+  "rollout_length": 2048,
+  "minibatch_size": 64,
+  "update_epochs": 10,
+  "advantage_normalization": {
+    "mode": "ENABLED",
+    "epsilon": 1e-8,
+    "scope": "UPDATE_BATCH"
+  },
+  "network": {
+    "architecture": "SHARED_MLP",
+    "hidden_sizes": [256, 256],
+    "activation": "TANH",
+    "shared_backbone": true,
+    "initialization": "ORTHOGONAL_V1",
+    "hidden_gain": 1.4142135623730951,
+    "policy_head_gain": 0.01,
+    "value_head_gain": 1.0
+  },
+  "action_masking": {
+    "enabled": true,
+    "authority": "ACTION_CATALOG_SNAPSHOT",
+    "application": "LOGITS_BEFORE_NORMALIZATION",
+    "all_false": "FAIL_CLOSED"
+  },
+  "optimizer": {
+    "type": "ADAM",
+    "betas": [0.9, 0.999],
+    "epsilon": 1e-8,
+    "weight_decay": 0.0,
+    "learning_rate_schedule": "CONSTANT"
+  },
+  "device_policy": "CPU",
+  "evaluation_action_selection": "MASKED_ARGMAX",
+  "observation_normalization": "NONE",
+  "reward_normalization": "NONE",
+  "reward_clipping": "NONE",
+  "value_clipping": "NONE",
+  "mixed_precision": "NONE",
+  "target_kl": "NONE",
+  "approx_kl_definition": "MEAN_OLD_LOG_PROB_MINUS_NEW_LOG_PROB",
+  "clip_fraction_definition": "ABS_RATIO_MINUS_ONE_GT_CLIP_EPSILON"
+}

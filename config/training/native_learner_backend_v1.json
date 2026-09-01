@@ -1,0 +1,9 @@
+{
+  "schema_version": "native-learner-backend-authority/1.0",
+  "backend_id": "custom-pytorch-ppo",
+  "backend_version": "1.0.0",
+  "backend_kind": "CUSTOM_PYTORCH",
+  "framework": "pytorch",
+  "framework_compatibility": ">=2.2,<3",
+  "future_algorithm": "PPO"
+}

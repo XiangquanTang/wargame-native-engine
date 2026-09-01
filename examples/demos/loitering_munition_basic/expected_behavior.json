@@ -1,0 +1,19 @@
+{
+  "schema": "native-demo-expected/1.0",
+  "demo_id": "loitering_munition_basic",
+  "seed": 7,
+  "side": "red",
+  "mode": "ATTACK",
+  "actors": {
+    "attacker_id": 1,
+    "target_id": 2,
+    "weapon_id": 76,
+    "destination_hex": 102
+  },
+  "outcome": {
+    "attack_accepted": true,
+    "attacker_destroyed": true,
+    "destruction_reason_code": "LOITERING_MUNITION_CONSUMED",
+    "strict_replay_matches": true
+  }
+}

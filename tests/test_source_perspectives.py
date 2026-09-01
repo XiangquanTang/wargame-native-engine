@@ -20,11 +20,10 @@ from wargame_native_engine.session.source_environment import SourceCompatibleEnv
 from scripts.run_minimal_source_replay import _template
 
 
-def _observation(operator_id: int, side: str, *, x: float,
-                 raw: dict | None = None) -> OperatorObservation:
+def _observation(operator_id: int, side: str, *, x: float) -> OperatorObservation:
     return OperatorObservation(
         operator_id, side, "VEHICLE", "observed", (x, 1.0), 0.0, 0.0,
-        67.0, 100.0, "STOPPED", True, True, raw or {})
+        67.0, 100.0, "STOPPED", True, True)
 
 
 def _side(side: str, friendly: tuple[OperatorObservation, ...],
@@ -106,11 +105,8 @@ def projection_fixture():
     blue_friendly = (_observation(2, "blue", x=2),
                      _observation(20, "blue", x=20),
                      _observation(21, "blue", x=21))
-    # The raw payload deliberately contains secrets; projection must ignore it.
-    red_visible = (_observation(2, "blue", x=2,
-                                raw={"ammunition": 999, "passenger_ids": [21]}),)
-    blue_visible = (_observation(1, "red", x=1,
-                                 raw={"ammunition": 999, "launcher": 3}),)
+    red_visible = (_observation(2, "blue", x=2),)
+    blue_visible = (_observation(1, "red", x=1),)
     context = PerspectiveContext(
         red=_side("red", red_friendly, red_visible),
         blue=_side("blue", blue_friendly, blue_visible),
@@ -166,10 +162,11 @@ def test_visible_enemy_is_rebuilt_without_raw_secrets(projection_fixture) -> Non
     green, context = projection_fixture
     red = PerspectiveProjector().project(green, context).red
     enemy = next(item for item in red["operators"] if item["obj_id"] == 2)
-    assert enemy["name"] == "UNKNOWN" and enemy["armor"] == -1
+    assert enemy["name"] == "observed" and enemy["armor"] == -1
     assert enemy["carry_weapon_ids"] == [] and enemy["remain_bullet_nums"] == {}
     assert enemy["passenger_ids"] == [] and enemy["see_enemy_bop_ids"] == []
     assert "ammunition" not in str(enemy)
+    assert "health" not in enemy["extra"]["observation"]
 
 
 def test_hidden_relations_are_cleaned_recursively(projection_fixture) -> None:

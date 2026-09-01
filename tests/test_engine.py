@@ -144,19 +144,27 @@ def test_seed_reproducibility(scenario) -> None:
     assert snapshots[0] == snapshots[1]
 
 
-def test_raw_observation_does_not_mutate_world(scenario) -> None:
+def test_friendly_observation_is_detached_without_raw_compatibility(scenario) -> None:
     engine = NativeEngine(scenario)
     engine.reset()
-    observation = engine.observe("red")
-    observation.friendly_operators[0].raw_attributes["source"] = "mutated"
-    assert engine.observe("red").friendly_operators[0].raw_attributes["source"] == (
-        "synthetic_example")
+    record = engine.observe("red").to_dict()
+    friendly = record["friendly_operators"][0]
+    assert "raw_attributes" not in friendly
+    friendly["health"] = 0
+    assert engine.observe("red").friendly_operators[0].health > 0
 
 
-def test_visible_enemy_observation_does_not_expose_raw_attributes(scenario) -> None:
+def test_visible_enemy_observation_is_positive_allowlist(scenario) -> None:
     engine = NativeEngine(scenario)
     engine.reset(42)
     advance_to_combat(engine)
     visible = engine.observe("red").visible_enemies
     assert visible
-    assert all(item.raw_attributes == {} for item in visible)
+    expected = {
+        "operator_id", "side", "operator_type", "subtype",
+        "source_type_code", "source_subtype_code", "canonical_identity",
+        "canonical_status", "domain", "position", "altitude", "alive",
+        "destroyed", "motion_state",
+    }
+    assert all(set(item.to_dict()) == expected for item in visible)
+    assert all("health" not in item.to_dict() for item in visible)

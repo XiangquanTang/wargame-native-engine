@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Native Masked PPO Config v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "algorithm_id", "algorithm_version", "backend_ref",
+    "observation_preprocessor_ref", "action_encoder_ref",
+    "discount_config_ref", "seed_config_ref", "gae_lambda",
+    "clip_epsilon", "learning_rate", "entropy_coefficient",
+    "value_coefficient", "max_grad_norm", "rollout_length",
+    "minibatch_size", "update_epochs", "advantage_normalization",
+    "network", "action_masking", "optimizer", "device_policy",
+    "evaluation_action_selection", "observation_normalization",
+    "reward_normalization", "reward_clipping", "value_clipping",
+    "mixed_precision", "target_kl", "approx_kl_definition",
+    "clip_fraction_definition"
+  ],
+  "properties": {
+    "schema_version": {"const": "native-ppo-config/1.0"},
+    "algorithm_id": {"const": "native-masked-ppo"},
+    "algorithm_version": {"const": "1.0.0"},
+    "backend_ref": {"$ref": "#/$defs/identity"},
+    "observation_preprocessor_ref": {"$ref": "#/$defs/identity"},
+    "discount_config_ref": {"$ref": "#/$defs/identity"},
+    "seed_config_ref": {"$ref": "#/$defs/identity"},
+    "action_encoder_ref": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "hash", "capacity"],
+      "properties": {
+        "schema_version": {"const": "native-decision-action-encoder/1.0"},
+        "hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "capacity": {"const": 256}
+      }
+    },
+    "gae_lambda": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+    "clip_epsilon": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1},
+    "learning_rate": {"type": "number", "minimum": 0},
+    "entropy_coefficient": {"type": "number", "minimum": 0},
+    "value_coefficient": {"type": "number", "minimum": 0},
+    "max_grad_norm": {"type": "number", "exclusiveMinimum": 0},
+    "rollout_length": {"type": "integer", "minimum": 1},
+    "minibatch_size": {"type": "integer", "minimum": 1},
+    "update_epochs": {"type": "integer", "minimum": 1},
+    "advantage_normalization": {
+      "type": "object", "additionalProperties": false,
+      "required": ["mode", "epsilon", "scope"],
+      "properties": {
+        "mode": {"const": "ENABLED"},
+        "epsilon": {"type": "number", "exclusiveMinimum": 0},
+        "scope": {"const": "UPDATE_BATCH"}
+      }
+    },
+    "network": {
+      "type": "object", "additionalProperties": false,
+      "required": ["architecture", "hidden_sizes", "activation", "shared_backbone", "initialization", "hidden_gain", "policy_head_gain", "value_head_gain"],
+      "properties": {
+        "architecture": {"const": "SHARED_MLP"},
+        "hidden_sizes": {"type": "array", "minItems": 1, "items": {"type": "integer", "minimum": 1}},
+        "activation": {"const": "TANH"},
+        "shared_backbone": {"const": true},
+        "initialization": {"const": "ORTHOGONAL_V1"},
+        "hidden_gain": {"type": "number", "exclusiveMinimum": 0},
+        "policy_head_gain": {"type": "number", "exclusiveMinimum": 0},
+        "value_head_gain": {"type": "number", "exclusiveMinimum": 0}
+      }
+    },
+    "action_masking": {
+      "type": "object", "additionalProperties": false,
+      "required": ["enabled", "authority", "application", "all_false"],
+      "properties": {
+        "enabled": {"const": true},
+        "authority": {"const": "ACTION_CATALOG_SNAPSHOT"},
+        "application": {"const": "LOGITS_BEFORE_NORMALIZATION"},
+        "all_false": {"const": "FAIL_CLOSED"}
+      }
+    },
+    "optimizer": {
+      "type": "object", "additionalProperties": false,
+      "required": ["type", "betas", "epsilon", "weight_decay", "learning_rate_schedule"],
+      "properties": {
+        "type": {"const": "ADAM"},
+        "betas": {"type": "array", "prefixItems": [{"const": 0.9}, {"const": 0.999}], "items": false},
+        "epsilon": {"const": 1e-8},
+        "weight_decay": {"const": 0.0},
+        "learning_rate_schedule": {"const": "CONSTANT"}
+      }
+    },
+    "device_policy": {"const": "CPU"},
+    "evaluation_action_selection": {"const": "MASKED_ARGMAX"},
+    "observation_normalization": {"const": "NONE"},
+    "reward_normalization": {"const": "NONE"},
+    "reward_clipping": {"const": "NONE"},
+    "value_clipping": {"const": "NONE"},
+    "mixed_precision": {"const": "NONE"},
+    "target_kl": {"const": "NONE"},
+    "approx_kl_definition": {"const": "MEAN_OLD_LOG_PROB_MINUS_NEW_LOG_PROB"},
+    "clip_fraction_definition": {"const": "ABS_RATIO_MINUS_ONE_GT_CLIP_EPSILON"}
+  },
+  "$defs": {
+    "identity": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "version", "hash"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "minLength": 1},
+        "hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    }
+  }
+}

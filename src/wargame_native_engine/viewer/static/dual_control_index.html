@@ -52,16 +52,31 @@
       </section>
 
       <section class="product-section">
-        <h2>操作</h2>
-        <div class="operation-toolbar" role="toolbar" aria-label="单位操作">
-          <button id="tool-move" data-operation="MOVE" type="button">机动 <small>0/0 可用</small></button>
-          <button id="tool-shoot" data-operation="SHOOT" type="button">射击 <small>0/0 可用</small></button>
-          <button id="tool-stop" data-operation="STOP_MOVE" type="button">停止 <small>0/0 可用</small></button>
-          <button id="tool-unfold" data-operation="WEAPON_UNFOLD" type="button">武器展开 <small>0/0 可用</small></button>
-          <button id="tool-lock" data-operation="WEAPON_LOCK" type="button">武器锁定 <small>0/0 可用</small></button>
-          <button id="tool-wait" data-operation="WAIT" type="button">等待 <small>整方或所选单位</small></button>
-        </div>
+        <h2>可用能力</h2>
+        <div id="capability-panel" class="operation-toolbar" role="toolbar" aria-label="单位可用能力"></div>
         <p id="tool-instruction" class="tool-instruction">请选择一个或多个己方单位。</p>
+      </section>
+
+      <section id="direct-fire-panel" class="product-section direct-fire-panel" hidden>
+        <div class="preview-heading">
+          <h2>Direct Fire · 武器选择</h2>
+          <span id="direct-fire-unit" class="preview-counts"></span>
+        </div>
+        <div id="weapon-choices" class="weapon-choices"></div>
+      </section>
+
+      <section id="guided-fire-panel" class="product-section direct-fire-panel" hidden>
+        <div class="preview-heading">
+          <h2>Guided Fire · 发射平台</h2>
+        </div>
+        <div id="guided-fire-choices" class="weapon-choices"></div>
+      </section>
+
+      <section id="indirect-fire-panel" class="product-section direct-fire-panel" hidden>
+        <div class="preview-heading">
+          <h2>Indirect Fire · 火力平台</h2>
+        </div>
+        <div id="indirect-fire-choices" class="weapon-choices"></div>
       </section>
 
       <section class="product-section operation-preview-section">
@@ -72,7 +87,6 @@
         <div id="operation-preview" class="operation-preview empty">
           选择功能和目标后，这里会显示逐单位的路径、时间或失败原因。
         </div>
-        <div id="weapon-choices" class="weapon-choices" hidden></div>
         <label id="partial-confirmation" class="partial-confirmation" hidden>
           <input id="confirm-partial" type="checkbox">
           我确认仅执行可执行单位，跳过其余单位
@@ -101,7 +115,10 @@
     <span id="status-message">正在读取本方地图态势。</span>
   </footer>
   <div id="error-banner" role="alert" hidden></div>
+  <script src="/static/unit_symbol_resolver.js"></script>
+  <script src="/static/unit_symbol_renderer.js"></script>
   <script src="/static/map_renderer.js"></script>
+  <script src="/static/capability_ui.js"></script>
   <script src="/static/dual_control.js"></script>
 </body>
 </html>

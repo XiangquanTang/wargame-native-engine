@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "native-indirect-fire-damage-policy/1.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "policy_id", "version", "authority_status", "unarmored_target_modifier", "unknown_armor_policy", "numeric_result_correction", "symbolic_result_correction"],
+  "properties": {
+    "schema_version": {"const": "native-indirect-fire-damage-policy/1.0"},
+    "policy_id": {"type": "string", "minLength": 1},
+    "version": {"type": "string", "minLength": 1},
+    "authority_status": {"const": "EXECUTABLE_AUTHORITY_READY"},
+    "unarmored_target_modifier": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "application", "authority_basis"],
+      "properties": {
+        "value": {"type": "integer"},
+        "application": {"const": "EXPLICIT_VALUE"},
+        "authority_basis": {"type": "string", "minLength": 1}
+      }
+    },
+    "unknown_armor_policy": {"const": "REJECT"},
+    "numeric_result_correction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["application", "zero_policy"],
+      "properties": {
+        "application": {"const": "ADD_AND_CLAMP_TO_TARGET_STRENGTH"},
+        "zero_policy": {"const": "PRESERVE_BASE_RESULT"}
+      }
+    },
+    "symbolic_result_correction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["application", "ordered_results", "zero_policy", "authority_basis"],
+      "properties": {
+        "application": {"const": "SHIFT_ORDERED_LADDER_AND_CLAMP"},
+        "ordered_results": {
+          "const": ["NO_EFFECT", "SUPPRESS", "LOSS_1", "LOSS_2", "LOSS_3", "LOSS_4"]
+        },
+        "zero_policy": {"const": "PRESERVE_BASE_RESULT"},
+        "authority_basis": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

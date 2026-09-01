@@ -182,8 +182,6 @@ def test_hidden_information_and_mutable_agent_inputs_are_isolated(
             del valid_actions, context
             self.received.append(deepcopy(observation))
             observation.mission["agent_mutation"] = self.agent_id
-            if observation.friendly_operators:
-                observation.friendly_operators[0].raw_attributes.clear()
             return None
 
     red = MutatingAgent("mutating-red")
@@ -202,8 +200,14 @@ def test_hidden_information_and_mutable_agent_inputs_are_isolated(
     assert blue.received[0].visible_enemies == ()
     assert "agent_mutation" not in environment.session.observe("red").mission
     assert "agent_mutation" not in environment.session.observe("blue").mission
-    assert environment.session.observe("red").friendly_operators[0].raw_attributes
-    assert environment.session.observe("blue").friendly_operators[0].raw_attributes
+    assert not hasattr(
+        environment.session.observe("red").friendly_operators[0],
+        "raw_attributes",
+    )
+    assert not hasattr(
+        environment.session.observe("blue").friendly_operators[0],
+        "raw_attributes",
+    )
 
 
 def test_agent_cannot_authorize_mutated_nested_action_parameters(

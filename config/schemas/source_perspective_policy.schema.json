@@ -22,12 +22,17 @@
     "unknown_field_policy",
     "relation_id_fields",
     "side_extra_native_allowlist",
-    "visible_enemy_safe_fields"
+    "visible_enemy_safe_fields",
+    "visible_enemy_observation_fields",
+    "visible_enemy_hidden_fields",
+    "visible_enemy_motion_mapping",
+    "own_lifecycle_fields",
+    "own_integrity_visibility"
   ],
   "properties": {
     "policy_id": {"type": "string", "minLength": 1},
     "policy_version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
-    "schema_version": {"const": "source-perspective-policy/1.0"},
+    "schema_version": {"const": "source-perspective-policy/1.1"},
     "perspectives": {
       "type": "object",
       "additionalProperties": false,
@@ -52,6 +57,17 @@
     "unknown_field_policy": {"type": "string"},
     "relation_id_fields": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
     "side_extra_native_allowlist": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
-    "visible_enemy_safe_fields": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+    "visible_enemy_safe_fields": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "visible_enemy_observation_fields": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "visible_enemy_hidden_fields": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "visible_enemy_motion_mapping": {
+      "type": "object",
+      "additionalProperties": {
+        "enum": ["MOVING", "STATIONARY", "UNKNOWN"]
+      },
+      "required": ["*"]
+    },
+    "own_lifecycle_fields": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "own_integrity_visibility": {"const": "GREEN_ONLY"}
   }
 }

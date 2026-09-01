@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from threading import RLock
 from typing import Mapping
+from copy import deepcopy
 
 from wargame_native_engine.gateway.command_gateway import CommandGateway
 from wargame_native_engine.gateway.models import (
@@ -73,11 +74,23 @@ class SideController:
             self._sync_window(value.decision_window_index)
         return value
 
-    def get_unit_commands(self, unit_id: int) -> UnitCommandMenu:
+    def decision_core(self):
+        """Return the detached machine semantic and catalog for Human/Agent use."""
+
         view = self.observe()
+        if view.decision_semantic is None or view.action_catalog is None:
+            raise CommandGatewayError(
+                "decision_core_unavailable", "legacy ControllerView has no core"
+            )
+        return deepcopy(view.decision_semantic), deepcopy(view.action_catalog)
+
+    def get_unit_commands(
+        self, unit_id: int, *, view: ControllerView | None = None,
+    ) -> UnitCommandMenu:
+        value = self.observe() if view is None else view
         staged = self._staged.get(unit_id)
         return unit_command_menu(
-            view,
+            value,
             unit_id,
             staged_action_id=None if staged is None else staged.action_id,
         )
@@ -109,6 +122,35 @@ class SideController:
             unit_id=unit_id,
             destination_hex=destination_hex,
             movement_mode=movement_mode,
+        )
+
+    def plan_indirect_fire(
+        self,
+        shooter_id: int,
+        weapon_id: int,
+        target_hex: int,
+        *,
+        request_id: str,
+        expected_window: int | None = None,
+    ) -> ActionProposal:
+        window = self.window()
+        if (
+            expected_window is not None
+            and expected_window != window.decision_window_index
+        ):
+            raise CommandGatewayError(
+                "stale_expected_step",
+                f"expected {expected_window}, current "
+                f"{window.decision_window_index}",
+            )
+        return self._gateway.plan_indirect_fire(
+            self.session_id,
+            self.controller_id,
+            request_id=request_id,
+            expected_window=window.decision_window_index,
+            shooter_id=shooter_id,
+            weapon_id=weapon_id,
+            target_hex=target_hex,
         )
 
     def proposal(self, proposal_id: str) -> ActionProposal:
@@ -163,31 +205,27 @@ class SideController:
                             "stage request_id was reused with another action",
                         )
                     return cached[1]
-            raw = next(
-                (
-                    item
-                    for item in view.valid_actions
-                    if item.get("action_id") == action_id
-                ),
+            catalog = view.action_catalog
+            if catalog is None:
+                raise CommandGatewayError(
+                    "decision_core_unavailable",
+                    "current ControllerView has no action catalog",
+                )
+            entry = next(
+                (item for item in catalog.entries if item.action_id == action_id),
                 None,
             )
-            if raw is None:
+            if entry is None:
                 raise CommandGatewayError(
                     "action_not_currently_valid",
                     f"action {action_id!r} is not in the current side snapshot",
                 )
-            action = raw.get("action")
-            if not isinstance(action, dict):
-                raise RuntimeError("valid action record lacks action")
-            actor = action.get("actor_id")
-            if actor is not None and type(actor) is not int:
-                raise RuntimeError("valid action actor_id is not an exact int")
             staged = StagedAction(
-                actor,
+                entry.actor_reference,
                 str(action_id),
-                str(action.get("action_type", "UNKNOWN")),
+                entry.action_type,
             )
-            self._staged[actor] = staged
+            self._staged[entry.actor_reference] = staged
             result = tuple(self._staged.values())
             if request_id is not None:
                 self._stage_requests[str(request_id)] = (signature, result)

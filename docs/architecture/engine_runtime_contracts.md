@@ -49,10 +49,15 @@ runtime. Recorder and analysis remain downstream observers and cannot create a
 partially committed simulation tick.
 
 Replay manifests and snapshots record
-`adjudication_semantics_version=native-joint-prestate/1.0`. Strict replay checks
+`adjudication_semantics_version=native-joint-prestate/1.1`. Strict replay checks
 that field before constructing or stepping the replay engine; legacy ordered
 sequential archives require an explicit compatible executor and are not
 silently interpreted under the joint semantics.
+
+Version 1.1 also makes `ENTER_CONCEALMENT` an explicit posture action and
+derives exposure from accepted MOVE, DIRECT-fire shooter, and GUIDED-fire
+shooter inputs. Earlier archives are therefore never silently reinterpreted
+under this posture transition contract.
 
 ## 1. Exact simulation-time contract
 

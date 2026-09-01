@@ -11,12 +11,17 @@ from urllib.parse import unquote, urlsplit
 
 from wargame_native_engine.gateway import CommandGateway, CommandGatewayError
 from wargame_native_engine.viewer.live_control import controller_view_record
+from wargame_native_engine.viewer.static_resources import (
+    load_symbol_static_resource,
+)
 
 
 _STATIC_ROOT = Path(__file__).with_name("static")
 _STATIC_FILES = {
     "/": ("live_index.html", "text/html; charset=utf-8"),
     "/static/map_renderer.js": ("map_renderer.js", "text/javascript; charset=utf-8"),
+    "/static/unit_symbol_renderer.js": ("unit_symbol_renderer.js", "text/javascript; charset=utf-8"),
+    "/static/unit_symbol_resolver.js": ("unit_symbol_resolver.js", "text/javascript; charset=utf-8"),
     "/static/live_actions.js": ("live_actions.js", "text/javascript; charset=utf-8"),
     "/static/live_app.js": ("live_app.js", "text/javascript; charset=utf-8"),
     "/static/styles.css": ("styles.css", "text/css; charset=utf-8"),
@@ -62,6 +67,10 @@ class LiveControlRequestHandler(BaseHTTPRequestHandler):
                 (_STATIC_ROOT / filename).read_bytes(),
                 content_type,
             )
+            return
+        resource = load_symbol_static_resource(path)
+        if resource is not None:
+            self._send_bytes(HTTPStatus.OK, resource.payload, resource.content_type)
             return
         if path == "/api/session":
             descriptor = self.server.gateway.manager.descriptor(
@@ -236,7 +245,7 @@ class LiveControlRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header(
             "Content-Security-Policy",
-            "default-src 'self'; script-src 'self'; style-src 'self'",
+                "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' blob:",
         )
         self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()

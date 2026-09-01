@@ -21,11 +21,20 @@ from wargame_native_engine.gateway.models import (
 )
 from wargame_native_engine.io.serialization import canonical_hash, json_clone
 from wargame_native_engine.operations.controller import SideController
+from wargame_native_engine.projection.decision_semantic import (
+    CapabilityAvailabilityStatus,
+    DecisionCapabilityFamily,
+)
 
 
 PRODUCT_OPERATION_TYPES = (
     "MOVE",
     "SHOOT",
+    "GUIDED_FIRE",
+    "INDIRECT_FIRE",
+    "BOARD",
+    "UNLOAD",
+    "ENTER_CONCEALMENT",
     "STOP_MOVE",
     "WEAPON_UNFOLD",
     "WEAPON_LOCK",
@@ -236,6 +245,12 @@ class ProductOperationService:
         window, view = self.controller.state()
         return self.status_from_snapshot(window, view)
 
+    def decision_core(self) -> dict[str, object]:
+        """Return the explicit side-safe machine payload for Human clients."""
+
+        _, view = self.controller.state()
+        return view.decision_record()
+
     def status_from_snapshot(
         self,
         window: DecisionWindowView,
@@ -245,7 +260,14 @@ class ProductOperationService:
 
         with self._lock:
             self._sync_window(window.decision_window_index)
-        if view.terminal:
+        decision = view.decision_semantic
+        catalog = view.action_catalog
+        if decision is None or catalog is None:
+            raise CommandGatewayError(
+                "decision_core_unavailable", "normal Human view requires Decision core"
+            )
+        snapshot = decision.snapshot
+        if snapshot.terminated or snapshot.truncated:
             state = "TERMINAL"
         elif window.submitted:
             state = "WAITING_OPPONENT"
@@ -253,28 +275,48 @@ class ProductOperationService:
             state = "WAITING_SELECTION"
         return {
             "product_state": state,
-            "perspective": view.perspective,
-            "frame_index": view.frame_index,
-            "sim_time_ms": view.sim_time_ms,
+            "perspective": snapshot.side.value.upper(),
+            "frame_index": snapshot.frame_index,
+            "sim_time_ms": snapshot.sim_time_ms,
             "terminal": view.terminal,
             "winner": view.winner,
             "outcome": view.outcome,
             "can_operate": state == "WAITING_SELECTION",
+            "decision_semantic_hash": decision.semantic_hash,
+            "action_catalog_hash": catalog.catalog_hash,
         }
 
-    def capabilities(self, actor_ids: Sequence[int]) -> dict[str, object]:
+    def capabilities(
+        self,
+        actor_ids: Sequence[int],
+        *,
+        view: ControllerView | None = None,
+    ) -> dict[str, object]:
         """Summarize toolbar applicability without exposing frozen IDs."""
 
         actors = _actor_ids(actor_ids)
+        active_view = self.controller.observe() if view is None else deepcopy(view)
+        decision = active_view.decision_semantic
+        catalog = active_view.action_catalog
+        if decision is None or catalog is None:
+            raise CommandGatewayError(
+                "decision_core_unavailable",
+                "normal Human capability view requires Decision core",
+            )
+        machine = {
+            value.operator_reference: value
+            for value in decision.capabilities.operators
+        }
         operations = {
             kind: {"applicable_count": 0, "unavailable": []}
             for kind in PRODUCT_OPERATION_TYPES
         }
         summaries = []
         shoot_targets: set[int] = set()
+        guided_targets: set[int] = set()
         for unit_id in actors:
             try:
-                menu = self.controller.get_unit_commands(unit_id)
+                menu = self.controller.get_unit_commands(unit_id, view=active_view)
             except CommandGatewayError as exc:
                 for value in operations.values():
                     value["unavailable"].append({
@@ -293,18 +335,44 @@ class ProductOperationService:
                 "state": menu.unit.get("state"),
             })
             for kind, value in operations.items():
-                available = bool(menu.available.get(kind))
-                if kind == "MOVE":
-                    available = menu.move_planning_available
+                candidates = _operation_candidates(menu, kind)
+                family = _product_capability_family(kind)
+                status = (
+                    None
+                    if family is None
+                    else next(
+                        (
+                            item
+                            for item in machine[unit_id].families
+                            if item.family is family
+                        ),
+                        None,
+                    )
+                )
+                available = (
+                    bool(candidates)
+                    if status is None
+                    else status.status is CapabilityAvailabilityStatus.AVAILABLE
+                )
                 if available:
                     value["applicable_count"] += 1
                     if kind == "SHOOT":
-                        for item in menu.available.get("SHOOT", ()):
+                        for item in candidates:
                             target = item.get("action", {}).get("target_id")
                             if type(target) is int:
                                 shoot_targets.add(target)
+                    elif kind == "GUIDED_FIRE":
+                        for item in candidates:
+                            target = item.get("action", {}).get("target_id")
+                            if type(target) is int:
+                                guided_targets.add(target)
                 else:
-                    code, message = _capability_unavailable(kind, menu)
+                    code, message = (
+                        _capability_unavailable(kind, menu)
+                        if status is None
+                        or status.status is CapabilityAvailabilityStatus.UNKNOWN
+                        else _machine_capability_unavailable(status)
+                    )
                     value["unavailable"].append({
                         "unit_id": unit_id,
                         "code": code,
@@ -315,6 +383,14 @@ class ProductOperationService:
             "selected_units": summaries,
             "operations": operations,
             "shoot_target_ids": sorted(shoot_targets),
+            "guided_fire_target_ids": sorted(guided_targets),
+            "decision_semantic_hash": decision.semantic_hash,
+            "action_catalog_hash": catalog.catalog_hash,
+            "machine_capabilities": [
+                value
+                for value in decision.capabilities.to_dict()["operators"]
+                if value["operator_reference"] in set(actors)
+            ],
         }
 
     def preview_operation(
@@ -324,10 +400,15 @@ class ProductOperationService:
         *,
         request_id: str,
         destination_hex: int | None = None,
+        target_hex: int | None = None,
         target_id: int | None = None,
         movement_mode: str = "NORMAL",
         weapon_choices: Mapping[int | str, int] | None = None,
         whole_side_wait: bool = False,
+        fire_mode: str | None = None,
+        guider_id: int | None = None,
+        shooter_id: int | None = None,
+        weapon_id: int | None = None,
     ) -> GroupOperationPreview:
         request = _nonempty(request_id, "request_id")
         operation = str(operation_type).upper()
@@ -354,6 +435,54 @@ class ProductOperationService:
             raise CommandGatewayError(
                 "target_required", "SHOOT requires an exact visible target id"
             )
+        if operation in {"BOARD", "UNLOAD"} and type(target_id) is not int:
+            raise CommandGatewayError(
+                "target_required",
+                f"{operation} requires an exact server-issued target id",
+            )
+        if operation == "GUIDED_FIRE":
+            if fire_mode != "GUIDED":
+                raise CommandGatewayError(
+                    "guided_fire_mode_required",
+                    "GUIDED_FIRE requires fire_mode GUIDED",
+                )
+            if len(actors) != 1 or actors[0] != guider_id:
+                raise CommandGatewayError(
+                    "guided_fire_guider_mismatch",
+                    "GUIDED_FIRE selection must contain exactly guider_id",
+                )
+            for name, value in (
+                ("guider_id", guider_id),
+                ("shooter_id", shooter_id),
+                ("weapon_id", weapon_id),
+                ("target_id", target_id),
+            ):
+                if type(value) is not int or value < 0:
+                    raise CommandGatewayError(
+                        f"invalid_{name}",
+                        f"{name} must be a non-negative exact int",
+                    )
+        if operation == "INDIRECT_FIRE":
+            if fire_mode != "INDIRECT":
+                raise CommandGatewayError(
+                    "indirect_fire_mode_required",
+                    "INDIRECT_FIRE requires fire_mode INDIRECT",
+                )
+            if len(actors) != 1 or actors[0] != shooter_id:
+                raise CommandGatewayError(
+                    "indirect_fire_shooter_mismatch",
+                    "INDIRECT_FIRE selection must contain exactly shooter_id",
+                )
+            for name, value in (
+                ("shooter_id", shooter_id),
+                ("weapon_id", weapon_id),
+                ("target_hex", target_hex),
+            ):
+                if type(value) is not int or value < 0:
+                    raise CommandGatewayError(
+                        f"invalid_{name}",
+                        f"{name} must be a non-negative exact int",
+                    )
         choices = _weapon_choices(weapon_choices)
         window = self.controller.window()
         if window.submitted:
@@ -365,10 +494,15 @@ class ProductOperationService:
             actors,
             operation,
             destination_hex,
+            target_hex,
             target_id,
             str(movement_mode).upper(),
             tuple(sorted(choices.items())),
             whole_side_wait,
+            fire_mode,
+            guider_id,
+            shooter_id,
+            weapon_id,
         )
         with self._lock:
             self._sync_window(window.decision_window_index)
@@ -396,9 +530,14 @@ class ProductOperationService:
                         operation,
                         request_id=request,
                         destination_hex=destination_hex,
+                        target_hex=target_hex,
                         target_id=target_id,
                         movement_mode=movement_mode,
                         weapon_choice=choices.get(unit_id),
+                        fire_mode=fire_mode,
+                        guider_id=guider_id,
+                        shooter_id=shooter_id,
+                        guided_weapon_id=weapon_id,
                     )
                     results.append(result)
                     if action_id is not None:
@@ -505,10 +644,15 @@ class ProductOperationService:
                         operation.operation_type,
                         request_id=f"{request}:operation:{index}",
                         destination_hex=operation.destination_hex,
+                        target_hex=operation.target_hex,
                         target_id=operation.target_id,
                         movement_mode=operation.movement_mode,
                         weapon_choices=dict(operation.weapon_choices),
                         whole_side_wait=operation.whole_side_wait,
+                        fire_mode=operation.fire_mode,
+                        guider_id=operation.guider_id,
+                        shooter_id=operation.shooter_id,
+                        weapon_id=operation.weapon_id,
                     )
                     previews.append(preview)
                     component_tokens.append(preview.preview_token)
@@ -737,9 +881,14 @@ class ProductOperationService:
         *,
         request_id: str,
         destination_hex: int | None,
+        target_hex: int | None,
         target_id: int | None,
         movement_mode: str,
         weapon_choice: int | None,
+        fire_mode: str | None,
+        guider_id: int | None,
+        shooter_id: int | None,
+        guided_weapon_id: int | None,
     ) -> tuple[UnitOperationPreview, str | None]:
         try:
             menu = self.controller.get_unit_commands(unit_id)
@@ -770,17 +919,70 @@ class ProductOperationService:
                 proposal.ordered_path,
             ), proposal.action_id
 
-        candidates = tuple(menu.available.get(operation, ()))
+        if operation == "INDIRECT_FIRE":
+            if unit_id != shooter_id:
+                return _rejected(
+                    unit_id,
+                    name,
+                    "indirect_fire_shooter_mismatch",
+                    "所选单位不是指定的间接火力发射平台",
+                ), None
+            try:
+                proposal = self.controller.plan_indirect_fire(
+                    unit_id,
+                    int(guided_weapon_id),
+                    int(target_hex),
+                    request_id=f"{request_id}:indirect:{unit_id}",
+                    expected_window=menu.decision_window_index,
+                )
+            except (CommandGatewayError, TypeError, ValueError) as exc:
+                code = getattr(exc, "code", "indirect_fire_plan_rejected")
+                message = getattr(exc, "message", str(exc))
+                return _rejected(unit_id, name, code, message), None
+            return UnitOperationPreview(
+                unit_id,
+                name,
+                True,
+                f"间接火力计划格{target_hex}，武器{guided_weapon_id}",
+                weapon_options=({
+                    "weapon_id": guided_weapon_id,
+                    "target_hex": target_hex,
+                    "summary": f"武器{guided_weapon_id}",
+                },),
+            ), proposal.action_id
+
+        candidates = _operation_candidates(menu, operation)
         if operation == "SHOOT":
             candidates = tuple(
                 item
                 for item in candidates
                 if item.get("action", {}).get("target_id") == target_id
             )
+        elif operation in {"BOARD", "UNLOAD"}:
+            candidates = tuple(
+                item
+                for item in candidates
+                if item.get("action", {}).get("target_id") == target_id
+            )
+        elif operation == "GUIDED_FIRE":
+            candidates = tuple(
+                item for item in candidates
+                if _matches_guided_fire_choice(
+                    item,
+                    fire_mode=fire_mode,
+                    guider_id=guider_id,
+                    shooter_id=shooter_id,
+                    weapon_id=guided_weapon_id,
+                    target_id=target_id,
+                )
+            )
         candidates = tuple(sorted(candidates, key=lambda item: str(item["action_id"])))
         if not candidates:
-            code = "target_not_shootable" if operation == "SHOOT" else (
-                "operation_unavailable"
+            code = (
+                "target_not_shootable" if operation == "SHOOT"
+                else "guided_fire_capability_unavailable"
+                if operation == "GUIDED_FIRE"
+                else "operation_unavailable"
             )
             return _rejected(
                 unit_id, name, code, _unavailable_message(operation)
@@ -984,6 +1186,19 @@ def _operation_summary(operation: str, item: Mapping[str, Any]) -> str:
     if operation == "SHOOT":
         weapon = action.get("parameters", {}).get("weapon_id")
         return f"射击目标{action.get('target_id')}，武器{weapon}"
+    if operation == "GUIDED_FIRE":
+        parameters = action.get("parameters", {})
+        return (
+            f"引导单位{parameters.get('guider_id')}为发射平台"
+            f"{parameters.get('shooter_id')}引导射击目标"
+            f"{action.get('target_id')}，武器{parameters.get('weapon_id')}"
+        )
+    if operation == "BOARD":
+        return f"人员{action.get('actor_id')}搭载载具{action.get('target_id')}"
+    if operation == "UNLOAD":
+        return f"载具{action.get('actor_id')}卸载人员{action.get('target_id')}"
+    if operation == "ENTER_CONCEALMENT":
+        return f"单位{action.get('actor_id')}进入隐蔽姿态"
     return {
         "STOP_MOVE": "停止当前移动",
         "WEAPON_UNFOLD": "展开武器",
@@ -1014,11 +1229,45 @@ def _unavailable_message(operation: str) -> str:
     return {
         "MOVE": "当前不能机动",
         "SHOOT": "当前没有对该目标的合法射击动作",
+        "GUIDED_FIRE": "当前没有与该引导单位匹配的合法引导射击机会",
+        "BOARD": "当前没有合法搭载机会",
+        "UNLOAD": "当前没有合法下车机会",
+        "ENTER_CONCEALMENT": "当前不满足主动隐蔽条件",
         "STOP_MOVE": "当前未在移动或不能停止",
         "WEAPON_UNFOLD": "当前不能展开武器",
         "WEAPON_LOCK": "当前不能锁定武器",
         "WAIT": "当前不能等待",
     }.get(operation, "当前不能执行该操作")
+
+
+def _product_capability_family(
+    operation: str,
+) -> DecisionCapabilityFamily | None:
+    value = "DIRECT_FIRE" if operation == "SHOOT" else operation
+    try:
+        return DecisionCapabilityFamily(value)
+    except ValueError:
+        return None
+
+
+def _machine_capability_unavailable(status: Any) -> tuple[str, str]:
+    if status.status is CapabilityAvailabilityStatus.UNKNOWN:
+        return (
+            "CAPABILITY_UNKNOWN",
+            "当前未提供完整能力状态；具体操作仍需正式预览",
+        )
+    if status.status is CapabilityAvailabilityStatus.MISSING:
+        return "CAPABILITY_MISSING", "当前能力证据缺失"
+    if status.status is CapabilityAvailabilityStatus.NOT_APPLICABLE:
+        return "CAPABILITY_NOT_APPLICABLE", "该单位不适用此能力"
+    blockers = tuple(
+        f"{value.producer_namespace}:{value.code}"
+        for value in status.blocker_codes
+    )
+    return (
+        blockers[0] if blockers else "CAPABILITY_BLOCKED",
+        "当前能力被权威状态阻塞",
+    )
 
 
 def _capability_unavailable(
@@ -1032,12 +1281,7 @@ def _capability_unavailable(
     moving = "STOP_MOVE" in available or state == "MOVING"
     transitioning = state == "TRANSITIONING"
     if operation == "SHOOT":
-        raw = menu.unit.get("raw_attributes")
-        visible = (
-            raw.get("see_enemy_bop_ids", ())
-            if isinstance(raw, Mapping)
-            else ()
-        )
+        visible = menu.unit.get("observed_enemy_ids", ())
         if not visible:
             return "no_visible_enemy", "当前未发现可见敌军"
         if moving:
@@ -1050,6 +1294,11 @@ def _capability_unavailable(
             "no_legal_shoot",
             "可见目标不满足射程、弹药、冷却、武器或目标类型条件",
         )
+    if operation == "GUIDED_FIRE":
+        return (
+            "no_guided_fire_capability",
+            "当前权威状态没有合法的引导单位、发射平台、武器和目标组合",
+        )
     if operation in {"WEAPON_LOCK", "WEAPON_UNFOLD"}:
         label = "锁定" if operation == "WEAPON_LOCK" else "展开"
         if moving:
@@ -1061,6 +1310,49 @@ def _capability_unavailable(
         if operation == "WEAPON_UNFOLD" and "WEAPON_LOCK" in available:
             return "weapon_already_unfolded", "武器已经展开"
     return "operation_unavailable", _unavailable_message(operation)
+
+
+def _operation_candidates(menu: Any, operation: str) -> tuple[Mapping[str, Any], ...]:
+    """Return only Engine-issued candidates for one Product operation."""
+
+    key = "FIRE" if operation == "GUIDED_FIRE" else operation
+    values = tuple(menu.available.get(key, ()))
+    if operation != "GUIDED_FIRE":
+        return values
+    return tuple(
+        item for item in values
+        if isinstance(item, Mapping)
+        and isinstance(item.get("action"), Mapping)
+        and isinstance(item["action"].get("parameters"), Mapping)
+        and item["action"]["parameters"].get("fire_mode") == "GUIDED"
+    )
+
+
+def _matches_guided_fire_choice(
+    item: Mapping[str, Any],
+    *,
+    fire_mode: str | None,
+    guider_id: int | None,
+    shooter_id: int | None,
+    weapon_id: int | None,
+    target_id: int | None,
+) -> bool:
+    action = item.get("action")
+    if not isinstance(action, Mapping):
+        return False
+    parameters = action.get("parameters")
+    if not isinstance(parameters, Mapping):
+        return False
+    return (
+        fire_mode == "GUIDED"
+        and action.get("action_type") == "FIRE"
+        and action.get("actor_id") == guider_id
+        and action.get("target_id") == target_id
+        and parameters.get("fire_mode") == fire_mode
+        and parameters.get("guider_id") == guider_id
+        and parameters.get("shooter_id") == shooter_id
+        and parameters.get("weapon_id") == weapon_id
+    )
 
 
 def _reason_message(code: str) -> str:

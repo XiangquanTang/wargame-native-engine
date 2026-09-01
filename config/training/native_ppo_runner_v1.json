@@ -1,0 +1,35 @@
+{
+  "schema_version": "native-ppo-runner-config/1.0",
+  "runner_id": "native-single-seat-ppo-runner",
+  "runner_version": "1.0.0",
+  "purpose": "BASELINE_V1",
+  "mode": "TRAINED_SIDE_VS_FIXED_OPPONENT",
+  "trained_side": "RED",
+  "fixed_opponent": {
+    "kind": "NO_OP_AGENT",
+    "id": "native-no-op-fixed-opponent-v1",
+    "deterministic": true
+  },
+  "reward_mode": "BASE_ONLY",
+  "ppo_config_ref": {
+    "id": "native-masked-ppo",
+    "version": "1.0.0",
+    "hash": "d0b08a8295b22b316d8082272fa3763f491961d07934f2ac2c2b84c951fa622d"
+  },
+  "seed_config_ref": {
+    "id": "native-training-seeds",
+    "version": "1.0.0",
+    "hash": "0bf9ddec709ab6048855f6bf86e2338fe5f3b8ef15fdca99a98e9fdf092aa1f3"
+  },
+  "worker_index": 0,
+  "env_index": 0,
+  "run_limits": {
+    "max_updates": 100,
+    "max_environment_steps": null,
+    "max_episodes": null
+  },
+  "checkpoint_every_updates": 1,
+  "evaluation_episodes": 4,
+  "rollout_model_mode": "EVAL_NO_GRAD",
+  "device": "CPU"
+}

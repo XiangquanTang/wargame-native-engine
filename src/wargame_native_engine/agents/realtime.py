@@ -30,6 +30,12 @@ from wargame_native_engine.gateway.models import ControllerView
 from wargame_native_engine.io.serialization import canonical_hash, json_clone
 from wargame_native_engine.operations import ProductOperationService
 from wargame_native_engine.operations.facade import MatchHandle
+from wargame_native_engine.projection.decision_capability import (
+    ActionCatalogSnapshot,
+)
+from wargame_native_engine.projection.decision_semantic import (
+    SideDecisionSemanticProjection,
+)
 
 
 RealtimeMatchFactory = Callable[[int, int], MatchHandle]
@@ -140,6 +146,8 @@ class RealtimeSeatView:
     capabilities: SeatActionCapabilities
     terminated: bool
     truncated: bool
+    decision_semantic: SideDecisionSemanticProjection | None = None
+    action_catalog: ActionCatalogSnapshot | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "seat", _side(self.seat))
@@ -151,6 +159,22 @@ class RealtimeSeatView:
         _exact_bool(self.truncated, "truncated")
         object.__setattr__(self, "observation", json_clone(self.observation))
         object.__setattr__(self, "capabilities", deepcopy(self.capabilities))
+        if (self.decision_semantic is None) != (self.action_catalog is None):
+            raise ValueError("realtime decision semantic/catalog must be paired")
+        if self.decision_semantic is not None:
+            if self.decision_semantic.snapshot.side.value != self.seat:
+                raise ValueError("realtime Decision side mismatch")
+            if (
+                self.decision_semantic.snapshot.decision_window_index
+                != self.capabilities.decision_index
+            ):
+                raise ValueError("realtime Decision window mismatch")
+            if self.decision_semantic.action_space != self.action_catalog.reference():
+                raise ValueError("realtime Decision catalog mismatch")
+            object.__setattr__(
+                self, "decision_semantic", deepcopy(self.decision_semantic)
+            )
+            object.__setattr__(self, "action_catalog", deepcopy(self.action_catalog))
 
     def to_record(self) -> dict[str, object]:
         return {
@@ -163,6 +187,14 @@ class RealtimeSeatView:
             "capabilities": self.capabilities.to_record(),
             "terminated": self.terminated,
             "truncated": self.truncated,
+        }
+
+    def decision_record(self) -> dict[str, object]:
+        if self.decision_semantic is None or self.action_catalog is None:
+            raise ValueError("legacy realtime seat view has no Decision core")
+        return {
+            "decision_semantic": self.decision_semantic.to_dict(),
+            "action_catalog": self.action_catalog.to_dict(),
         }
 
 
@@ -940,7 +972,41 @@ class RealtimeAgentSession:
             authoritative = self._resolve_binding_locked(binding)
             self._require_accepting()
             service = self._advisory_services[authoritative.seat]
-        return deepcopy(service.capabilities(actor_ids))
+            cached = deepcopy(
+                self._latest[authoritative.seat]
+                .capabilities.operation_summary.get("indirect_fire", {})
+            )
+            controller_view = deepcopy(
+                self._controller_views[authoritative.seat]
+            )
+        result = deepcopy(service.capabilities(
+            actor_ids, view=controller_view,
+        ))
+        actor_set = set(actor_ids)
+        values = cached.get("capabilities", []) if isinstance(
+            cached, Mapping
+        ) else []
+        filtered = [
+            deepcopy(value)
+            for value in values
+            if isinstance(value, Mapping)
+            and value.get("shooter_id") in actor_set
+        ]
+        result["indirect_fire"] = {
+            "semantics": "server_validated_hex_target",
+            "capabilities": filtered,
+        }
+        available = sum(
+            1 for value in filtered if value.get("status") == "AVAILABLE"
+        )
+        operations = result.get("operations")
+        if isinstance(operations, dict):
+            entry = operations.get("INDIRECT_FIRE")
+            if isinstance(entry, dict):
+                entry["applicable_count"] = available
+                if available:
+                    entry["unavailable"] = []
+        return result
 
     def tactical_overlay(
         self,
@@ -1036,11 +1102,13 @@ class RealtimeAgentSession:
         view = self.latest_view(binding)
         return AgentDecisionContext(
             view.seat,
-            view.tick_index,
+            view.capabilities.decision_index,
             view.frame_index,
             view.sim_time_ms,
             json_clone(view.observation),
             deepcopy(view.capabilities),
+            deepcopy(view.decision_semantic),
+            deepcopy(view.action_catalog),
         )
 
     def agent_reset_context(
@@ -1384,8 +1452,41 @@ class RealtimeAgentSession:
             actors = () if view.terminal else _friendly_actor_ids(view.observation)
             summary = (
                 _empty_capability_summary()
-                if view.terminal else self._services[side].capabilities(actors)
+                if view.terminal
+                else self._services[side].capabilities(actors, view=view)
             )
+            if not view.terminal:
+                indirect = (
+                    match.gateway.manager.get_indirect_fire_capabilities(
+                        match.session_id,
+                        side,
+                    )
+                )
+                summary["indirect_fire"] = {
+                    "semantics": "server_validated_hex_target",
+                    "capabilities": [
+                        value.to_record() for value in indirect
+                    ],
+                    "active_areas": [
+                        value.to_record()
+                        for value in (
+                            match.gateway.manager.get_indirect_fire_active_areas(
+                                match.session_id,
+                                side,
+                            )
+                        )
+                    ],
+                }
+                available = sum(
+                    1 for value in indirect if value.status.value == "AVAILABLE"
+                )
+                operation = summary.get("operations", {}).get(
+                    "INDIRECT_FIRE"
+                )
+                if isinstance(operation, dict):
+                    operation["applicable_count"] = available
+                    if available:
+                        operation["unavailable"] = []
             operations = summary.get("operations", {})
             operation_types = tuple(
                 kind for kind, value in operations.items()
@@ -1418,6 +1519,8 @@ class RealtimeAgentSession:
                 capability,
                 view.terminated,
                 view.truncated,
+                view.decision_semantic,
+                view.action_catalog,
             )
 
     def _target_tick_locked(self, now_ns: int) -> int:

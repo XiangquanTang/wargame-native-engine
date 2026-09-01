@@ -20,14 +20,23 @@ from wargame_native_engine.gateway import (
     SessionPublication,
 )
 from wargame_native_engine.io.serialization import canonical_hash, json_clone
+from wargame_native_engine.projection.decision_semantic import (
+    DecisionProjectionContractError,
+)
 from wargame_native_engine.operations import ProductOperationService
 from wargame_native_engine.operations.facade import MatchHandle
 from wargame_native_engine.training.models import (
     AgentResetResult,
     AgentStepResult,
+    CatalogActionSelection,
     DecisionTransition,
     SingleSeatResetResult,
     SingleSeatStepResult,
+)
+from wargame_native_engine.training.decision_encoder import (
+    DecisionActionEncoder,
+    DecisionEncoderConfig,
+    DecisionObservationEncoder,
 )
 from wargame_native_engine.training.transitions import (
     write_decision_transitions_jsonl,
@@ -35,6 +44,30 @@ from wargame_native_engine.training.transitions import (
 from wargame_native_engine.training.publication import (
     TrainingEpisodePublication,
     publish_training_episode,
+)
+from wargame_native_engine.training.reward import (
+    BaseRewardPolicy,
+    JointTrainingRewardRecord,
+    RewardTruncationSource,
+    TrainingTruncationProvenance,
+    build_joint_training_reward_record,
+    build_reward_transition_identity,
+    joint_action_hash,
+    load_reward_policy,
+)
+from wargame_native_engine.training.discount import (
+    SharedTrainingDiscountConfig,
+    load_shared_training_discount_config,
+)
+from wargame_native_engine.training.eight_factor_shaping_contract import (
+    EightFactorShapingPolicy,
+    load_eight_factor_shaping_policy,
+)
+from wargame_native_engine.training.eight_factor_shaping import (
+    CompositeRewardPolicy,
+    build_composite_reward_policy,
+    compose_joint_training_reward,
+    derive_joint_eight_factor_shaping,
 )
 
 
@@ -107,6 +140,10 @@ class NativeDecisionSession:
         episode_id: str,
         run_namespace: str,
         seed: int,
+        encoder_config: DecisionEncoderConfig | None = None,
+        discount_config: SharedTrainingDiscountConfig | None = None,
+        shaping_policy: EightFactorShapingPolicy | None = None,
+        enable_eight_factor_shaping: bool = False,
     ) -> None:
         if not isinstance(match, MatchHandle):
             raise TypeError("match must be a MatchHandle")
@@ -120,6 +157,34 @@ class NativeDecisionSession:
         self.match = match
         self.episode_id = episode_id
         self.seed = seed
+        if type(enable_eight_factor_shaping) is not bool:
+            raise TypeError("enable_eight_factor_shaping must be an exact bool")
+        self.base_reward_policy: BaseRewardPolicy = load_reward_policy()
+        self.discount_config = (
+            load_shared_training_discount_config()
+            if discount_config is None else discount_config
+        )
+        if enable_eight_factor_shaping:
+            self.shaping_policy = (
+                load_eight_factor_shaping_policy(discount=self.discount_config)
+                if shaping_policy is None else shaping_policy
+            )
+        else:
+            if shaping_policy is not None:
+                raise ValueError("disabled shaping cannot carry a shaping policy")
+            self.shaping_policy = None
+        self.composite_reward_policy: CompositeRewardPolicy = (
+            build_composite_reward_policy(
+                self.base_reward_policy, self.shaping_policy
+            )
+        )
+        self.encoder_config = (
+            DecisionEncoderConfig() if encoder_config is None else encoder_config
+        )
+        if not isinstance(self.encoder_config, DecisionEncoderConfig):
+            raise TypeError("encoder_config must be DecisionEncoderConfig")
+        self.observation_encoder = DecisionObservationEncoder(self.encoder_config)
+        self.action_encoder = DecisionActionEncoder(self.encoder_config.max_actions)
         self.controllers = {
             "red": match.bind_controller(
                 "red", controller_id=match.red_controller_id
@@ -147,11 +212,13 @@ class NativeDecisionSession:
         ):
             self._snapshot_mismatch(snapshot.decision_index, -1)
         self._snapshot = snapshot
+        observations, action_spaces = self._encoded_policy_inputs(views)
         return AgentResetResult(
             episode_id=self.episode_id,
             run_namespace=self.run_namespace,
-            observations=_observations(views),
+            observations=observations,
             capabilities=capabilities,
+            action_spaces=action_spaces,
             decision_index=snapshot.decision_index,
             fact_frame_index=descriptor.frame_index,
             sim_time_ms=descriptor.sim_time_ms,
@@ -161,8 +228,12 @@ class NativeDecisionSession:
             map_id=self.match.bundle.map_identity.map_id,
         )
 
-    def decision_context(self, side: str) -> AgentDecisionContext:
+    def decision_context(
+        self, side: str, *, include_semantic_core: bool = False,
+    ) -> AgentDecisionContext:
         self._require_synchronized()
+        if type(include_semantic_core) is not bool:
+            raise TypeError("include_semantic_core must be an exact bool")
         normalized = _side(side)
         views, capabilities, _ = self._validated_current_snapshot()
         view = views[normalized]
@@ -173,6 +244,11 @@ class NativeDecisionSession:
             view.sim_time_ms,
             json_clone(view.observation),
             deepcopy(capabilities[normalized]),
+            (
+                deepcopy(view.decision_semantic)
+                if include_semantic_core else None
+            ),
+            deepcopy(view.action_catalog) if include_semantic_core else None,
         )
 
     def agent_reset_context(self, side: str, agent_id: str):
@@ -258,6 +334,103 @@ class NativeDecisionSession:
                     phase="execute",
                 )
 
+        return self._complete_step(
+            before_views,
+            before_capabilities,
+            snapshot,
+            decisions,
+        )
+
+    def step_action_indices(
+        self,
+        red_action_indices: Sequence[int],
+        blue_action_indices: Sequence[int],
+    ) -> AgentStepResult:
+        """Resolve both sides against their emitted catalogs and submit once."""
+
+        self._require_synchronized()
+        before_views, before_capabilities, snapshot = (
+            self._validated_current_snapshot()
+        )
+        _, spaces = self._encoded_policy_inputs(before_views)
+        indices = {
+            "red": red_action_indices,
+            "blue": blue_action_indices,
+        }
+        selected = {}
+        decisions = {}
+        for side in ("red", "blue"):
+            catalog = before_views[side].action_catalog
+            if catalog is None:
+                raise NativeMultiSeatError(
+                    "decision_v1_catalog_missing",
+                    "ControllerView lacks ActionCatalogSnapshot",
+                    side=side,
+                    phase="resolve",
+                )
+            selected[side] = self.action_encoder.resolve_batch(
+                spaces[side], catalog, indices[side]
+            )
+            decisions[side] = CatalogActionSelection(selected[side])
+
+        decision_index = snapshot.decision_index
+        submitted: list[str] = []
+        controller_ids = {
+            "red": self.match.red_controller_id,
+            "blue": self.match.blue_controller_id,
+        }
+        for side in ("red", "blue"):
+            try:
+                result = self.match.gateway.submit_batch(
+                    self.match.session_id,
+                    controller_ids[side],
+                    request_id=(
+                        f"native-training-catalog:{self.episode_id}:"
+                        f"{decision_index}:{side}"
+                    ),
+                    expected_window=decision_index,
+                    ordered_action_ids=selected[side],
+                )
+                submitted.append(side)
+            except BaseException as exc:
+                self._failed = True
+                raise NativeMultiSeatError(
+                    "catalog_decision_execution_failed_reset_required",
+                    f"{type(exc).__name__}:{exc};submitted={','.join(submitted)}",
+                    side=side,
+                    phase="execute",
+                ) from exc
+            if side == "red" and result.advanced:
+                self._failed = True
+                raise NativeMultiSeatError(
+                    "red_submission_advanced",
+                    "RED advanced before BLUE submission",
+                    side=side,
+                    phase="execute",
+                )
+            if side == "blue" and not result.advanced:
+                self._failed = True
+                raise NativeMultiSeatError(
+                    "joint_window_not_advanced",
+                    "complete decision window did not advance",
+                    side=side,
+                    phase="execute",
+                )
+        return self._complete_step(
+            before_views,
+            before_capabilities,
+            snapshot,
+            decisions,
+        )
+
+    def _complete_step(
+        self,
+        before_views,
+        before_capabilities,
+        snapshot: _DecisionSnapshot,
+        decisions,
+    ) -> AgentStepResult:
+        decision_index = snapshot.decision_index
         advance = self.match.gateway.last_advance(
             self.match.session_id, self.match.red_controller_id
         )
@@ -268,6 +441,10 @@ class NativeDecisionSession:
             )
         after_views = self._views()
         after_capabilities = self._capabilities(after_views)
+        before_observations, _ = self._encoded_policy_inputs(before_views)
+        after_observations, after_action_spaces = self._encoded_policy_inputs(
+            after_views
+        )
         terminated = after_views["red"].terminated
         truncated = False if terminated else after_views["red"].truncated
         self._validate_completed_window(
@@ -277,22 +454,67 @@ class NativeDecisionSession:
             after_capabilities,
             ended=terminated or truncated,
         )
-        rewards = _rewards(
+        native_result = self.match.gateway.manager.native_result(
+            self.match.session_id
+        )
+        action_ids = {
+            side: _submitted_action_ids(decisions[side])
+            for side in ("red", "blue")
+        }
+        action_semantic_hashes = {
+            side: canonical_hash(decisions[side].to_record())
+            for side in ("red", "blue")
+        }
+        action_hash = joint_action_hash(
+            action_ids["red"], action_ids["blue"],
+            red_semantic_hash=action_semantic_hashes["red"],
+            blue_semantic_hash=action_semantic_hashes["blue"],
+        )
+        identities = {
+            side: _reward_transition_identity(
+                episode_id=self.episode_id,
+                run_namespace=self.run_namespace,
+                side=side,
+                before=before_views[side],
+                after=after_views[side],
+                advance=advance,
+                submitted_action_ids=action_ids[side],
+                submitted_action_semantic_hash=action_semantic_hashes[side],
+                joint_actions_hash=action_hash,
+            )
+            for side in ("red", "blue")
+        }
+        truncation = (
+            TrainingTruncationProvenance.native_max_ticks()
+            if truncated
+            else TrainingTruncationProvenance.none()
+        )
+        base_reward = build_joint_training_reward_record(
+            red_transition_identity=identities["red"],
+            blue_transition_identity=identities["blue"],
             terminated=terminated,
             truncated=truncated,
-            winner=after_views["red"].winner,
+            winner=native_result.winner,
+            terminal_reason_code=native_result.reason,
+            truncation=truncation,
+            policy=self.base_reward_policy,
         )
+        joint_reward = self.compose_base_reward(base_reward)
+        rewards = {
+            "red": joint_reward.red.total_reward,
+            "blue": joint_reward.blue.total_reward,
+        }
         transitions = tuple(
             DecisionTransition(
                 episode_id=self.episode_id,
                 run_namespace=self.run_namespace,
                 decision_index=decision_index,
                 side=side,
-                observation=json_clone(before_views[side].observation),
+                observation=json_clone(before_observations[side]),
                 capabilities=deepcopy(before_capabilities[side]),
                 decision=decisions[side],
                 reward=rewards[side],
-                next_observation=json_clone(after_views[side].observation),
+                next_observation=json_clone(after_observations[side]),
                 next_capabilities=deepcopy(after_capabilities[side]),
                 terminated=terminated,
                 truncated=truncated,
@@ -304,6 +526,7 @@ class NativeDecisionSession:
                 fact_frame_end=advance.last_frame_index,
                 sim_time_start_ms=advance.sim_time_before_ms,
                 sim_time_end_ms=advance.sim_time_after_ms,
+                reward_record=joint_reward.side_record(side),
             )
             for side in ("red", "blue")
         )
@@ -319,8 +542,9 @@ class NativeDecisionSession:
         return AgentStepResult(
             episode_id=self.episode_id,
             run_namespace=self.run_namespace,
-            observations=_observations(after_views),
+            observations=after_observations,
             capabilities=after_capabilities,
+            action_spaces=after_action_spaces,
             rewards=rewards,
             terminated=terminated,
             truncated=truncated,
@@ -340,6 +564,34 @@ class NativeDecisionSession:
                 "truncation_source": "native" if truncated else None,
                 "referee_labels_exposed": False,
             },
+            joint_reward_record=joint_reward,
+        )
+
+    def compose_base_reward(
+        self, base_reward: JointTrainingRewardRecord
+    ) -> JointTrainingRewardRecord:
+        policy = self.shaping_policy
+        if policy is None:
+            return base_reward
+        identity = base_reward.red.transition_identity
+        manager = self.match.gateway.manager
+        before = manager.frame_analysis(
+            self.match.session_id, identity.frame_before
+        )
+        after = None if base_reward.red.terminated else manager.frame_analysis(
+            self.match.session_id, identity.frame_after
+        )
+        shaping = derive_joint_eight_factor_shaping(
+            base_record=base_reward,
+            analysis_before=before,
+            analysis_after=after,
+            policy=policy,
+            discount=self.discount_config,
+        )
+        return compose_joint_training_reward(
+            base_record=base_reward,
+            shaping=shaping,
+            composite_policy=self.composite_reward_policy,
         )
 
     def _validated_current_snapshot(self):
@@ -424,10 +676,17 @@ class NativeDecisionSession:
         raise TrainingDecisionSnapshotMismatchError(expected, actual)
 
     def _views(self):
-        return {
-            side: self.controllers[side].observe()
-            for side in ("red", "blue")
-        }
+        try:
+            return {
+                side: self.controllers[side].observe()
+                for side in ("red", "blue")
+            }
+        except DecisionProjectionContractError:
+            expected = -1 if self._snapshot is None else (
+                self._snapshot.decision_index
+            )
+            self._snapshot_mismatch(expected, -1)
+            raise AssertionError("unreachable")
 
     def _capabilities(self, views) -> dict[str, SeatActionCapabilities]:
         return {
@@ -459,6 +718,26 @@ class NativeDecisionSession:
             summary,
         )
 
+    def _encoded_policy_inputs(self, views):
+        observations: dict[str, Mapping[str, Any]] = {}
+        action_spaces = {}
+        for side in ("red", "blue"):
+            view = views[side]
+            decision = view.decision_semantic
+            catalog = view.action_catalog
+            if decision is None or catalog is None:
+                raise NativeMultiSeatError(
+                    "decision_v1_controller_core_missing",
+                    "ControllerView lacks Decision semantic/catalog",
+                    side=side,
+                    phase="encode",
+                )
+            encoded = self.observation_encoder.encode(decision)
+            actions = self.action_encoder.encode(catalog)
+            observations[side] = encoded.policy_record()
+            action_spaces[side] = actions
+        return observations, action_spaces
+
     def _require_synchronized(self) -> None:
         if self._failed:
             raise NativeMultiSeatError(
@@ -476,6 +755,10 @@ class NativeMultiSeatEnv:
         *,
         run_namespace: str,
         max_decision_windows: int | None = None,
+        encoder_config: DecisionEncoderConfig | None = None,
+        enable_eight_factor_shaping: bool = False,
+        discount_config: SharedTrainingDiscountConfig | None = None,
+        shaping_policy: EightFactorShapingPolicy | None = None,
     ) -> None:
         if not callable(match_factory):
             raise TypeError("match_factory must be callable")
@@ -487,9 +770,19 @@ class NativeMultiSeatEnv:
             raise ValueError("max_decision_windows must be positive or None")
         self._match_factory = match_factory
         self.max_decision_windows = max_decision_windows
+        self.encoder_config = (
+            DecisionEncoderConfig() if encoder_config is None else encoder_config
+        )
+        if not isinstance(self.encoder_config, DecisionEncoderConfig):
+            raise TypeError("encoder_config must be DecisionEncoderConfig")
+        self.enable_eight_factor_shaping = enable_eight_factor_shaping
+        self.discount_config = discount_config
+        self.shaping_policy = shaping_policy
         self._match: MatchHandle | None = None
         self._session: NativeDecisionSession | None = None
         self._transitions: list[DecisionTransition] = []
+        self._reward_records: list[JointTrainingRewardRecord] = []
+        self._episode_returns = {"red": 0.0, "blue": 0.0}
         self._decision_count = 0
         self._episode_sequence = 0
         self._ended = False
@@ -516,6 +809,10 @@ class NativeMultiSeatEnv:
                 episode_id=episode_id,
                 run_namespace=self.run_namespace,
                 seed=seed,
+                encoder_config=self.encoder_config,
+                enable_eight_factor_shaping=self.enable_eight_factor_shaping,
+                discount_config=self.discount_config,
+                shaping_policy=self.shaping_policy,
             )
             reset_result = session.reset_result()
         except BaseException:
@@ -526,6 +823,8 @@ class NativeMultiSeatEnv:
         self._match = match
         self._session = session
         self._transitions.clear()
+        self._reward_records.clear()
+        self._episode_returns = {"red": 0.0, "blue": 0.0}
         self._decision_count = 0
         self._ended = match.status.terminal
         return reset_result
@@ -537,6 +836,22 @@ class NativeMultiSeatEnv:
     ) -> AgentStepResult:
         self._require_active()
         result = self._require_session().step(red_decision, blue_decision)
+        return self._accept_step_result(result)
+
+    def step_action_indices(
+        self,
+        red_action_indices: Sequence[int],
+        blue_action_indices: Sequence[int],
+    ) -> AgentStepResult:
+        """Decision-v1 joint policy step using each side's emitted catalog."""
+
+        self._require_active()
+        result = self._require_session().step_action_indices(
+            red_action_indices, blue_action_indices
+        )
+        return self._accept_step_result(result)
+
+    def _accept_step_result(self, result: AgentStepResult) -> AgentStepResult:
         self._decision_count += 1
         training_truncated = (
             not result.terminated
@@ -545,8 +860,30 @@ class NativeMultiSeatEnv:
             and self._decision_count >= self.max_decision_windows
         )
         if training_truncated:
+            assert self.max_decision_windows is not None
+            provenance = TrainingTruncationProvenance.training_limit(
+                RewardTruncationSource.TRAINING_MAX_DECISION_WINDOWS,
+                self.max_decision_windows,
+            )
+            original = result.joint_reward_record
+            base_reward = build_joint_training_reward_record(
+                red_transition_identity=original.red.transition_identity,
+                blue_transition_identity=original.blue.transition_identity,
+                terminated=False,
+                truncated=True,
+                winner=None,
+                terminal_reason_code=None,
+                truncation=provenance,
+                policy=self._require_session().base_reward_policy,
+            )
+            joint_reward = self._require_session().compose_base_reward(base_reward)
             transitions = tuple(
-                replace(value, truncated=True, reward=0.0)
+                replace(
+                    value,
+                    truncated=True,
+                    reward=joint_reward.side_record(value.side).total_reward,
+                    reward_record=joint_reward.side_record(value.side),
+                )
                 for value in result.transitions
             )
             info = json_clone(result.info)
@@ -554,10 +891,27 @@ class NativeMultiSeatEnv:
             result = replace(
                 result,
                 truncated=True,
-                rewards={"red": 0.0, "blue": 0.0},
+                rewards={
+                    "red": joint_reward.red.total_reward,
+                    "blue": joint_reward.blue.total_reward,
+                },
                 transitions=transitions,
                 info=info,
+                joint_reward_record=joint_reward,
             )
+        self._reward_records.append(deepcopy(result.joint_reward_record))
+        for side in ("red", "blue"):
+            self._episode_returns[side] += result.rewards[side]
+        info = json_clone(result.info)
+        info["training_supervision"] = {
+            "classification": "TRAINING_SUPERVISION",
+            "joint_reward_schema": result.joint_reward_record.schema_version,
+            "joint_reward_hash": result.joint_reward_record.semantic_hash,
+            "joint_transition_id": result.joint_reward_record.joint_transition_id,
+            "reward_policy": result.joint_reward_record.reward_policy.to_dict(),
+            "episode_return": dict(self._episode_returns),
+        }
+        result = replace(result, info=info)
         self._transitions.extend(deepcopy(result.transitions))
         self._ended = result.terminated or result.truncated
         return deepcopy(result)
@@ -576,6 +930,16 @@ class NativeMultiSeatEnv:
     def transitions(self) -> tuple[DecisionTransition, ...]:
         self._require_initialized()
         return deepcopy(tuple(self._transitions))
+
+    @property
+    def reward_records(self) -> tuple[JointTrainingRewardRecord, ...]:
+        self._require_initialized()
+        return deepcopy(tuple(self._reward_records))
+
+    @property
+    def episode_returns(self) -> Mapping[str, float]:
+        self._require_initialized()
+        return dict(self._episode_returns)
 
     @property
     def decision_window_count(self) -> int:
@@ -633,12 +997,16 @@ class NativeMultiSeatEnv:
             run_namespace=self.run_namespace,
             episode_id=self.episode_id,
             transitions=self.transitions,
+            joint_reward_records=self.reward_records,
             decision_window_count=self._decision_count,
             truncated=not self.match.status.terminal,
             outcome=outcome,
             summary_schema=summary_schema,
             summary_extra=summary_extra,
             overwrite=overwrite,
+            shaping_policy=self._require_session().shaping_policy,
+            discount_config=self._require_session().discount_config,
+            composite_policy=self._require_session().composite_reward_policy,
         )
 
     def close(self) -> None:
@@ -722,6 +1090,7 @@ class SingleSeatTrainingAdapter:
         return SingleSeatResetResult(
             json_clone(result.observations[self.controlled_side]),
             deepcopy(result.capabilities[self.controlled_side]),
+            deepcopy(result.action_spaces[self.controlled_side]),
             {
                 "episode_id": result.episode_id,
                 "decision_index": result.decision_index,
@@ -783,6 +1152,7 @@ class SingleSeatTrainingAdapter:
         return SingleSeatStepResult(
             json_clone(result.observations[self.controlled_side]),
             deepcopy(result.capabilities[self.controlled_side]),
+            deepcopy(result.action_spaces[self.controlled_side]),
             result.rewards[self.controlled_side],
             result.terminated,
             result.truncated,
@@ -801,6 +1171,7 @@ class SingleSeatTrainingAdapter:
                 "side": self.controlled_side,
             },
             deepcopy(transition),
+            deepcopy(transition.reward_record),
         )
 
     def close(self) -> None:
@@ -817,12 +1188,39 @@ class SingleSeatTrainingAdapter:
 
 def mark_transition_pair_truncated(
     values: Sequence[DecisionTransition],
+    *,
+    configured_limit: int,
 ) -> tuple[DecisionTransition, ...]:
     """Mark a runner-level final decision as a non-Native truncation."""
 
     if not values:
         return ()
-    return tuple(replace(value, truncated=True, reward=0.0) for value in values)
+    by_side = {value.side: value for value in values}
+    if set(by_side) != {"red", "blue"}:
+        raise ValueError("truncated transition pair must contain RED and BLUE")
+    provenance = TrainingTruncationProvenance.training_limit(
+        RewardTruncationSource.TRAINING_MAX_DECISION_WINDOWS,
+        configured_limit,
+    )
+    joint = build_joint_training_reward_record(
+        red_transition_identity=by_side["red"].reward_record.transition_identity,
+        blue_transition_identity=by_side["blue"].reward_record.transition_identity,
+        terminated=False,
+        truncated=True,
+        winner=None,
+        terminal_reason_code=None,
+        truncation=provenance,
+        policy=load_reward_policy(),
+    )
+    return tuple(
+        replace(
+            value,
+            truncated=True,
+            reward=joint.side_record(value.side).total_reward,
+            reward_record=joint.side_record(value.side),
+        )
+        for value in values
+    )
 
 
 def _side(value: str) -> str:
@@ -862,23 +1260,56 @@ def _empty_capability_summary() -> dict[str, object]:
     }
 
 
-def _observations(views) -> dict[str, Mapping[str, Any]]:
-    return {
-        side: json_clone(views[side].observation)
-        for side in ("red", "blue")
-    }
+def _submitted_action_ids(
+    decision: SeatDecision | CatalogActionSelection,
+) -> tuple[str, ...] | None:
+    if isinstance(decision, CatalogActionSelection):
+        return tuple(decision.action_ids)
+    if not decision.operations:
+        return ()
+    return None
 
 
-def _rewards(
+def _reward_transition_identity(
     *,
-    terminated: bool,
-    truncated: bool,
-    winner: str | None,
-) -> dict[str, float]:
-    if not terminated or truncated or winner not in {"red", "blue"}:
-        return {"red": 0.0, "blue": 0.0}
-    loser = "blue" if winner == "red" else "red"
-    return {winner: 1.0, loser: -1.0}
+    episode_id: str,
+    run_namespace: str,
+    side: str,
+    before,
+    after,
+    advance,
+    submitted_action_ids: tuple[str, ...] | None,
+    submitted_action_semantic_hash: str,
+    joint_actions_hash: str,
+):
+    before_decision = before.decision_semantic
+    before_catalog = before.action_catalog
+    after_decision = after.decision_semantic
+    if before_decision is None or before_catalog is None or after_decision is None:
+        raise NativeMultiSeatError(
+            "reward_decision_core_missing",
+            "reward transition requires before/after Decision semantic evidence",
+            side=side,
+            phase="reward",
+        )
+    return build_reward_transition_identity(
+        episode_id=episode_id,
+        run_namespace=run_namespace,
+        side=side,
+        decision_window_index=before.step_index,
+        frame_before=before.frame_index,
+        fact_frame_start=advance.first_frame_index,
+        fact_frame_end=advance.last_frame_index,
+        frame_after=after.frame_index,
+        sim_time_before_ms=advance.sim_time_before_ms,
+        sim_time_after_ms=advance.sim_time_after_ms,
+        decision_before_hash=before_decision.semantic_hash,
+        action_catalog_hash=before_catalog.catalog_hash,
+        submitted_action_ids=submitted_action_ids,
+        submitted_action_semantic_hash=submitted_action_semantic_hash,
+        joint_action_hash=joint_actions_hash,
+        decision_after_hash=after_decision.semantic_hash,
+    )
 
 
 def _run_namespace(value: str) -> str:
@@ -921,4 +1352,12 @@ def _side_snapshot_hash(view, capabilities: SeatActionCapabilities) -> str:
         "observation": view.observation,
         "valid_actions": view.valid_actions,
         "capabilities": capabilities.to_record(),
+        "decision_semantic_hash": (
+            None
+            if view.decision_semantic is None
+            else view.decision_semantic.semantic_hash
+        ),
+        "action_catalog_hash": (
+            None if view.action_catalog is None else view.action_catalog.catalog_hash
+        ),
     })

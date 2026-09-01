@@ -1,0 +1,14 @@
+{
+  "schema": "native-boarding-profiles/v1.0",
+  "authority_version": "native-boarding-authority/1.0",
+  "assignment_policy": "EXPLICIT_OPERATOR_PROFILE_ONLY",
+  "profiles": [
+    {
+      "profile_id": "GROUND_PERSONNEL_SINGLE_V1",
+      "passenger_domains": ["PERSONNEL"],
+      "carrier_domains": ["VEHICLE"],
+      "transition_duration_ms": 75000,
+      "single_passenger": true
+    }
+  ]
+}

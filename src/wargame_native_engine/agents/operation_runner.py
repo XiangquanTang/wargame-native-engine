@@ -200,9 +200,16 @@ class LocalSeatMatchRunner:
             truncated = not final_view.terminal
             transitions = tuple(self._transitions)
             if truncated and transitions:
+                if max_decision_windows is None:
+                    raise RuntimeError(
+                        "runner truncation lacks max_decision_windows provenance"
+                    )
                 transitions = (
                     *transitions[:-2],
-                    *mark_transition_pair_truncated(transitions[-2:]),
+                    *mark_transition_pair_truncated(
+                        transitions[-2:],
+                        configured_limit=max_decision_windows,
+                    ),
                 )
             publication = publish_training_episode(
                 self.match,
@@ -337,7 +344,9 @@ class LocalSeatMatchRunner:
         side: str,
         expected_window: int,
     ) -> AgentDecisionContext:
-        context = self.decision_session.decision_context(side)
+        context = self.decision_session.decision_context(
+            side, include_semantic_core=True,
+        )
         if context.decision_index != expected_window:
             raise RuntimeError("controller observation/window mismatch")
         return context

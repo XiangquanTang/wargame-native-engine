@@ -35,12 +35,28 @@ class EventType(str, Enum):
     UNIT_DESTROYED = "unit_destroyed"
     WEAPON_COOLDOWN_STARTED = "weapon_cooldown_started"
     AMMUNITION_CONSUMED = "ammunition_consumed"
+    GUIDED_FIRE_RESOLVED = "guided_fire_resolved"
+    INDIRECT_FIRE_MISSION_CREATED = "indirect_fire_mission_created"
+    INDIRECT_FIRE_MISSION_CANCELLED = "indirect_fire_mission_cancelled"
+    INDIRECT_FIRE_ACTIVE_STARTED = "indirect_fire_active_started"
+    INDIRECT_FIRE_AREA_TRIGGERED = "indirect_fire_area_triggered"
+    INDIRECT_FIRE_RESOLVED = "indirect_fire_resolved"
     MOVEMENT_STARTED = "movement_started"
     ARRIVED_HEX = "arrived_hex"
     MOVEMENT_BLOCKED = "movement_blocked"
     STOP_MOVE_REQUESTED = "stop_move_requested"
     STOPPING_STARTED = "stopping_started"
     STOPPING_COMPLETED = "stopping_completed"
+    BOARDING_STARTED = "boarding_started"
+    BOARDING_COMPLETED = "boarding_completed"
+    UNLOADING_STARTED = "unloading_started"
+    UNLOADING_COMPLETED = "unloading_completed"
+    BOARD_STARTED = "board_started"
+    BOARD_COMPLETED = "board_completed"
+    UNLOAD_STARTED = "unload_started"
+    UNLOAD_COMPLETED = "unload_completed"
+    UNIT_CONCEALED = "unit_concealed"
+    UNIT_EXPOSED = "unit_exposed"
     FATIGUE_CHANGED = "fatigue_changed"
     WEAPON_LOCK_STARTED = "weapon_lock_started"
     WEAPON_LOCKED = "weapon_locked"
@@ -78,12 +94,28 @@ EVENT_PRIORITY = {
     EventType.UNIT_DESTROYED: 39,
     EventType.WEAPON_COOLDOWN_STARTED: 40,
     EventType.AMMUNITION_CONSUMED: 41,
+    EventType.GUIDED_FIRE_RESOLVED: 42,
+    EventType.INDIRECT_FIRE_MISSION_CREATED: 43,
+    EventType.INDIRECT_FIRE_MISSION_CANCELLED: 44,
+    EventType.INDIRECT_FIRE_ACTIVE_STARTED: 45,
+    EventType.INDIRECT_FIRE_AREA_TRIGGERED: 46,
+    EventType.INDIRECT_FIRE_RESOLVED: 47,
     EventType.MOVEMENT_STARTED: 13,
     EventType.ARRIVED_HEX: 14,
     EventType.MOVEMENT_BLOCKED: 15,
     EventType.STOP_MOVE_REQUESTED: 16,
     EventType.STOPPING_STARTED: 17,
     EventType.STOPPING_COMPLETED: 18,
+    EventType.BOARDING_STARTED: 20,
+    EventType.BOARDING_COMPLETED: 21,
+    EventType.UNLOADING_STARTED: 20,
+    EventType.UNLOADING_COMPLETED: 21,
+    EventType.BOARD_STARTED: 20,
+    EventType.BOARD_COMPLETED: 21,
+    EventType.UNLOAD_STARTED: 20,
+    EventType.UNLOAD_COMPLETED: 21,
+    EventType.UNIT_CONCEALED: 22,
+    EventType.UNIT_EXPOSED: 22,
     EventType.FATIGUE_CHANGED: 19,
     EventType.WEAPON_LOCK_STARTED: 23,
     EventType.WEAPON_LOCKED: 24,

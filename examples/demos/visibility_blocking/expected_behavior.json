@@ -1,0 +1,39 @@
+{
+  "schema": "native-demo-expected/1.0",
+  "demo_id": "visibility_blocking",
+  "seed": 42,
+  "side": "red",
+  "cases": [
+    {
+      "case_id": "unobstructed",
+      "observer_id": 101,
+      "target_id": 201,
+      "observable": true,
+      "reason": "observable",
+      "blocking_hexes": [],
+      "terrain_modifier": false
+    },
+    {
+      "case_id": "elevation_blocked",
+      "observer_id": 102,
+      "target_id": 202,
+      "observable": false,
+      "reason": "line_of_sight_blocked",
+      "blocking_hexes": [202],
+      "terrain_modifier": false
+    },
+    {
+      "case_id": "forest_range_modifier",
+      "observer_id": 103,
+      "target_id": 203,
+      "observable": false,
+      "reason": "outside_observation_limit",
+      "blocking_hexes": [],
+      "terrain_modifier": true
+    }
+  ],
+  "outcome": {
+    "strict_replay_matches": true,
+    "evidence_file": "visibility_evidence.json"
+  }
+}

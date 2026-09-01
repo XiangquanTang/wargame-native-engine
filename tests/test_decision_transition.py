@@ -81,11 +81,10 @@ def test_transition_jsonl_is_canonical_red_blue_order_and_deeply_detached(
         assert "green" not in payload.decode("utf-8").lower()
         assert "frame_analysis" not in payload.decode("utf-8").lower()
 
-        records[0]["observation"]["mission"]["mutated"] = True
-        result.transitions[0].observation["mission"]["caller_mutated"] = True
+        records[0]["observation"]["snapshot_features"][0] = 99.0
+        result.transitions[0].observation["snapshot_features"][0] = 88.0
         fresh = environment.transitions
-        assert "mutated" not in fresh[0].observation["mission"]
-        assert "caller_mutated" not in fresh[0].observation["mission"]
+        assert fresh[0].observation["snapshot_features"][0] == 1.0
         assert before == environment.transitions
     finally:
         environment.close()

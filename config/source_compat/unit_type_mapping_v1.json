@@ -9,5 +9,22 @@
     "4": {"domain": "UNKNOWN", "status": "UNMAPPED", "source": "fortification outside Phase 4A"},
     "5": {"domain": "UNKNOWN", "status": "UNMAPPED", "source": "strategic support outside Phase 4A"}
   },
-  "sub_type_codes": {"status": "UNRESOLVED", "fallback_policy": "PRESERVE_RAW"}
+  "sub_type_codes": {
+    "status": "PARTIAL",
+    "fallback_policy": "PRESERVE_RAW",
+    "mappings": {
+      "3_5": {
+        "canonical_identity": "DRONE",
+        "domain": "AIR",
+        "status": "DIRECT",
+        "source": "docs/rules/推演规则_完整纯文本_Final.md section 11"
+      },
+      "3_7": {
+        "canonical_identity": "LOITERING_MUNITION",
+        "domain": "AIR",
+        "status": "DIRECT",
+        "source": "docs/rules/推演规则_完整纯文本_Final.md section 10"
+      }
+    }
+  }
 }

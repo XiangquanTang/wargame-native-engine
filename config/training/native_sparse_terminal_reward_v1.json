@@ -1,0 +1,52 @@
+{
+  "schema_version": "native-training-reward-policy/1.0",
+  "policy_id": "native-sparse-terminal-zero-sum",
+  "policy_version": "1.0.0",
+  "relation": "ZERO_SUM",
+  "units": "dimensionless",
+  "base_component": {
+    "namespace": "base",
+    "code": "TERMINAL_OUTCOME"
+  },
+  "mapping": {
+    "nonterminal": {
+      "red": 0.0,
+      "blue": 0.0
+    },
+    "red_win": {
+      "red": 1.0,
+      "blue": -1.0
+    },
+    "blue_win": {
+      "red": -1.0,
+      "blue": 1.0
+    },
+    "draw": {
+      "red": 0.0,
+      "blue": 0.0
+    },
+    "native_truncation": {
+      "red": 0.0,
+      "blue": 0.0
+    },
+    "training_truncation": {
+      "red": 0.0,
+      "blue": 0.0
+    }
+  },
+  "terminal_reason_codes": [
+    "mutual_elimination",
+    "objective_score",
+    "objective_score_draw",
+    "side_eliminated"
+  ],
+  "native_truncation_reason_codes": [
+    "max_ticks"
+  ],
+  "invalid_transition_semantics": "NO_COMMITTED_TRANSITION_NO_REWARD_RECORD",
+  "wait_semantics": "NO_ACTION_COST",
+  "shaping": {
+    "enabled": false,
+    "components": []
+  }
+}

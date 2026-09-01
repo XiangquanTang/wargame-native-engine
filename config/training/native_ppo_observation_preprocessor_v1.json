@@ -1,0 +1,47 @@
+{
+  "schema_version": "native-ppo-observation-preprocessor/1.0",
+  "preprocessor_id": "native-decision-fixed-scaling",
+  "preprocessor_version": "1.0.0",
+  "strategy": "DETERMINISTIC_FIXED_SCALING",
+  "input_encoder": {
+    "schema_version": "native-decision-observation-encoder/1.0",
+    "contract_hash": "a477d7953c4f3e0a52f13aa2bc12ea08d1327fff7a8bdfe8d91c41a9e51ed750",
+    "shape": [8302],
+    "dtype": "float64",
+    "max_objectives": 32,
+    "max_own_operators": 64,
+    "max_observed_enemies": 64,
+    "max_actions": 256
+  },
+  "output": {
+    "shape": [8302],
+    "dtype": "float32",
+    "default_device": "cpu"
+  },
+  "scaling_constants": {
+    "milliseconds_per_second": 1000.0,
+    "progress_millionths": 1000000.0,
+    "limited_lifecycle_maximum_ms": 1200000.0
+  },
+  "source_authorities": {
+    "operator_lifecycle_authority_version": "native-operator-lifecycle-authority/1.0",
+    "operator_lifecycle_authority_hash": "8ab28ce727680a65c5863af87c5d72ad92e2c6335400f8bb35b580d1447a4623",
+    "unit_conversion": "SI_MILLISECONDS_TO_SECONDS_EXACT",
+    "progress_contract": "NATIVE_PROGRESS_MILLIONTHS/1.0"
+  },
+  "policies": {
+    "bounded_ratios": "IDENTITY",
+    "enum_status_codes": "IDENTITY",
+    "milliseconds": "DIVIDE_BY_1000_EXCEPT_LIMITED_LIFECYCLE",
+    "limited_lifecycle": "DIVIDE_BY_AUTHORITY_MAXIMUM",
+    "progress_millionths": "DIVIDE_BY_1000000",
+    "formal_counts": "DIVIDE_BY_ENCODER_CAPACITY",
+    "positions": "IDENTITY_NO_GLOBAL_BOUND_AUTHORITY",
+    "absolute_health": "IDENTITY",
+    "entity_masks": "IDENTITY_EXACT_ZERO_ONE",
+    "padding": "PRESERVE_ZERO"
+  },
+  "clipping": "NONE",
+  "batch_statistics": "NONE",
+  "running_state": "NONE"
+}

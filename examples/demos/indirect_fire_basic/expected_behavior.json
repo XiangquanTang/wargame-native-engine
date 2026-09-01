@@ -1,0 +1,27 @@
+{
+  "schema": "native-demo-expected/1.0",
+  "demo_id": "indirect_fire_basic",
+  "seed": 5,
+  "side": "red",
+  "actors": {
+    "shooter_id": 1,
+    "target_id": 2,
+    "weapon_id": 72,
+    "planned_hex": 102
+  },
+  "preconditions": {
+    "indirect_capability_available": true,
+    "human_capability_available": true,
+    "agent_capability_available": true
+  },
+  "outcome": {
+    "event_types": [
+      "indirect_fire_mission_created",
+      "indirect_fire_active_started",
+      "indirect_fire_area_triggered",
+      "indirect_fire_resolved"
+    ],
+    "target_state_changes": true,
+    "strict_replay_matches": true
+  }
+}

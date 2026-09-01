@@ -134,7 +134,9 @@ class NativeScenario:
         operators = {item.operator_id: OperatorState.from_dict(item.to_dict())
                      for item in self.operators}
         for item in operators.values():
-            item.deployed = self.initial_stage is Stage.COMBAT
+            item.deployed = (
+                self.initial_stage is Stage.COMBAT and item.mounted_on is None
+            )
         objectives = {item.objective_id: ObjectiveState(**item.to_dict())
                       for item in self.objectives}
         sides = {side: SideState(side, self.initial_stage is Stage.COMBAT)
@@ -226,11 +228,17 @@ _OPERATOR_FIELDS = {
     "movement_mode", "stopped", "move_to_stop_remaining_ms",
     "fatigue_level", "fatigue_recovery_elapsed_ms", "movement_action_id",
     "movement_action_sequence", "movement_stop_requested",
-    "movement_blocked_reason", "segment_from_hex", "segment_to_hex",
+    "movement_blocked_reason", "movement_task_pause_reason",
+    "segment_from_hex", "segment_to_hex",
     "segment_elapsed_ms", "segment_traversal_ms", "segment_event_id",
     "transition_kind", "transition_remaining_ms", "weapon_locked",
     "weapon_unfolded", "weapon_cooldown_remaining_ms",
     "suppression_remaining_ms",
+    "guidance_profile_id", "guidance_affiliation_id",
+    "guided_fire_recovery_remaining_ms", "guidance_affiliation_evidence",
+    "indirect_fire_planned_cooldown_remaining_ms",
+    "boarding_profile_id", "mounted_on", "passenger_id", "movement_locked",
+    "lifecycle_profile_id", "lifecycle_remaining_ms",
 }
 
 

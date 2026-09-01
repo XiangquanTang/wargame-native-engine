@@ -1,0 +1,17 @@
+{
+  "schema_version": "native-training-seed-config/1.0",
+  "config_id": "native-training-seeds",
+  "config_version": "1.0.0",
+  "root_seed": 42,
+  "derivation_algorithm": "SHA256_CANONICAL_JSON_FIRST_63_BITS_V1",
+  "stream_namespaces": [
+    "ENVIRONMENT",
+    "POLICY_INITIALIZATION",
+    "POLICY_SAMPLING",
+    "MINIBATCH_SHUFFLE",
+    "TORCH_CPU",
+    "TORCH_CUDA",
+    "WORKER",
+    "EVALUATION"
+  ]
+}

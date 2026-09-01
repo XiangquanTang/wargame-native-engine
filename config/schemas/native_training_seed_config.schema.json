@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Native Training Seed Config",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "config_id", "config_version", "root_seed",
+    "derivation_algorithm", "stream_namespaces"
+  ],
+  "properties": {
+    "schema_version": {"const": "native-training-seed-config/1.0"},
+    "config_id": {"const": "native-training-seeds"},
+    "config_version": {"const": "1.0.0"},
+    "root_seed": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9223372036854775807
+    },
+    "derivation_algorithm": {
+      "const": "SHA256_CANONICAL_JSON_FIRST_63_BITS_V1"
+    },
+    "stream_namespaces": {
+      "const": [
+        "ENVIRONMENT",
+        "POLICY_INITIALIZATION",
+        "POLICY_SAMPLING",
+        "MINIBATCH_SHUFFLE",
+        "TORCH_CPU",
+        "TORCH_CUDA",
+        "WORKER",
+        "EVALUATION"
+      ]
+    }
+  }
+}

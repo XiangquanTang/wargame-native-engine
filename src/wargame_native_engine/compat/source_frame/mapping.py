@@ -49,6 +49,31 @@ class SourceMappings:
         return MappingResult(type_code, entry["domain"], entry["domain"],
                              entry["status"], entry["source"])
 
+    def canonical_identity(
+        self,
+        type_code: int,
+        subtype_code: int,
+    ) -> MappingResult:
+        subtype_contract = self.unit_types.get("sub_type_codes", {})
+        mappings = subtype_contract.get("mappings", {})
+        entry = mappings.get(f"{type_code}_{subtype_code}")
+        if not isinstance(entry, Mapping):
+            return MappingResult(
+                (type_code, subtype_code),
+                "UNKNOWN",
+                "UNKNOWN",
+                "UNMAPPED",
+                "configuration",
+            )
+        value = str(entry["canonical_identity"]).upper()
+        return MappingResult(
+            (type_code, subtype_code),
+            value,
+            value,
+            str(entry["status"]),
+            str(entry["source"]),
+        )
+
     def armor(self, armor_code: int) -> MappingResult:
         entry = self.armors["codes"].get(str(armor_code))
         value = ArmorClass.UNKNOWN.value if not entry else entry["armor_class"]
@@ -77,6 +102,23 @@ class SourceMappings:
         if unit.speed > 0:
             return UnitState.MOVING
         return UnitState.UNKNOWN
+
+
+def source_identity_codes(value: Any) -> tuple[int, int] | None:
+    """Decode only the canonical Native ``source-T-S`` subtype form."""
+
+    if not isinstance(value, str):
+        return None
+    parts = value.split("-")
+    if len(parts) != 3 or parts[0] != "source":
+        return None
+    try:
+        type_code, subtype_code = int(parts[1]), int(parts[2])
+    except ValueError:
+        return None
+    if type_code < 0 or subtype_code < 0:
+        return None
+    return type_code, subtype_code
 
 
 def _load(path: Path) -> Mapping[str, Any]:

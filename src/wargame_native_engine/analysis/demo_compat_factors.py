@@ -17,45 +17,43 @@ from wargame_native_engine.analysis._numeric import (
     require_finite_number,
     to_finite_float,
 )
-
-# ── weapon weight table (exact copy from demo) ────────────────────────
-
-WEAPON_WEIGHT: dict[int, float] = {
-    1: 1.8,
-    2: 1.9,
-    3: 2.1,
-    4: 1.5,
-    5: 1.7,
-    29: 0.8,
-    35: 1.2,
-    36: 2.5,
-    37: 2.0,
-    43: 0.9,
-    54: 1.4,
-    56: 1.6,
-    69: 2.0,
-    71: 1.6,
-    72: 2.3,
-    73: 2.7,
-    74: 2.1,
-    75: 1.7,
-    76: 2.2,
-    83: 2.1,
-    84: 2.2,
-    88: 1.8,
-    89: 1.2,
-}
-
-# ── mobility state map (exact copy from demo) ─────────────────────────
-
-_MOBILITY_STATE: dict[int, float] = {
-    0: 1.0,
-    1: 1.05,
-    2: 1.1,
-    3: 1.15,
-    4: 0.9,
-    5: 0.95,
-}
+from wargame_native_engine.analysis.semantic_identity import (
+    AMMO_CAP,
+    AMMO_LOG_DIVISOR,
+    AMMO_LOG_INTERCEPT,
+    AMMO_NON_MAPPING_VALUE,
+    AMMO_ZERO_TOTAL_VALUE,
+    BASE_VALUE_FLOOR,
+    HEALTH_ALIVE_FLOOR,
+    HEALTH_ALIVE_SPAN,
+    HEALTH_DESTROYED_THRESHOLD,
+    HEALTH_NONPOSITIVE_MAX_ALIVE_VALUE,
+    HEALTH_RATIO_MAX,
+    HEALTH_RATIO_MIN,
+    INFORMATION_BASE,
+    INFORMATION_CAP,
+    INFORMATION_PER_CONTACT,
+    MOBILITY_CANNOT_MOVE_MULTIPLIER,
+    MOBILITY_DEFAULT,
+    MOBILITY_ON_BOARD_MULTIPLIER,
+    MOBILITY_STATE,
+    MOBILITY_STOP_MULTIPLIER,
+    READINESS_BASE,
+    READINESS_COOLDOWN_CAP,
+    READINESS_COOLDOWN_DIVISOR,
+    READINESS_COOLDOWN_FLOOR,
+    READINESS_FOLDED_MULTIPLIER,
+    READINESS_UNFOLDED_MULTIPLIER,
+    STATUS_BASE,
+    STATUS_CLOSE_COMBAT_MULTIPLIER,
+    STATUS_FATIGUE_LEVEL_ONE_MULTIPLIER,
+    STATUS_FATIGUE_LEVEL_TWO_PLUS_MULTIPLIER,
+    STATUS_LOSE_CONTROL_MULTIPLIER,
+    STATUS_SUPPRESSED_MULTIPLIER,
+    WEAPON_EMPTY_WEIGHT,
+    WEAPON_UNKNOWN_WEIGHT,
+    WEAPON_WEIGHT,
+)
 
 
 # ── public factor functions ───────────────────────────────────────────
@@ -76,17 +74,22 @@ def health_factor(unit: Mapping[str, Any]) -> float | None:
         return None
     blood = to_finite_float(raw_blood, stage="health_factor blood")
     max_blood = to_finite_float(raw_max, stage="health_factor max_blood")
-    if blood <= 0:
+    if blood <= HEALTH_DESTROYED_THRESHOLD:
         return _finite_result("health_factor result", 0.0)
     if max_blood <= 0:
-        result = 1.0 if blood > 0 else 0.0
+        result = (
+            HEALTH_NONPOSITIVE_MAX_ALIVE_VALUE
+            if blood > HEALTH_DESTROYED_THRESHOLD else 0.0
+        )
         return _finite_result("health_factor result", result)
     ratio = blood / max_blood
     require_finite_number(ratio, stage="health_factor ratio")
-    ratio = max(0.0, min(1.0, ratio))
-    if ratio <= 0:
+    ratio = max(HEALTH_RATIO_MIN, min(HEALTH_RATIO_MAX, ratio))
+    if ratio <= HEALTH_RATIO_MIN:
         return _finite_result("health_factor result", 0.0)
-    return _finite_result("health_factor result", 0.25 + 0.75 * ratio)
+    return _finite_result(
+        "health_factor result", HEALTH_ALIVE_FLOOR + HEALTH_ALIVE_SPAN * ratio
+    )
 
 
 def base_value_factor(unit: Mapping[str, Any]) -> float | None:
@@ -102,7 +105,9 @@ def base_value_factor(unit: Mapping[str, Any]) -> float | None:
     if raw is None:
         return None
     numeric = to_finite_float(raw, stage="base_value_factor value")
-    return _finite_result("base_value_factor result", max(1.0, numeric))
+    return _finite_result(
+        "base_value_factor result", max(BASE_VALUE_FLOOR, numeric)
+    )
 
 
 def weapon_factor(unit: Mapping[str, Any]) -> float:
@@ -123,15 +128,15 @@ def weapon_factor(unit: Mapping[str, Any]) -> float:
         )
     weapons = raw_weapons or []
     if not weapons:
-        return _finite_result("weapon_factor result", 0.6)
+        return _finite_result("weapon_factor result", WEAPON_EMPTY_WEIGHT)
     weights = [
         WEAPON_WEIGHT.get(
             _as_int(w, stage="weapon_factor carry_weapon_ids item") or -1,
-            1.0,
+            WEAPON_UNKNOWN_WEIGHT,
         )
         for w in weapons
     ]
-    result = max(weights) if weights else 0.6
+    result = max(weights) if weights else WEAPON_EMPTY_WEIGHT
     return _finite_result("weapon_factor result", result)
 
 
@@ -152,15 +157,18 @@ def ammo_factor(unit: Mapping[str, Any]) -> float:
                 ammo,
                 stage="ammo_factor remain_bullet_nums",
             )
-        return _finite_result("ammo_factor result", 0.7)
+        return _finite_result("ammo_factor result", AMMO_NON_MAPPING_VALUE)
     total = 0.0
     for value in ammo.values():
         amount = _as_float(value, stage="ammo_factor ammunition value")
         total += max(0.0, amount)
         require_finite_number(total, stage="ammo_factor total")
     if total <= 0:
-        return _finite_result("ammo_factor result", 0.3)
-    result = min(1.25, 0.55 + math.log1p(total) / 5.0)
+        return _finite_result("ammo_factor result", AMMO_ZERO_TOTAL_VALUE)
+    result = min(
+        AMMO_CAP,
+        AMMO_LOG_INTERCEPT + math.log1p(total) / AMMO_LOG_DIVISOR,
+    )
     return _finite_result("ammo_factor result", result)
 
 
@@ -171,14 +179,18 @@ def readiness_factor(unit: Mapping[str, Any]) -> float:
     100/180 cap; unfold state 0 → 0.9, state 1 → 1.05.
     """
 
-    factor = 1.0
+    factor = READINESS_BASE
     cool = _as_float(
         unit.get("weapon_cool_time"),
         0.0,
         stage="readiness_factor weapon_cool_time",
     )
     if cool > 0:
-        factor *= max(0.55, 1.0 - min(cool, 100.0) / 180.0)
+        factor *= max(
+            READINESS_COOLDOWN_FLOOR,
+            READINESS_BASE
+            - min(cool, READINESS_COOLDOWN_CAP) / READINESS_COOLDOWN_DIVISOR,
+        )
         require_finite_number(factor, stage="readiness_factor cooldown result")
     unfold_state = unit.get("weapon_unfold_state")
     _validate_numeric_code(
@@ -186,9 +198,9 @@ def readiness_factor(unit: Mapping[str, Any]) -> float:
         stage="readiness_factor weapon_unfold_state",
     )
     if unfold_state == 0:
-        factor *= 0.9
+        factor *= READINESS_FOLDED_MULTIPLIER
     elif unfold_state == 1:
-        factor *= 1.05
+        factor *= READINESS_UNFOLDED_MULTIPLIER
     return _finite_result("readiness_factor result", factor)
 
 
@@ -201,18 +213,18 @@ def mobility_factor(unit: Mapping[str, Any]) -> float:
 
     state = unit.get("move_state")
     _validate_numeric_code(state, stage="mobility_factor move_state")
-    state_factor = _MOBILITY_STATE.get(state, 1.0)
+    state_factor = MOBILITY_STATE.get(state, MOBILITY_DEFAULT)
     if unit.get("stop") == 1:
-        state_factor *= 0.95
+        state_factor *= MOBILITY_STOP_MULTIPLIER
         require_finite_number(state_factor, stage="mobility_factor stop result")
     if unit.get("can_to_move") is False:
-        state_factor *= 0.85
+        state_factor *= MOBILITY_CANNOT_MOVE_MULTIPLIER
         require_finite_number(
             state_factor,
             stage="mobility_factor can_to_move result",
         )
     if unit.get("on_board"):
-        state_factor *= 0.9
+        state_factor *= MOBILITY_ON_BOARD_MULTIPLIER
     return _finite_result("mobility_factor result", state_factor)
 
 
@@ -231,7 +243,10 @@ def information_factor(unit: Mapping[str, Any]) -> float:
             stage="information_factor see_enemy_bop_ids",
         )
     seen = raw_seen or []
-    result = min(1.25, 1.0 + 0.05 * len(seen))
+    result = min(
+        INFORMATION_CAP,
+        INFORMATION_BASE + INFORMATION_PER_CONTACT * len(seen),
+    )
     return _finite_result("information_factor result", result)
 
 
@@ -242,24 +257,24 @@ def status_factor(unit: Mapping[str, Any]) -> float:
     lose_control → 0.2; close_combat → 1.05.
     """
 
-    factor = 1.0
+    factor = STATUS_BASE
     if unit.get("keep"):
-        factor *= 0.65
+        factor *= STATUS_SUPPRESSED_MULTIPLIER
         require_finite_number(factor, stage="status_factor keep result")
     tire = _as_int(unit.get("tire"), stage="status_factor tire") or 0
     if tire == 1:
-        factor *= 0.9
+        factor *= STATUS_FATIGUE_LEVEL_ONE_MULTIPLIER
     elif tire >= 2:
-        factor *= 0.75
+        factor *= STATUS_FATIGUE_LEVEL_TWO_PLUS_MULTIPLIER
     require_finite_number(factor, stage="status_factor tire result")
     if unit.get("lose_control"):
-        factor *= 0.2
+        factor *= STATUS_LOSE_CONTROL_MULTIPLIER
         require_finite_number(
             factor,
             stage="status_factor lose_control result",
         )
     if unit.get("close_combat"):
-        factor *= 1.05
+        factor *= STATUS_CLOSE_COMBAT_MULTIPLIER
     return _finite_result("status_factor result", factor)
 
 

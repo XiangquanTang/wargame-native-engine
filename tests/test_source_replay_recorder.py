@@ -87,7 +87,7 @@ def test_manifest_jsonl_contains_provenance_hashes_and_result(acceptance) -> Non
     assert manifest["step_count"] == report["step_count"]
     assert manifest["winner"] == "red"
     assert manifest["adjudication_semantics_version"] == (
-        "native-joint-prestate/1.0")
+        "native-joint-prestate/1.1")
     for key in ("ruleset_hash", "adjudication_table_set_hash",
                 "movement_policy_hash", "perspective_policy_hash",
                 "steps_sha256", "frames_merkle_root",

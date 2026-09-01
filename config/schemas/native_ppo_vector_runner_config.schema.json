@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "native-ppo-vector-runner-config/1.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "runner_id", "runner_version", "purpose", "base_runner_config_ref", "num_envs", "trained_side", "reward_mode", "ppo_config_ref", "seed_config_ref", "rollout_target", "collection_mode", "reset_policy", "scenario_assignment", "flatten_order", "error_policy", "reward_verification", "device"],
+  "properties": {
+    "schema_version": {"const": "native-ppo-vector-runner-config/1.0"},
+    "runner_id": {"const": "native-synchronous-vector-ppo-runner"},
+    "runner_version": {"const": "1.0.0"},
+    "purpose": {"enum": ["BASELINE_V1", "TEST_SMOKE"]},
+    "base_runner_config_ref": {"$ref": "#/$defs/ref"},
+    "num_envs": {"type": "integer", "minimum": 1},
+    "trained_side": {"enum": ["RED", "BLUE"]},
+    "reward_mode": {"enum": ["BASE_ONLY", "COMPOSITE_EIGHT_FACTOR"]},
+    "ppo_config_ref": {"$ref": "#/$defs/ref"},
+    "seed_config_ref": {"$ref": "#/$defs/ref"},
+    "rollout_target": {
+      "type": "object", "additionalProperties": false,
+      "required": ["source", "semantics", "transitions_per_update"],
+      "properties": {
+        "source": {"const": "PPO_CONFIG"},
+        "semantics": {"const": "TOTAL_TRANSITIONS_PER_UPDATE"},
+        "transitions_per_update": {"type": "integer", "minimum": 1}
+      }
+    },
+    "collection_mode": {"const": "SYNCHRONOUS"},
+    "reset_policy": {"const": "AUTO_RESET_COMPLETED_ENV"},
+    "scenario_assignment": {"const": "SAME_SCENARIO_PER_ENV_DIFFERENT_DERIVED_SEEDS"},
+    "flatten_order": {"const": "ENV_MAJOR_THEN_COLLECTION_ORDER"},
+    "error_policy": {"const": "FAIL_WHOLE_VECTOR"},
+    "reward_verification": {"const": "VERIFY_EVERY_COMPLETED_EPISODE"},
+    "device": {"const": "CPU"}
+  },
+  "$defs": {
+    "ref": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "version", "hash"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "minLength": 1},
+        "hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    }
+  }
+}

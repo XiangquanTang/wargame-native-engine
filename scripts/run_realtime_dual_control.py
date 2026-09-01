@@ -18,6 +18,7 @@ from wargame_native_engine.data import ScenarioBundle
 from wargame_native_engine.viewer.realtime_control_server import (
     create_realtime_dual_control_server,
 )
+from wargame_native_engine.viewer.human_capabilities import source_weapon_profiles
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -69,6 +70,7 @@ def main(argv: list[str] | None = None) -> int:
             red_token=args.red_token,
             blue_token=args.blue_token,
             map_data=bundle.render_map_record(),
+            weapon_profiles=source_weapon_profiles(bundle.scenario.metadata),
             host=args.host,
             port=args.port,
         )

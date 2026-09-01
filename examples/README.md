@@ -40,3 +40,33 @@ constructs paths. The generated evidence package can be opened with
 The reduced historical-shaped fixtures are sanitized test data. Their own
 manifests state that original content is not included; they are not needed by
 the public Quick Start.
+
+## Extensible Demo Library
+
+`examples/demos/registry.json` is the deterministic catalog for feature and
+rule demonstrations. Each registered demo keeps its scenario, readable guide
+and expected-behavior contract together. List and execute entries with:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python scripts/run_demo.py list
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python scripts/run_demo.py guided_fire_basic
+```
+
+The runner uses the regular Product, RealtimeAgentSession, Engine, GREEN
+Recorder and strict Replay paths. Demo data never authorizes special Engine
+behavior.
+
+## Capability benchmarks
+
+`config/benchmarks/native_capability_benchmark_v1.json` links each public Demo
+to its Engine, Human, Agent, event and strict-Replay requirements. Run the
+deterministic matrix without changing any adjudication rule:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python scripts/run_benchmark.py list
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python scripts/run_benchmark.py check
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python scripts/run_benchmark.py direct_fire_basic
+```
+
+Each run writes `benchmark_report.json` and `event_trace.json` beside the
+regular Demo evidence package.

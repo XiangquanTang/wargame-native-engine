@@ -1,0 +1,115 @@
+{
+  "schema_version": "native-indirect-fire-authority/1.1",
+  "config_id": "native-indirect-fire-authority",
+  "config_version": "1.1.0",
+  "authority_status": "EXECUTABLE_AUTHORITY_READY",
+  "unknown_policy": "PRESERVE_UNKNOWN_REJECT_EXECUTION",
+  "source": {
+    "machine_table": "config/adjudication/source_tables_v1/native_adjudication_tables_final.json",
+    "table_set_id": "native-source-adjudication-final",
+    "table_revision": "1.2.1-final",
+    "table_content_sha256": "2d0d03fa7ac5f1072b550378c20347b3e35e088a1348b459ae05967c0bab11d6",
+    "guide": "docs/rules/Native兵棋裁决知识库_Final.md",
+    "context": "docs/rules/推演规则_完整纯文本_Final.md"
+  },
+  "profiles": {
+    "INDIRECT_HEAVY_ARTILLERY_72": {
+      "profile_id": "INDIRECT_HEAVY_ARTILLERY_72",
+      "weapon_id": 72,
+      "artillery_class": "HEAVY",
+      "supported_fire_mode": "INDIRECT",
+      "target_domain": "AREA",
+      "range_policy": "SCENARIO_DEFINED_GLOBAL_HEX",
+      "minimum_range": null,
+      "maximum_range": null,
+      "flight_time_seconds": 150,
+      "active_duration_seconds": 300,
+      "planned_cooldown_seconds": 300,
+      "scatter_model_id": "NATIVE_INDIRECT_SCATTER_V1",
+      "effect_model_id": "NATIVE_INDIRECT_IMPACT_V1",
+      "resource_policy_id": "NATIVE_INDIRECT_RESOURCE_V1",
+      "mission_policy_id": "NATIVE_INDIRECT_MISSION_V1"
+    },
+    "INDIRECT_LIGHT_ARTILLERY_89": {
+      "profile_id": "INDIRECT_LIGHT_ARTILLERY_89",
+      "weapon_id": 89,
+      "artillery_class": "LIGHT",
+      "supported_fire_mode": "INDIRECT",
+      "target_domain": "AREA",
+      "range_policy": "SCENARIO_DEFINED_GLOBAL_HEX",
+      "minimum_range": null,
+      "maximum_range": null,
+      "flight_time_seconds": 150,
+      "active_duration_seconds": 300,
+      "planned_cooldown_seconds": 300,
+      "scatter_model_id": "NATIVE_INDIRECT_SCATTER_V1",
+      "effect_model_id": "NATIVE_INDIRECT_IMPACT_V1",
+      "resource_policy_id": "NATIVE_INDIRECT_RESOURCE_V1",
+      "mission_policy_id": "NATIVE_INDIRECT_MISSION_V1"
+    },
+    "INDIRECT_MEDIUM_ARTILLERY_88": {
+      "profile_id": "INDIRECT_MEDIUM_ARTILLERY_88",
+      "weapon_id": 88,
+      "artillery_class": "MEDIUM",
+      "supported_fire_mode": "INDIRECT",
+      "target_domain": "AREA",
+      "range_policy": "SCENARIO_DEFINED_GLOBAL_HEX",
+      "minimum_range": null,
+      "maximum_range": null,
+      "flight_time_seconds": 150,
+      "active_duration_seconds": 300,
+      "planned_cooldown_seconds": 300,
+      "scatter_model_id": "NATIVE_INDIRECT_SCATTER_V1",
+      "effect_model_id": "NATIVE_INDIRECT_IMPACT_V1",
+      "resource_policy_id": "NATIVE_INDIRECT_RESOURCE_V1",
+      "mission_policy_id": "NATIVE_INDIRECT_MISSION_V1"
+    }
+  },
+  "resource_policies": {
+    "NATIVE_INDIRECT_RESOURCE_V1": {
+      "policy_id": "NATIVE_INDIRECT_RESOURCE_V1",
+      "ammo_cost": 1,
+      "cooldown_policy": "PLAN_COOLDOWN_300_SECONDS",
+      "cancel_policy": "FLIGHT_CANCEL_RESETS_COOLDOWN_NO_AMMO_REFUND"
+    }
+  },
+  "mission_policies": {
+    "NATIVE_INDIRECT_MISSION_V1": {
+      "policy_id": "NATIVE_INDIRECT_MISSION_V1",
+      "states": [
+        "PLANNED",
+        "FLYING",
+        "ACTIVE",
+        "RESOLVED",
+        "CANCELLED"
+      ],
+      "flight_duration_seconds": 150,
+      "active_duration_seconds": 300,
+      "can_cancel_during_flight": true
+    }
+  },
+  "scatter_profiles": {
+    "NATIVE_INDIRECT_SCATTER_V1": {
+      "scatter_model_id": "NATIVE_INDIRECT_SCATTER_V1",
+      "dice_expression": "2d6",
+      "table_reference": "indirect_fire.*_dispersion",
+      "direction_policy": "HEX_NEIGHBOR_6WAY_RANDOM",
+      "distance_policy": "TABLE_DEFINED_BY_CORRECTION_LEVEL"
+    }
+  },
+  "impact_profiles": {
+    "NATIVE_INDIRECT_IMPACT_V1": {
+      "profile_id": "NATIVE_INDIRECT_IMPACT_V1",
+      "affected_area": "RESOLVED_HEX_ONLY",
+      "resolution_scope": "INITIAL_OCCUPANTS_AND_ACTIVE_HEX_ENTRANTS",
+      "friendly_fire": true,
+      "one_hit_per_unit": true,
+      "planned_hex_field": "planned_hex",
+      "impact_hex_field": "impact_hex"
+    }
+  },
+  "unresolved_authority": [
+    "multi_occupant_rng_schedule",
+    "within_tick_impact_movement_order"
+  ]
+}

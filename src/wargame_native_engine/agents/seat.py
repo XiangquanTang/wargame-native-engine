@@ -14,6 +14,13 @@ from typing import Any, Mapping, Protocol, Sequence
 
 from wargame_native_engine.agents.protocol import AgentResetContext
 from wargame_native_engine.io.serialization import json_clone
+from wargame_native_engine.projection.decision_capability import (
+    ActionCatalogSnapshot,
+)
+from wargame_native_engine.projection.decision_semantic import (
+    DecisionProjectionContractError,
+    SideDecisionSemanticProjection,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +86,32 @@ class AgentDecisionContext:
     sim_time_ms: int
     observation: Mapping[str, Any]
     operation_capabilities: SeatActionCapabilities
+    decision_semantic: SideDecisionSemanticProjection | None = None
+    action_catalog: ActionCatalogSnapshot | None = None
+
+    def __post_init__(self) -> None:
+        if (self.decision_semantic is None) != (self.action_catalog is None):
+            raise DecisionProjectionContractError(
+                "Agent decision semantic/catalog must be supplied together"
+            )
+        if self.decision_semantic is None:
+            return
+        decision = self.decision_semantic
+        catalog = self.action_catalog
+        if type(decision) is not SideDecisionSemanticProjection:
+            raise TypeError("decision_semantic must be a Decision projection")
+        if type(catalog) is not ActionCatalogSnapshot:
+            raise TypeError("action_catalog must be an ActionCatalogSnapshot")
+        if (
+            decision.snapshot.side.value != self.side
+            or decision.snapshot.decision_window_index != self.decision_index
+            or decision.snapshot.frame_index != self.frame_index
+            or decision.snapshot.sim_time_ms != self.sim_time_ms
+            or decision.action_space != catalog.reference()
+        ):
+            raise DecisionProjectionContractError(
+                "Agent decision context snapshot identity mismatch"
+            )
 
     @property
     def perspective(self) -> str:
@@ -96,11 +129,16 @@ class SeatOperation:
     operation_type: str
     actor_ids: tuple[int, ...] = ()
     destination_hex: int | None = None
+    target_hex: int | None = None
     target_id: int | None = None
     movement_mode: str = "NORMAL"
     weapon_choices: tuple[tuple[int, int], ...] = ()
     whole_side_wait: bool = False
     confirm_partial: bool = False
+    fire_mode: str | None = None
+    guider_id: int | None = None
+    shooter_id: int | None = None
+    weapon_id: int | None = None
 
     def __post_init__(self) -> None:
         operation = _nonempty_text(self.operation_type, "operation_type").upper()
@@ -112,12 +150,59 @@ class SeatOperation:
             raise ValueError("weapon_choices must belong to selected actors")
         if self.destination_hex is not None:
             _exact_nonnegative_int(self.destination_hex, "destination_hex")
+        if self.target_hex is not None:
+            _exact_nonnegative_int(self.target_hex, "target_hex")
         if self.target_id is not None:
             _exact_nonnegative_int(self.target_id, "target_id")
         if type(self.whole_side_wait) is not bool:
             raise TypeError("whole_side_wait must be bool")
         if type(self.confirm_partial) is not bool:
             raise TypeError("confirm_partial must be bool")
+        fire_values = (
+            self.fire_mode,
+            self.guider_id,
+            self.shooter_id,
+            self.weapon_id,
+        )
+        if operation == "GUIDED_FIRE":
+            if self.fire_mode != "GUIDED":
+                raise ValueError("GUIDED_FIRE requires fire_mode GUIDED")
+            for name, value in (
+                ("guider_id", self.guider_id),
+                ("shooter_id", self.shooter_id),
+                ("weapon_id", self.weapon_id),
+            ):
+                _exact_nonnegative_int(value, name)
+            if actors != (self.guider_id,):
+                raise ValueError(
+                    "GUIDED_FIRE actor_ids must contain exactly guider_id"
+                )
+            if self.target_hex is not None:
+                raise ValueError("GUIDED_FIRE does not accept target_hex")
+        elif operation == "INDIRECT_FIRE":
+            if self.fire_mode != "INDIRECT":
+                raise ValueError("INDIRECT_FIRE requires fire_mode INDIRECT")
+            _exact_nonnegative_int(self.shooter_id, "shooter_id")
+            _exact_nonnegative_int(self.weapon_id, "weapon_id")
+            _exact_nonnegative_int(self.target_hex, "target_hex")
+            if actors != (self.shooter_id,):
+                raise ValueError(
+                    "INDIRECT_FIRE actor_ids must contain exactly shooter_id"
+                )
+            if self.guider_id is not None or self.target_id is not None:
+                raise ValueError(
+                    "INDIRECT_FIRE accepts target_hex only and no guider"
+                )
+        elif operation in {"BOARD", "UNLOAD"}:
+            if len(actors) != 1:
+                raise ValueError(f"{operation} requires exactly one actor")
+            _exact_nonnegative_int(self.target_id, "target_id")
+        elif any(value is not None for value in fire_values):
+            raise ValueError(
+                "fire contract fields require GUIDED_FIRE or INDIRECT_FIRE"
+            )
+        elif self.target_hex is not None:
+            raise ValueError("target_hex is valid only for INDIRECT_FIRE")
         object.__setattr__(self, "operation_type", operation)
         object.__setattr__(self, "actor_ids", actors)
         object.__setattr__(self, "movement_mode", _nonempty_text(
@@ -132,7 +217,7 @@ class SeatOperation:
         return cls("WAIT", whole_side_wait=True)
 
     def preview_arguments(self) -> dict[str, object]:
-        return {
+        result: dict[str, object] = {
             "actor_ids": self.actor_ids,
             "operation_type": self.operation_type,
             "destination_hex": self.destination_hex,
@@ -141,6 +226,21 @@ class SeatOperation:
             "weapon_choices": dict(self.weapon_choices),
             "whole_side_wait": self.whole_side_wait,
         }
+        if self.operation_type == "GUIDED_FIRE":
+            result.update({
+                "fire_mode": self.fire_mode,
+                "guider_id": self.guider_id,
+                "shooter_id": self.shooter_id,
+                "weapon_id": self.weapon_id,
+            })
+        elif self.operation_type == "INDIRECT_FIRE":
+            result.update({
+                "target_hex": self.target_hex,
+                "fire_mode": self.fire_mode,
+                "shooter_id": self.shooter_id,
+                "weapon_id": self.weapon_id,
+            })
+        return result
 
 
 @dataclass(frozen=True, slots=True)

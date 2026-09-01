@@ -10,8 +10,7 @@ from __future__ import annotations
 
 from wargame_native_engine.analysis._numeric import require_finite_number
 from wargame_native_engine.analysis.models import AdvantageAnalysis, SideAnalysis
-
-ADVANTAGE_FORMULA_ID = "demo-compatible.green-relative-advantage.v1"
+from wargame_native_engine.analysis.semantic_identity import ADVANTAGE_FORMULA_ID
 
 
 def calculate_green_advantage(

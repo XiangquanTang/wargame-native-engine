@@ -1,0 +1,8 @@
+{
+  "schema_version": "native-training-discount-config/1.0",
+  "config_id": "native-training-discount",
+  "config_version": "1.0.0",
+  "gamma": 0.99,
+  "basis": "PER_DECISION_TRANSITION",
+  "reference_interval_ms": null
+}

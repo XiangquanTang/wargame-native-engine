@@ -1,17 +1,89 @@
 from wargame_native_engine.adjudication.dice import DiceRoller, FixedDiceRoller
+from wargame_native_engine.adjudication.boarding import (
+    BoardRequest,
+    BoardValidationResult,
+    UnloadRequest,
+    UnloadValidationResult,
+)
 from wargame_native_engine.adjudication.direct_fire import (
     DirectFireAdjudicator,
     DirectFireResolution,
 )
+from wargame_native_engine.adjudication.guided_fire import (
+    EffectBundle,
+    FireResolution,
+    GuidedFireCommitEffect,
+    GuidedFireDamageEffect,
+    GuidedFireEffectPlan,
+    GuidedFireResolutionEvent,
+    GuidedFireResolver,
+    GuidedFireRecoveryUpdate,
+    GuidedFireRequest,
+    GuidedFireResourceEffect,
+    GuidedFireRngEffect,
+    GuidedFireStageResult,
+    GuidedFireValidationResult,
+)
+from wargame_native_engine.adjudication.indirect_fire import (
+    IndirectFireDamageEffect,
+    IndirectFireDamageResolutionEvidence,
+    IndirectFireEffectBundle,
+    IndirectFireEffectResolutionResult,
+    IndirectFireEffectStatus,
+    IndirectFireImpactRequest,
+    IndirectFireImpactValidationResult,
+    IndirectFireObservationPolicy,
+    IndirectFirePlanRequest,
+    IndirectFirePlanValidationEvidence,
+    IndirectFirePlanValidationResult,
+    IndirectFireResolution,
+    IndirectFireResolutionEvidence,
+    IndirectFireRngState,
+    IndirectFireRngTransition,
+    IndirectFireScatterResult,
+    IndirectFireTargetEvidence,
+    IndirectFireTriState,
+    resolve_indirect_fire_effects,
+)
 from wargame_native_engine.adjudication.outcome import CombatOutcome
 from wargame_native_engine.adjudication.request import (
-    ActionLegalityResult, DirectFireRequest, WeaponProfile,
+    ActionLegalityResult, DirectFireRequest, DirectFireResourcePolicy,
+    WeaponProfile,
 )
 from wargame_native_engine.adjudication.table_loader import AdjudicationTableSet
 from wargame_native_engine.adjudication.scheduler import ActionTimer, CommandScheduler, EventQueue
 
 __all__ = ["ActionLegalityResult", "ActionTimer", "AdjudicationTableSet",
+           "BoardRequest", "BoardValidationResult",
            "CombatOutcome", "CommandScheduler", "DiceRoller",
            "DirectFireAdjudicator", "DirectFireRequest", "DirectFireResolution",
-           "EventQueue",
-           "FixedDiceRoller", "WeaponProfile"]
+           "DirectFireResourcePolicy",
+           "EffectBundle", "EventQueue", "FireResolution",
+           "GuidedFireCommitEffect", "GuidedFireDamageEffect",
+           "GuidedFireEffectPlan",
+           "GuidedFireResolutionEvent", "GuidedFireResolver",
+           "GuidedFireRecoveryUpdate", "GuidedFireRequest",
+           "GuidedFireResourceEffect", "GuidedFireRngEffect",
+           "GuidedFireStageResult",
+           "GuidedFireValidationResult",
+           "IndirectFireDamageEffect",
+           "IndirectFireDamageResolutionEvidence",
+           "IndirectFireEffectBundle",
+           "IndirectFireEffectResolutionResult",
+           "IndirectFireEffectStatus",
+           "IndirectFireImpactRequest",
+           "IndirectFireImpactValidationResult",
+           "IndirectFireObservationPolicy",
+           "IndirectFirePlanRequest",
+           "IndirectFirePlanValidationEvidence",
+           "IndirectFirePlanValidationResult",
+           "IndirectFireResolution",
+           "IndirectFireResolutionEvidence",
+           "IndirectFireRngState",
+           "IndirectFireRngTransition",
+           "IndirectFireScatterResult",
+           "IndirectFireTargetEvidence",
+           "IndirectFireTriState",
+           "FixedDiceRoller", "UnloadRequest", "UnloadValidationResult",
+           "WeaponProfile",
+           "resolve_indirect_fire_effects"]
