@@ -152,7 +152,11 @@
 
   function stackUnits(units) {
     const stacks = new Map();
-    for (const unit of units || []) {
+    for (const unit of (units || []).filter((value) => (
+      value?.map_visible !== false
+      && Number.isInteger(value?.row)
+      && Number.isInteger(value?.column)
+    ))) {
       const key = `${unit.row}:${unit.column}`;
       if (!stacks.has(key)) stacks.set(key, []);
       stacks.get(key).push(unit);
@@ -287,6 +291,7 @@
       this.actionTargets = {
         moves: [], shootTargetIds: new Set(),
         previewMovePosition: null, previewShootTargetId: null,
+        previewAreaPosition: null,
         plannedPath: [], plannedPaths: [],
       };
       this.tacticalOverlay = {
@@ -344,6 +349,7 @@
       shoot_target_ids: shootTargetIds = [],
       preview_move_position: previewMovePosition = null,
       preview_shoot_target_id: previewShootTargetId = null,
+      preview_area_position: previewAreaPosition = null,
       planned_path: plannedPath = [],
       planned_paths: plannedPaths = [],
     } = {}) {
@@ -355,6 +361,8 @@
           ? null : String(previewMovePosition),
         previewShootTargetId: previewShootTargetId === null
           ? null : String(previewShootTargetId),
+        previewAreaPosition: previewAreaPosition === null
+          ? null : String(previewAreaPosition),
         plannedPath: Array.isArray(plannedPath)
           ? plannedPath.filter((value) => Number.isInteger(value) && value >= 0)
             .map((value) => Number(value))
@@ -392,14 +400,18 @@
 
     setIndirectFireAreas(values = []) {
       this.indirectFireAreas = (Array.isArray(values) ? values : [])
-        .filter((value) => Number.isInteger(value?.impact_hex)
-          && value.impact_hex >= 0
-          && Number.isInteger(value?.active_remaining_seconds)
-          && value.active_remaining_seconds > 0)
+        .filter((value) => Number.isInteger(
+          value?.display_hex ?? value?.impact_hex,
+        ) && (value.display_hex ?? value.impact_hex) >= 0)
         .map((value) => ({
           missionId: String(value.mission_id || ""),
-          impactHex: Number(value.impact_hex),
-          remainingSeconds: Number(value.active_remaining_seconds),
+          displayHex: Number(value.display_hex ?? value.impact_hex),
+          phase: String(value.phase || "ACTIVE").toUpperCase(),
+          remainingSeconds: Number(
+            String(value.phase || "ACTIVE").toUpperCase() === "ACTIVE"
+              ? value.active_remaining_seconds
+              : value.remaining_flight_seconds,
+          ),
           affectedCount: Array.isArray(value.affected_operator_ids)
             ? value.affected_operator_ids.length : 0,
         }))
@@ -581,7 +593,8 @@
       const cell = this.cellByKey.get(key) || null;
       if ((this.map.cells || []).length && !cell) return null;
       const units = (this.frame?.viewer_units || []).filter((unit) => (
-        unit.row === coordinate.row && unit.column === coordinate.column
+        unit.map_visible !== false
+        && unit.row === coordinate.row && unit.column === coordinate.column
       ));
       return {
         ...coordinate,
@@ -815,8 +828,8 @@
       context.lineWidth = 3;
       context.setLineDash([7, 4]);
       for (const area of this.indirectFireAreas) {
-        const row = Math.floor(area.impactHex / 100);
-        const column = area.impactHex % 100;
+        const row = Math.floor(area.displayHex / 100);
+        const column = area.displayHex % 100;
         if (this.cellByKey.size && !this.cellByKey.has(`${row}:${column}`)) continue;
         const vertices = hexVertices(row, column, this.map.hex_size)
           .map((point) => this._screen(point));
@@ -825,6 +838,10 @@
           ? context.lineTo(point.x, point.y)
           : context.moveTo(point.x, point.y));
         context.closePath();
+        context.fillStyle = area.phase === "ACTIVE"
+          ? "rgba(255,110,35,0.22)" : "rgba(255,210,80,0.12)";
+        context.strokeStyle = area.phase === "ACTIVE"
+          ? "rgba(255,145,45,0.95)" : "rgba(255,215,90,0.95)";
         context.fill();
         context.stroke();
         const center = this._screen(hexToPixel(row, column, this.map.hex_size));
@@ -833,7 +850,9 @@
         context.textAlign = "center";
         context.fillStyle = "#ffe1a6";
         context.fillText(
-          `${area.remainingSeconds}s / 已影响${area.affectedCount}`,
+          area.phase === "ACTIVE"
+            ? `生效 ${area.remainingSeconds}s / 已影响${area.affectedCount}`
+            : `等待 ${area.remainingSeconds}s`,
           center.x,
           center.y + 4,
         );
@@ -906,6 +925,25 @@
         context.setLineDash([8, 4]);
         context.stroke();
         context.setLineDash([]);
+      }
+      if (this.actionTargets.previewAreaPosition !== null) {
+        const position = Number(this.actionTargets.previewAreaPosition);
+        const row = Math.floor(position / 100);
+        const column = position % 100;
+        if (!this.cellByKey.size || this.cellByKey.has(`${row}:${column}`)) {
+          const vertices = hexVertices(row, column, this.map.hex_size)
+            .map((point) => this._screen(point));
+          context.beginPath();
+          vertices.forEach((point, index) => index
+            ? context.lineTo(point.x, point.y)
+            : context.moveTo(point.x, point.y));
+          context.closePath();
+          context.fillStyle = "rgba(183,148,244,0.25)";
+          context.strokeStyle = "#d6bcfa";
+          context.lineWidth = 3;
+          context.fill();
+          context.stroke();
+        }
       }
       for (const target of this.actionTargets.moves) {
         if (!Number.isInteger(target.row) || !Number.isInteger(target.column)) continue;
@@ -1019,6 +1057,15 @@
       }
       context.fillStyle = "#f5f5f5"; context.font = "11px ui-monospace";
       context.textAlign = "left"; context.fillText(String(unit.operator_id), radius + 4, 4);
+      if (Number.isInteger(unit.transport_display_count)
+          && unit.transport_display_count > 1) {
+        context.beginPath(); context.arc(-radius - 2, -radius - 2, 8, 0, Math.PI * 2);
+        context.fillStyle = "#222"; context.fill();
+        context.strokeStyle = "#ffc857"; context.lineWidth = 2; context.stroke();
+        context.fillStyle = "#ffc857"; context.font = "bold 11px ui-monospace";
+        context.textAlign = "center";
+        context.fillText(String(unit.transport_display_count), -radius - 2, -radius + 2);
+      }
       context.restore();
       this.hitTargets.push({ x, y, radius: radius + 7, operatorId: unit.operator_id });
     }

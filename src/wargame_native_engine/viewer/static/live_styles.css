@@ -42,6 +42,8 @@
 .unit-preview p { margin: 4px 0 0; font-size: 11px; }
 .path-summary { color: var(--gold); overflow-wrap: anywhere; }
 .weapon-choices { display: grid; gap: 7px; padding: 9px; border: 1px solid var(--line); }
+.weapon-unit-group { display: grid; gap: 7px; }
+.weapon-unit-group + .weapon-unit-group { border-top: 1px solid var(--line); padding-top: 9px; }
 .weapon-choices label { display: grid; grid-template-columns: minmax(110px, auto) 1fr; align-items: center; }
 .direct-fire-panel[hidden] { display: none; }
 .weapon-card { display: grid; grid-template-columns: auto 1fr; gap: 8px; padding: 9px; border: 1px solid var(--line); background: #101a23; color: inherit; text-align: left; }

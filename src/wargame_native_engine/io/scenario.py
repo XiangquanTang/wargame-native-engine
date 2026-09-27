@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import hashlib
 import json
 from pathlib import Path
 from typing import Any, Mapping
@@ -9,7 +10,11 @@ from wargame_native_engine.core.operator import OperatorState
 from wargame_native_engine.core.world import (
     ObjectiveState, SideState, Stage, WorldState,
 )
-from wargame_native_engine.io.serialization import canonical_hash, json_clone
+from wargame_native_engine.io.serialization import (
+    canonical_hash,
+    canonical_json,
+    json_clone,
+)
 from wargame_native_engine.rules.terminal_rules import TerminalRules
 
 
@@ -87,6 +92,7 @@ class NativeScenario:
     metadata: Mapping[str, Any] = field(default_factory=dict)
     initial_stage: Stage = Stage.DEPLOYMENT
     schema_version: str = SCENARIO_SCHEMA_VERSION
+    _canonical_map_json: str = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if self.schema_version != SCENARIO_SCHEMA_VERSION:
@@ -101,16 +107,45 @@ class NativeScenario:
                 raise ValueError(f"unknown operator side: {operator.side}")
             if operator.operator_id not in self.deployment_positions.get(operator.side, {}):
                 raise ValueError(f"missing deployment position: {operator.operator_id}")
+        # NativeMap is deeply immutable: it contains only frozen scalar/tuple
+        # values and frozen NativeHex records.  Cache only that large static
+        # canonical fragment.  The rest of NativeScenario intentionally stays
+        # live because operators, objectives, deployment and metadata contain
+        # mutable nested values.
+        object.__setattr__(
+            self,
+            "_canonical_map_json",
+            canonical_json(self.map.to_dict()),
+        )
 
     @property
     def scenario_hash(self) -> str:
-        return canonical_hash(self.to_dict())
+        record = self._to_dict_without_map()
+        encoded_items = []
+        for key in sorted((*record, "map")):
+            encoded_value = (
+                self._canonical_map_json
+                if key == "map"
+                else canonical_json(record[key])
+            )
+            encoded_items.append(f"{canonical_json(key)}:{encoded_value}")
+        canonical = "{" + ",".join(encoded_items) + "}"
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
     def to_dict(self) -> dict[str, Any]:
+        remainder = self._to_dict_without_map()
+        value = {
+            "schema_version": remainder.pop("schema_version"),
+            "scenario_id": remainder.pop("scenario_id"),
+            "map": self.map.to_dict(),
+        }
+        value.update(remainder)
+        return value
+
+    def _to_dict_without_map(self) -> dict[str, Any]:
         value = {
             "schema_version": self.schema_version,
             "scenario_id": self.scenario_id,
-            "map": self.map.to_dict(),
             "sides": list(self.side_order),
             "operators": [item.to_dict() for item in self.operators],
             "objectives": [item.to_dict() for item in self.objectives],

@@ -70,6 +70,21 @@ class SourceFrameRecorder:
             raise RuntimeError("initial_frame_already_recorded")
         if green_frame.get("actions") or green_frame.get("judge_info"):
             raise ValueError("GREEN 0.json must have empty actions and judge_info")
+        # Replay-affecting authority identities are copied only from the
+        # already-produced GREEN frame.  The recorder remains observer-only,
+        # while direct recorder users cannot accidentally emit a new archive
+        # whose frames use type-derived boarding semantics but whose manifest
+        # would replay under legacy explicit-profile-only semantics.
+        extra = green_frame.get("extra")
+        native = extra.get("native") if isinstance(extra, Mapping) else None
+        if isinstance(native, Mapping):
+            for name in (
+                "boarding_type_assignment_authority_version",
+                "boarding_type_assignment_authority_hash",
+                "boarding_type_assignment_policy",
+            ):
+                if name in native:
+                    self._metadata[name] = json_clone(native[name])
         self._initial_state_hash = str(initial_state_hash)
         self._record_frame(green_frame)
 

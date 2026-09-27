@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import ast
 from dataclasses import dataclass
+import fcntl
 from fractions import Fraction
 import hashlib
 import json
@@ -89,6 +90,16 @@ class PublishedMapRuntimeData:
     movement_cost_path: Path
     visibility_path: Path
     manifest_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedMapRuntimeData:
+    """Validated immutable cache prepared from a release asset directory."""
+
+    cache_dir: Path
+    cache_hit: bool
+    manifest_sha256: str
+    identity: Mapping[str, object]
 
 
 class MovementCostLookup:
@@ -672,6 +683,268 @@ def publish_map_runtime_data(
     )
 
 
+def prepare_map_runtime_data(
+    native_map: NativeMap,
+    *,
+    release_dir: str | Path,
+    cache_root: str | Path,
+) -> PreparedMapRuntimeData:
+    """Prepare or reuse one manifest-addressed canonical runtime cache.
+
+    ``release_dir`` contains a canonical manifest and movement JSON alongside
+    the original visibility NPZ named by that manifest.  Source and canonical
+    hashes are checked before an existing cache can be used.  A cold cache is
+    extracted in a same-filesystem staging directory, validated through
+    :meth:`MapRuntimeData.load`, and renamed into place.  Existing cache
+    directories are never replaced, including when they are invalid.
+    """
+
+    source_root = Path(release_dir)
+    manifest_path = source_root / MANIFEST_FILENAME
+    try:
+        manifest_payload = manifest_path.read_bytes()
+    except OSError as exc:
+        raise MapRuntimeDataError(
+            "release_manifest_read_failed", str(manifest_path)
+        ) from exc
+    manifest_sha = hashlib.sha256(manifest_payload).hexdigest()
+    manifest = _decode_json_mapping(manifest_payload, "runtime manifest")
+    if manifest.get("schema") != MAP_RUNTIME_SCHEMA:
+        raise MapRuntimeDataError(
+            "unsupported_map_runtime_schema", str(manifest.get("schema"))
+        )
+
+    rows, columns, _ = _native_map_grid(native_map)
+    map_record = _mapping(manifest.get("map_identity"), "map_identity")
+    expected_map_sha = native_map_identity_hash(native_map)
+    if (
+        map_record.get("map_id") != native_map.map_id
+        or map_record.get("sha256") != expected_map_sha
+    ):
+        raise MapRuntimeDataError(
+            "map_runtime_identity_mismatch",
+            f"release does not match {native_map.map_id}/{expected_map_sha}",
+        )
+
+    movement_record = _mapping(manifest.get("movement"), "movement")
+    movement_payload_record = _mapping(
+        movement_record.get("canonical_payload"),
+        "movement.canonical_payload",
+    )
+    movement_path = _fixed_member_path(
+        source_root,
+        movement_payload_record.get("name"),
+        MOVEMENT_COST_FILENAME,
+    )
+    _validate_release_file(
+        movement_path,
+        movement_payload_record,
+        label="movement canonical payload",
+    )
+
+    visibility_record = _mapping(manifest.get("visibility"), "visibility")
+    visibility_source_record = _mapping(
+        visibility_record.get("source"), "visibility.source"
+    )
+    visibility_source = _release_member_path(
+        source_root,
+        visibility_source_record.get("name"),
+        label="visibility source",
+    )
+    _validate_release_file(
+        visibility_source,
+        visibility_source_record,
+        label="visibility source",
+    )
+
+    root = Path(cache_root)
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise MapRuntimeDataError("cache_root_create_failed", str(root)) from exc
+    target = root / f"map-runtime-{manifest_sha}"
+    prepared = _load_prepared_cache(
+        target,
+        native_map=native_map,
+        manifest_sha=manifest_sha,
+    )
+    if prepared is not None:
+        return prepared
+
+    lock_path = root / f".{target.name}.lock"
+    try:
+        lock_stream = lock_path.open("a+b")
+    except OSError as exc:
+        raise MapRuntimeDataError("cache_lock_open_failed", str(lock_path)) from exc
+    with lock_stream:
+        try:
+            fcntl.flock(lock_stream.fileno(), fcntl.LOCK_EX)
+        except OSError as exc:
+            raise MapRuntimeDataError("cache_lock_failed", str(lock_path)) from exc
+        prepared = _load_prepared_cache(
+            target,
+            native_map=native_map,
+            manifest_sha=manifest_sha,
+        )
+        if prepared is not None:
+            return prepared
+
+        staging = Path(tempfile.mkdtemp(
+            prefix=f".{target.name}.staging-",
+            dir=root,
+        ))
+        try:
+            _write_cache_payload(
+                manifest_payload,
+                staging / MANIFEST_FILENAME,
+            )
+            _copy_release_file(movement_path, staging / MOVEMENT_COST_FILENAME)
+            visibility_output = staging / VISIBILITY_FILENAME
+            header, source_sha, payload_sha = _extract_visibility_npy(
+                visibility_source,
+                visibility_output,
+                expected_shape=(10, rows, columns, rows, columns),
+            )
+            expected_source_sha = _sha256_text(
+                visibility_source_record.get("sha256"),
+                "visibility.source.sha256",
+            )
+            visibility_payload_record = _mapping(
+                visibility_record.get("canonical_payload"),
+                "visibility.canonical_payload",
+            )
+            expected_payload_sha = _sha256_text(
+                visibility_payload_record.get("sha256"),
+                "visibility.canonical_payload.sha256",
+            )
+            if source_sha != expected_source_sha:
+                raise MapRuntimeDataError(
+                    "visibility_source_hash_mismatch", visibility_source.name
+                )
+            if payload_sha != expected_payload_sha:
+                raise MapRuntimeDataError(
+                    "visibility_payload_hash_mismatch", visibility_output.name
+                )
+            if visibility_payload_record.get("data_offset") != header.data_offset:
+                raise MapRuntimeDataError(
+                    "visibility_manifest_mismatch", "data offset"
+                )
+
+            runtime = MapRuntimeData.load(staging, native_map)
+            identity = runtime.identity_record()
+            runtime.visibility.close()
+            if identity["manifest_sha256"] != manifest_sha:
+                raise MapRuntimeDataError(
+                    "cache_manifest_identity_mismatch", str(staging)
+                )
+            for member in (
+                staging / MANIFEST_FILENAME,
+                staging / MOVEMENT_COST_FILENAME,
+                visibility_output,
+            ):
+                member.chmod(0o444)
+            try:
+                os.rename(staging, target)
+            except FileExistsError:
+                # A publisher not using this advisory lock may have won the
+                # race.  Its directory must validate; it is never replaced.
+                prepared = _load_prepared_cache(
+                    target,
+                    native_map=native_map,
+                    manifest_sha=manifest_sha,
+                )
+                if prepared is None:
+                    raise MapRuntimeDataError(
+                        "cache_publish_race_failed", str(target)
+                    )
+                return prepared
+            return PreparedMapRuntimeData(
+                cache_dir=target,
+                cache_hit=False,
+                manifest_sha256=manifest_sha,
+                identity=identity,
+            )
+        finally:
+            if staging.exists():
+                shutil.rmtree(staging, ignore_errors=True)
+
+
+def _load_prepared_cache(
+    target: Path,
+    *,
+    native_map: NativeMap,
+    manifest_sha: str,
+) -> PreparedMapRuntimeData | None:
+    if not target.exists():
+        return None
+    if not target.is_dir():
+        raise MapRuntimeDataError("cache_target_not_directory", str(target))
+    runtime = MapRuntimeData.load(target, native_map)
+    try:
+        if runtime.manifest_sha256 != manifest_sha:
+            raise MapRuntimeDataError(
+                "cache_manifest_identity_mismatch", str(target)
+            )
+        return PreparedMapRuntimeData(
+            cache_dir=target,
+            cache_hit=True,
+            manifest_sha256=manifest_sha,
+            identity=runtime.identity_record(),
+        )
+    finally:
+        runtime.visibility.close()
+
+
+def _validate_release_file(
+    path: Path,
+    record: Mapping[str, Any],
+    *,
+    label: str,
+) -> None:
+    if not path.is_file():
+        raise MapRuntimeDataError("release_member_not_found", f"{label}: {path}")
+    expected_size = _positive_exact_int(record.get("size_bytes"), f"{label}.size_bytes")
+    try:
+        actual_size = path.stat().st_size
+    except OSError as exc:
+        raise MapRuntimeDataError("release_member_read_failed", str(path)) from exc
+    if actual_size != expected_size:
+        raise MapRuntimeDataError(
+            "release_member_size_mismatch",
+            f"{path.name}: {actual_size} != {expected_size}",
+        )
+    expected_sha = _sha256_text(record.get("sha256"), f"{label}.sha256")
+    if _file_sha256(path) != expected_sha:
+        raise MapRuntimeDataError("release_member_hash_mismatch", path.name)
+
+
+def _release_member_path(root: Path, value: object, *, label: str) -> Path:
+    name = _nonempty_text(value, f"{label}.name")
+    if Path(name).name != name or name in {".", ".."}:
+        raise MapRuntimeDataError("invalid_release_member_name", name)
+    return root / name
+
+
+def _copy_release_file(source: Path, target: Path) -> None:
+    try:
+        with source.open("rb") as input_stream, target.open("xb") as output_stream:
+            shutil.copyfileobj(input_stream, output_stream, length=1024 * 1024)
+            output_stream.flush()
+            os.fsync(output_stream.fileno())
+    except OSError as exc:
+        raise MapRuntimeDataError("cache_member_write_failed", str(target)) from exc
+
+
+def _write_cache_payload(payload: bytes, target: Path) -> None:
+    try:
+        with target.open("xb") as output_stream:
+            output_stream.write(payload)
+            output_stream.flush()
+            os.fsync(output_stream.fileno())
+    except OSError as exc:
+        raise MapRuntimeDataError("cache_member_write_failed", str(target)) from exc
+
+
 @dataclass(frozen=True, slots=True)
 class _NpyHeader:
     shape: tuple[int, ...]
@@ -990,8 +1263,16 @@ def _read_json_mapping(path: Path, name: str) -> Mapping[str, Any]:
     if not path.is_file():
         raise MapRuntimeDataError("runtime_member_not_found", str(path))
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        payload = path.read_bytes()
+    except OSError as exc:
+        raise MapRuntimeDataError("invalid_runtime_json", name) from exc
+    return _decode_json_mapping(payload, name)
+
+
+def _decode_json_mapping(payload: bytes, name: str) -> Mapping[str, Any]:
+    try:
+        value = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise MapRuntimeDataError("invalid_runtime_json", name) from exc
     if not isinstance(value, Mapping):
         raise MapRuntimeDataError("invalid_runtime_json_root", name)

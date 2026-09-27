@@ -55,8 +55,13 @@ def test_dual_control_uses_shared_renderer_and_server_planning_only() -> None:
     assert "result.path" in source
     assert "setIndirectFireAreas" in source
     assert "indirect_fire_active_areas" in source
+    assert "indirect_fire_mission_areas" in source
+    assert 'activeTool === "INDIRECT_FIRE"' in source
+    assert "preview_area_position" in source
     assert "_drawTacticalOverlays" in renderer
     assert "active_remaining_seconds" in renderer
+    assert "remaining_flight_seconds" in renderer
+    assert 'area.phase === "ACTIVE"' in renderer
     assert "new EngineAction" not in source
     assert "pathfind" not in source.lower()
     assert "lineOfSight" not in source
@@ -164,12 +169,13 @@ def test_human_command_ui_is_capability_driven_and_weapon_specific() -> None:
     source = (STATIC / "dual_control.js").read_text(encoding="utf-8")
 
     assert "let selectedCapability = null" in source
-    assert "let selectedWeaponId = null" in source
+    assert "const selectedWeaponIds = new Map()" in source
     assert "function renderCapabilityPanel" in source
     assert "function renderDirectFirePanel" in source
     assert "activeShootTargetIds" in source
     assert "weaponEnvelopeHexes(tacticalOverlay, selectedWeaponId)" in source
-    assert "weapon_choices: { [unitIds[0]]: selectedWeaponId }" in source
+    assert "weapon_choices: Object.fromEntries" in source
+    assert "selectedWeaponIds.get(unitId)" in source
 
 
 def test_live_action_index_pure_functions_when_node_is_available() -> None:

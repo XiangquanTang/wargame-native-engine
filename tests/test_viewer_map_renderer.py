@@ -321,12 +321,14 @@ def test_map_renderer_has_stack_selection_zoom_and_pan_contracts() -> None:
     source = MAP_RENDERER.read_text(encoding="utf-8")
 
     assert "function stackUnits(units)" in source
+    assert "value?.map_visible !== false" in source
     assert "this.hitTargets.push" in source
     assert 'addEventListener("wheel"' in source
     assert 'addEventListener("pointermove"' in source
     assert "this.offsetX = this.drag.offsetX + dx" in source
     assert "unit.operator_id === this.selectedUnitId" in source
     assert "unit.category === \"passenger\"" in source
+    assert "unit.transport_display_count" in source
     assert "unit.destroyed" in source
     assert "unit.lose_control || unit.can_to_move === false" in source
     assert "function computeWorldBounds(mapData, units = [])" in source

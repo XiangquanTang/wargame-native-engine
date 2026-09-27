@@ -146,6 +146,29 @@ def test_viewer_projection_is_read_only_and_side_filtered() -> None:
     assert engine.snapshot() == before
 
 
+def test_waiting_and_active_mission_area_phases_are_side_filtered() -> None:
+    engine = NativeEngine(_scenario())
+    engine.reset(5)
+    action = engine.indirect_fire_action(
+        engine.get_indirect_fire_capabilities("red")[0], 505
+    )
+    engine.step([action], delta_time_ms=1_000)
+
+    waiting = engine.get_indirect_fire_mission_areas("red")
+    assert len(waiting) == 1
+    assert waiting[0].phase is FireMissionPhase.FLYING
+    assert waiting[0].planned_hex == 505
+    assert waiting[0].display_hex == 505
+    assert engine.get_indirect_fire_mission_areas("blue") == ()
+
+    engine.step([], delta_time_ms=149_000)
+    active = engine.get_indirect_fire_mission_areas("red")
+    assert len(active) == 1
+    assert active[0].phase is FireMissionPhase.ACTIVE
+    assert active[0].display_hex == 505
+    assert active[0].active_remaining_seconds == 300
+
+
 def test_active_trigger_failure_rolls_back_world_rng_events_and_ledger(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

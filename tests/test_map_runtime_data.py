@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from concurrent.futures import ProcessPoolExecutor
 import hashlib
 import json
 import os
 from pathlib import Path
 import pickle
+import shutil
 import struct
 from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
@@ -19,8 +21,10 @@ from wargame_native_engine.core.engine import NativeEngine
 from wargame_native_engine.data import (
     MapRuntimeData,
     MapRuntimeDataError,
+    prepare_map_runtime_data,
     publish_map_runtime_data,
 )
+import wargame_native_engine.data.map_runtime as map_runtime_module
 from wargame_native_engine.gateway.session_manager import SessionManager
 from wargame_native_engine.io.replay import replay_source_archive
 from wargame_native_engine.io.scenario import (
@@ -141,6 +145,32 @@ def _publish(root: Path, *, true_values=()) -> tuple[MapRuntimeData, Path]:
         output_dir=output,
     )
     return MapRuntimeData.load(output, _native_map()), output
+
+
+def _release_fixture(root: Path, *, true_values=()) -> Path:
+    runtime, canonical = _publish(root, true_values=true_values)
+    runtime.visibility.close()
+    release = root / "release"
+    release.mkdir()
+    shutil.copyfile(
+        canonical / "map_runtime_manifest.native.json",
+        release / "map_runtime_manifest.native.json",
+    )
+    shutil.copyfile(
+        canonical / "movement_costs.native.json",
+        release / "movement_costs.native.json",
+    )
+    shutil.copyfile(root / "sources" / "see.npz", release / "see.npz")
+    return release
+
+
+def _prepare_release_worker(release: str, cache_root: str) -> tuple[bool, str]:
+    prepared = prepare_map_runtime_data(
+        _native_map(),
+        release_dir=release,
+        cache_root=cache_root,
+    )
+    return prepared.cache_hit, str(prepared.cache_dir)
 
 
 def _scenario():
@@ -505,6 +535,153 @@ def test_runtime_map_identity_must_match(tmp_path: Path) -> None:
     )
     with pytest.raises(MapRuntimeDataError, match="identity_mismatch"):
         MapRuntimeData.load(output, other)
+
+
+def test_release_cache_cold_prepare_then_validated_hit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = _release_fixture(tmp_path / "fixture", true_values=((0, 0, 101),))
+    cache_root = tmp_path / "cache"
+    calls = 0
+    original_extract = map_runtime_module._extract_visibility_npy
+
+    def counted_extract(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original_extract(*args, **kwargs)
+
+    monkeypatch.setattr(
+        map_runtime_module,
+        "_extract_visibility_npy",
+        counted_extract,
+    )
+    cold = prepare_map_runtime_data(
+        _native_map(), release_dir=release, cache_root=cache_root,
+    )
+    warm = prepare_map_runtime_data(
+        _native_map(), release_dir=release, cache_root=cache_root,
+    )
+
+    assert cold.cache_hit is False
+    assert warm.cache_hit is True
+    assert warm.cache_dir == cold.cache_dir
+    assert warm.identity == cold.identity
+    assert calls == 1
+    loaded = MapRuntimeData.load(cold.cache_dir, _native_map())
+    try:
+        assert loaded.visibility.visible(
+            0, 101, observer_height_m=0, target_height_m=0,
+        )
+    finally:
+        loaded.visibility.close()
+
+
+def test_release_or_existing_cache_corruption_never_replaces_cache(
+    tmp_path: Path,
+) -> None:
+    release = _release_fixture(tmp_path / "fixture")
+    prepared = prepare_map_runtime_data(
+        _native_map(), release_dir=release, cache_root=tmp_path / "cache",
+    )
+    cached_visibility = prepared.cache_dir / "visibility.native.npy"
+    before_visibility = hashlib.sha256(cached_visibility.read_bytes()).hexdigest()
+
+    source = release / "see.npz"
+    original_source = source.read_bytes()
+    source.write_bytes(original_source + b"corrupt")
+    with pytest.raises(MapRuntimeDataError, match="release_member_size_mismatch"):
+        prepare_map_runtime_data(
+            _native_map(), release_dir=release, cache_root=tmp_path / "cache",
+        )
+    assert hashlib.sha256(cached_visibility.read_bytes()).hexdigest() == before_visibility
+
+    source.write_bytes(original_source)
+    cached_movement = prepared.cache_dir / "movement_costs.native.json"
+    cached_movement.chmod(0o644)
+    cached_movement.write_bytes(b"corrupt cache\n")
+    corrupted = cached_movement.read_bytes()
+    with pytest.raises(MapRuntimeDataError, match="movement_payload_hash_mismatch"):
+        prepare_map_runtime_data(
+            _native_map(), release_dir=release, cache_root=tmp_path / "cache",
+        )
+    assert cached_movement.read_bytes() == corrupted
+
+
+def test_concurrent_release_cache_publish_has_one_atomic_winner(
+    tmp_path: Path,
+) -> None:
+    release = _release_fixture(tmp_path / "fixture")
+    cache_root = tmp_path / "cache"
+    with ProcessPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(
+                _prepare_release_worker,
+                str(release),
+                str(cache_root),
+            )
+            for _ in range(2)
+        ]
+        results = [future.result(timeout=10) for future in futures]
+
+    assert sorted(hit for hit, _ in results) == [False, True]
+    assert len({path for _, path in results}) == 1
+    cache_dir = Path(results[0][1])
+    loaded = MapRuntimeData.load(cache_dir, _native_map())
+    loaded.visibility.close()
+    assert not list(cache_root.glob("*.staging-*"))
+
+
+def test_map123_wrapper_prepare_only_and_launcher_handoff_without_socket(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from scripts import run_map123
+
+    release = _release_fixture(tmp_path / "fixture")
+    scenario_payload = json.dumps(_scenario().to_dict()).encode("utf-8")
+    (release / "scenario.json").write_bytes(scenario_payload)
+    (release / "scenario-artillery-ammo2.json").write_bytes(scenario_payload)
+    cache_root = tmp_path / "cache"
+
+    def unexpected_launcher(_argv):
+        raise AssertionError("prepare-only must not create the realtime server")
+
+    monkeypatch.setattr(run_map123.realtime_launcher, "main", unexpected_launcher)
+    assert run_map123.main([
+        "--prepare-only",
+        "--scenario", "original",
+        "--assets-dir", str(release),
+        "--cache-root", str(cache_root),
+    ]) == 0
+
+    forwarded: list[str] = []
+
+    def capture_launcher(argv):
+        forwarded.extend(argv)
+        return 17
+
+    monkeypatch.setattr(run_map123.realtime_launcher, "main", capture_launcher)
+    output = tmp_path / "run-output"
+    assert run_map123.main([
+        "--scenario", "artillery-ammo2",
+        "--assets-dir", str(release),
+        "--cache-root", str(cache_root),
+        "--output-dir", str(output),
+        "--run-namespace", "map123-test-run",
+        "--port", "8123",
+        "--seed", "9",
+    ]) == 17
+    assert forwarded[forwarded.index("--scenario-bundle") + 1] == str(
+        release / "scenario-artillery-ammo2.json"
+    )
+    assert forwarded[forwarded.index("--map-runtime-data") + 1].startswith(
+        str(cache_root / "map-runtime-")
+    )
+    assert forwarded[forwarded.index("--output-dir") + 1] == str(output)
+    assert forwarded[forwarded.index("--run-namespace") + 1] == "map123-test-run"
+    assert forwarded[forwarded.index("--port") + 1] == "8123"
+    assert forwarded[forwarded.index("--seed") + 1] == "9"
 
 
 def _product(values: tuple[int, ...]) -> int:

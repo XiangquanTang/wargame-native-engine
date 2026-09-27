@@ -70,6 +70,15 @@ class _ManagedSession:
     step_index: int = 0
     failed: str | None = None
     finalized: bool = False
+    controller_view_cache: dict[
+        str, tuple[tuple[object, ...], ControllerView]
+    ] = field(default_factory=dict)
+    controller_view_cache_revision: int | None = None
+    controller_view_requests: int = 0
+    controller_view_cache_hits: int = 0
+    controller_view_cache_misses: int = 0
+    controller_view_cache_bypasses: int = 0
+    controller_view_builds: int = 0
     lock: RLock = field(default_factory=RLock)
 
 
@@ -203,6 +212,7 @@ class SessionManager:
         *,
         decision_window_index: int | None = None,
         frozen_valid_actions: Sequence[ValidAction] | None = None,
+        frozen_valid_actions_revision: int | None = None,
         frame_index: int | None = None,
         sim_time_ms: int | None = None,
     ) -> ControllerView:
@@ -214,9 +224,27 @@ class SessionManager:
                 side,
                 decision_window_index=decision_window_index,
                 frozen_valid_actions=frozen_valid_actions,
+                frozen_valid_actions_revision=frozen_valid_actions_revision,
                 frame_index=frame_index,
                 sim_time_ms=sim_time_ms,
             )
+
+    def controller_view_cache_stats(
+        self, session_id: str,
+    ) -> dict[str, int]:
+        """Return small diagnostic counters without exposing cached views."""
+
+        managed = self._managed(session_id)
+        with managed.lock:
+            self._require_usable(managed)
+            return {
+                "requests": managed.controller_view_requests,
+                "hits": managed.controller_view_cache_hits,
+                "misses": managed.controller_view_cache_misses,
+                "bypasses": managed.controller_view_cache_bypasses,
+                "builds": managed.controller_view_builds,
+                "entries": len(managed.controller_view_cache),
+            }
 
     def valid_actions(
         self,
@@ -321,6 +349,26 @@ class SessionManager:
                 )
             return deepcopy(result)
 
+    def get_indirect_fire_mission_areas(
+        self,
+        session_id: str,
+        side: str,
+    ) -> tuple[object, ...]:
+        """Return a mutation-guarded, side-filtered mission-area projection."""
+
+        managed = self._managed(session_id)
+        with managed.lock:
+            self._require_usable(managed)
+            _require_side(managed, side)
+            session = managed.environment.session
+            before = deepcopy(session.snapshot())
+            result = session.get_indirect_fire_mission_areas(side)
+            if session.snapshot() != before:
+                raise RuntimeError(
+                    "indirect_fire_mission_area_query_modified_engine_state"
+                )
+            return deepcopy(result)
+
     def plan_indirect_fire(
         self,
         session_id: str,
@@ -353,6 +401,34 @@ class SessionManager:
                     "indirect_fire_planning_modified_engine_state"
                 )
             return deepcopy(action), state_hash
+
+    def plan_direct_fire_intent(
+        self,
+        session_id: str,
+        side: str,
+        actor_id: int,
+        weapon_id: int,
+        target_id: int,
+    ) -> tuple[EngineAction, str]:
+        """Create an OWN/visibility-authorized DIRECT intent without rule preview."""
+
+        managed = self._managed(session_id)
+        with managed.lock:
+            self._require_usable(managed)
+            _require_side(managed, side)
+            session = managed.environment.session
+            revision = session.state_revision()
+            action = session.direct_fire_intent_action(
+                side, actor_id, weapon_id, target_id,
+            )
+            if session.state_revision() != revision:
+                raise RuntimeError("direct_fire_intent_query_modified_engine_state")
+            identity_hash = canonical_hash({
+                "session_id": session_id,
+                "state_revision": revision,
+                "side": side,
+            })
+            return deepcopy(action), identity_hash
 
     def query_unit_tactical_overlay_from_projection(
         self,
@@ -459,6 +535,7 @@ class SessionManager:
         managed = self._managed(session_id)
         with managed.lock:
             self._require_usable(managed)
+            _clear_controller_view_cache(managed)
             if managed.finalized:
                 raise CommandGatewayError(
                     "session_finalized",
@@ -511,6 +588,21 @@ class SessionManager:
                 lifecycle_state=_managed_lifecycle(managed).value,
                 terminated=native_result.terminal,
                 truncated=native_result.truncated,
+            )
+
+    def last_action_results(
+        self, session_id: str, side: str,
+    ) -> tuple[Mapping[str, Any], ...]:
+        """Return only one side's ephemeral results from the latest step."""
+
+        managed = self._managed(session_id)
+        with managed.lock:
+            self._require_usable(managed)
+            _require_side(managed, side)
+            return tuple(
+                json_clone(value)
+                for value in managed.environment.last_action_results
+                if value.get("side") == side
             )
 
     def publish_session(
@@ -570,6 +662,7 @@ class SessionManager:
             finally:
                 _remove_path(staging)
             managed.finalized = True
+            _clear_controller_view_cache(managed)
             return SessionPublication(
                 output_dir=target,
                 replay_path=target / "replay.zip",
@@ -588,6 +681,7 @@ class SessionManager:
     def close_session(self, session_id: str) -> None:
         managed = self._managed(session_id)
         with managed.lock:
+            _clear_controller_view_cache(managed)
             managed.environment.session.close()
         with self._lock:
             self._sessions.pop(session_id, None)
@@ -620,12 +714,17 @@ class SessionManager:
         *,
         decision_window_index: int | None = None,
         frozen_valid_actions: Sequence[ValidAction] | None = None,
+        frozen_valid_actions_revision: int | None = None,
         frame_index: int | None = None,
         sim_time_ms: int | None = None,
     ) -> ControllerView:
         _require_side(managed, side)
         session = managed.environment.session
-        observation_value = session.observe(side)
+        managed.controller_view_requests += 1
+        state_revision = session.state_revision()
+        if managed.controller_view_cache_revision != state_revision:
+            managed.controller_view_cache.clear()
+            managed.controller_view_cache_revision = state_revision
         current_frame = managed.step_index
         current_sim_time = _managed_sim_time_ms(managed)
         window = current_frame if decision_window_index is None else (
@@ -650,6 +749,49 @@ class SessionManager:
             raise DecisionProjectionContractError(
                 "ControllerView sim time is not the current frozen time"
             )
+        if (
+            frozen_valid_actions_revision is not None
+            and (
+                type(frozen_valid_actions_revision) is not int
+                or frozen_valid_actions_revision < 0
+            )
+        ):
+            raise DecisionProjectionContractError(
+                "frozen_valid_actions_revision must be a non-negative exact int"
+            )
+        cacheable = (
+            frozen_valid_actions is None
+            or frozen_valid_actions_revision is not None
+        ) and not managed.finalized
+        terminal = session.is_terminal()
+        result = session.result()
+        cache_key = (
+            state_revision,
+            side,
+            window,
+            bound_frame,
+            bound_time,
+            frozen_valid_actions_revision,
+            terminal,
+            result.terminal,
+            result.truncated,
+            result.winner,
+            result.outcome,
+        )
+        if cacheable:
+            cached = managed.controller_view_cache.get(side)
+            if cached is not None and cached[0] == cache_key:
+                managed.controller_view_cache_hits += 1
+                return deepcopy(cached[1])
+            managed.controller_view_cache_misses += 1
+        else:
+            managed.controller_view_cache_bypasses += 1
+
+        observation_value = session.observe(side)
+        before_inventory_revision = session.state_revision()
+        own_weapon_inventory = session.own_weapon_inventory(side)
+        if session.state_revision() != before_inventory_revision:
+            raise RuntimeError("weapon_inventory_query_modified_engine_state")
         actions = tuple(
             session.valid_actions(side)
             if frozen_valid_actions is None
@@ -666,8 +808,6 @@ class SessionManager:
             json_clone(item.to_dict())
             for item in actions
         )
-        terminal = session.is_terminal()
-        result = session.result()
         snapshot = DecisionSnapshotIdentity(
             side=DecisionSide(side),
             decision_window_index=window,
@@ -683,7 +823,7 @@ class SessionManager:
             snapshot_identity=snapshot,
             frozen_valid_actions=actions,
         )
-        return ControllerView(
+        value = ControllerView(
             session_id=managed.external_id,
             perspective=side.upper(),
             step_index=window,
@@ -699,15 +839,26 @@ class SessionManager:
             truncated=result.truncated,
             decision_semantic=core.decision_semantic,
             action_catalog=core.action_catalog,
+            own_weapon_inventory=own_weapon_inventory,
         )
+        managed.controller_view_builds += 1
+        if cacheable:
+            # The template never crosses the manager boundary.  Keep a deep
+            # copy so mutation of this miss result cannot poison later hits.
+            managed.controller_view_cache[side] = (cache_key, deepcopy(value))
+        return value
 
 
 def _managed_sim_time_ms(managed: _ManagedSession) -> int:
-    world = managed.environment.session.snapshot()["world"]
-    value = world["elapsed_time_ms"]
+    value = managed.environment.session.sim_time_ms()
     if type(value) is not int or value < 0:
         raise RuntimeError("invalid_authoritative_sim_time")
     return value
+
+
+def _clear_controller_view_cache(managed: _ManagedSession) -> None:
+    managed.controller_view_cache.clear()
+    managed.controller_view_cache_revision = None
 
 
 def _managed_lifecycle(managed: _ManagedSession) -> SessionLifecycleState:
@@ -762,6 +913,9 @@ def _recorder_metadata(
     if "map_runtime_data" in native:
         value["map_runtime_data"] = json_clone(native["map_runtime_data"])
     for name in (
+        "boarding_type_assignment_authority_version",
+        "boarding_type_assignment_authority_hash",
+        "boarding_type_assignment_policy",
         "operator_lifecycle_authority_version",
         "operator_lifecycle_authority_hash",
         "loitering_munition_attack_authority_version",

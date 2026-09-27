@@ -14,6 +14,7 @@ from wargame_native_engine.agents import (
     CommandStatus,
     ManualRealtimeClock,
     RealtimeAgentSession,
+    SeatOperation,
 )
 from wargame_native_engine.data import (
     DataProvenance,
@@ -161,6 +162,70 @@ def _multi_actor_bundle() -> ScenarioBundle:
     )
 
 
+def _empty_ammunition_bundle() -> ScenarioBundle:
+    record = json.loads(SCENARIO.read_text(encoding="utf-8"))
+    record["operators"][0]["raw_attributes"]["ammunition"]["0"] = 0
+    record["operators"][0].update({"x": 5, "current_hex": 105})
+    record["deployment"]["positions"]["red"]["1"] = [5, 1]
+    record["scenario_id"] = "realtime-empty-ammunition-intent"
+    return ScenarioBundle.from_record(
+        record,
+        provenance=DataProvenance(
+            source_sha256=canonical_hash(record),
+            source_kind="deterministic_test_derivative",
+        ),
+    )
+
+
+def test_realtime_reports_engine_rejection_instead_of_applied(
+    tmp_path: Path,
+) -> None:
+    factory = MatchFactory(tmp_path, bundle=_empty_ammunition_bundle())
+    session = RealtimeAgentSession(
+        factory,
+        run_namespace="realtime-rejection-test",
+        tick_interval_ms=1_000,
+        clock=ManualRealtimeClock(),
+    )
+    reset = session.reset(seed=42)
+    try:
+        operation = SeatOperation(
+            "SHOOT",
+            (1,),
+            target_id=2,
+            weapon_choices=((1, 36),),
+        )
+        preview = session.preview_operation(
+            reset.red_binding,
+            operation,
+            observation_version=reset.red.observation_version,
+            request_id="empty-ammunition-preview",
+        )
+        assert preview.can_execute is True
+        receipt = session.submit_operation(
+            reset.red_binding,
+            observation_version=reset.red.observation_version,
+            operation=operation,
+        )
+        assert receipt.accepted is True
+
+        tick = session.advance_tick()
+        assert tick.red_command_sequences == ()
+        event = session.command_events[receipt.command_sequence]
+        assert event.status is CommandStatus.REJECTED_AT_APPLY
+        assert event.error_code == "AMMUNITION_UNAVAILABLE"
+        presenter = object.__new__(RealtimeDualControlHTTPServer)
+        presenter.realtime_session = session
+        seat_view, controller_view = session.controller_snapshot(reset.red_binding)
+        status = presenter.status_from_snapshot(
+            "red", seat_view, controller_view,
+        )
+        assert status["product_state"] == "COMMAND_REJECTED"
+        assert status["last_command"]["error_code"] == "AMMUNITION_UNAVAILABLE"
+    finally:
+        session.close()
+
+
 def test_realtime_web_execute_queues_without_waiting_for_blue_and_remains_operable(
     tmp_path: Path,
 ) -> None:
@@ -264,7 +329,7 @@ def test_public_river_valley_pages_expose_a_real_shoot_command(
             )
             assert status == 200
             capabilities = decoded(payload)
-            assert capabilities["schema"] == "human-command-capabilities/1.0"
+            assert capabilities["schema"] == "human-command-capabilities/1.1"
             assert capabilities["operations"]["SHOOT"]["applicable_count"] == 1
             assert capabilities["shoot_target_ids"] == [202, 203]
             direct_fire = next(

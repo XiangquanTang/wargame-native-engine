@@ -28,6 +28,11 @@ class GameSession:
         self.session_id = "session-uninitialized"
         self._reset = False
         self._closed = False
+        # Monotonic for this GameSession instance.  Unlike tick/frame numbers,
+        # this also changes when reset/restore installs a state with the same
+        # visible clock.  Consumers may use it only to invalidate derived
+        # data; WorldState remains authoritative.
+        self._state_revision = 0
 
     def reset(self, seed: int = 42) -> WorldState:
         if self._closed:
@@ -43,6 +48,7 @@ class GameSession:
         self.session_id = "session-" + canonical_hash(identity)[:24]
         result = self.backend.reset(self.seed)
         self._reset = True
+        self._state_revision += 1
         return result
 
     def current_seats(self) -> tuple[str, ...]:
@@ -106,6 +112,10 @@ class GameSession:
         self._require_active()
         return self.backend.get_unload_capabilities(side)
 
+    def get_boarding_capability_assessments(self, side: str):
+        self._require_active()
+        return self.backend.get_boarding_capability_assessments(side)
+
     def get_concealment_capabilities(self, side: str):
         self._require_active()
         return self.backend.get_concealment_capabilities(side)
@@ -126,6 +136,30 @@ class GameSession:
 
         self._require_active()
         return self.backend.get_indirect_fire_active_areas(side)
+
+    def get_indirect_fire_mission_areas(self, side: str):
+        """Return detached own-side waiting and active artillery areas."""
+
+        self._require_active()
+        return self.backend.get_indirect_fire_mission_areas(side)
+
+    def own_weapon_inventory(
+        self, side: str,
+    ) -> tuple[Mapping[str, object], ...]:
+        """Return a detached OWN-only inventory from authoritative state."""
+
+        self._require_active()
+        return self.backend.own_weapon_inventory(side)
+
+    def direct_fire_intent_action(
+        self, side: str, actor_id: int, weapon_id: int, target_id: int,
+    ) -> EngineAction:
+        """Build a side-authorized intent without pre-adjudicating rules."""
+
+        self._require_active()
+        return self.backend.direct_fire_intent_action(
+            side, actor_id, weapon_id, target_id,
+        )
 
     def indirect_fire_action(
         self,
@@ -165,9 +199,11 @@ class GameSession:
                 action_batch, (str, bytes)):
             if not all(isinstance(item, EngineAction) for item in action_batch):
                 raise TypeError("ordered session actions must be EngineAction values")
-            return self.backend.step_ms(
+            result = self.backend.step_ms(
                 tuple(action_batch), delta_time_ms=delta_time_ms
             )
+            self._state_revision += 1
+            return result
         values: dict[str, EngineAction | None] = {}
         for side, item in action_batch.items():
             if isinstance(item, AgentAction):
@@ -178,7 +214,9 @@ class GameSession:
                 values[side] = item
             else:
                 raise TypeError("session actions must be AgentAction, EngineAction or None")
-        return self.backend.step_ms(values, delta_time_ms=delta_time_ms)
+        result = self.backend.step_ms(values, delta_time_ms=delta_time_ms)
+        self._state_revision += 1
+        return result
 
     def stage(self) -> Stage:
         self._require_active()
@@ -191,6 +229,18 @@ class GameSession:
     def result(self) -> GameResult:
         self._require_active(allow_closed=True)
         return self.backend.result()
+
+    def sim_time_ms(self) -> int:
+        """Return the current authoritative integer simulation clock."""
+
+        self._require_active()
+        return self.backend.sim_time_ms()
+
+    def state_revision(self) -> int:
+        """Return this session instance's monotonic derived-data epoch."""
+
+        self._require_active()
+        return self._state_revision
 
     def snapshot(self) -> Mapping[str, object]:
         self._require_active()
@@ -210,6 +260,7 @@ class GameSession:
             identity["backend_determinism_identity"] = backend_identity
         self.session_id = "session-" + canonical_hash(identity)[:24]
         self._reset = True
+        self._state_revision += 1
         return result
 
     def agent_context(self, side: str) -> AgentStepContext:

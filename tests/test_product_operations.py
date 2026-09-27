@@ -12,6 +12,7 @@ from wargame_native_engine.data import (
     ScenarioCatalog,
 )
 from wargame_native_engine.gateway import CommandGatewayError
+from wargame_native_engine.io.replay import replay_source_archive
 from wargame_native_engine.operations import (
     ProductOperationService,
     WargameFacade,
@@ -285,7 +286,8 @@ def test_shoot_preview_uses_frozen_server_target_after_movement(product_match) -
         red.execute_preview(rw.preview_token, request_id=f"red-submit-{index}")
         blue.execute_preview(bw.preview_token, request_id=f"blue-submit-{index}")
     shoot = red.preview_operation(
-        [1], "SHOOT", request_id="shoot-preview", target_id=2
+        [1], "SHOOT", request_id="shoot-preview", target_id=2,
+        weapon_choices={1: 36},
     )
     assert shoot.executable_count == 1
     result = shoot.per_unit_results[0]
@@ -434,7 +436,8 @@ def test_two_unit_shoot_preview_matches_only_frozen_server_actions(
             blue.execute_preview(blue_wait.preview_token, request_id="visibility-b")
 
         preview = red.preview_operation(
-            [1, 3], "SHOOT", request_id="two-shooters", target_id=2
+            [1, 3], "SHOOT", request_id="two-shooters", target_id=2,
+            weapon_choices={1: 36, 3: 36},
         )
         assert preview.executable_count == 2
         assert preview.rejected_count == 0
@@ -464,5 +467,159 @@ def test_two_unit_shoot_preview_matches_only_frozen_server_actions(
             item["actor_id"] for item in step["ordered_actions"]
         } == {1, 3}
         assert all(item["target_id"] == 2 for item in step["ordered_actions"])
+    finally:
+        match.close()
+
+
+@pytest.mark.parametrize("weapon_id", [36, 43])
+def test_explicit_carried_weapon_intent_reaches_engine_and_shared_pool_updates(
+    tmp_path: Path, weapon_id: int,
+) -> None:
+    record = json.loads(SCENARIO.read_text(encoding="utf-8"))
+    red_operator = record["operators"][0]
+    red_operator.update({"x": 5, "current_hex": 105, "weapon_ids": [36, 43]})
+    record["deployment"]["positions"]["red"]["1"] = [5, 1]
+    record["metadata"]["source_compatible"]["weapons"]["43"] = {
+        "weapon_class": "vehicle_light_weapon",
+        "maximum_range": 10,
+        "target_domains": ["PERSONNEL"],
+        "ammunition_key": "0",
+        "requires_unfolded": True,
+        "can_fire_while_moving": False,
+    }
+    record["scenario_id"] = f"explicit-weapon-{weapon_id}"
+    bundle = ScenarioBundle.from_record(
+        record,
+        provenance=DataProvenance(
+            source_sha256=f"explicit-weapon-{weapon_id}",
+            source_kind="test_fixture",
+        ),
+    )
+    app = WargameFacade(
+        ScenarioCatalog.from_bundles({record["scenario_id"]: bundle}),
+        storage_root=tmp_path / f"sessions-{weapon_id}",
+    )
+    match = app.create_match(
+        scenario_id=record["scenario_id"],
+        red_controller_id="weapon-red",
+        blue_controller_id="weapon-blue",
+        seed=42,
+        decision_interval_ms=1_000,
+        frame_interval_ms=1_000,
+    )
+    try:
+        red_controller = match.bind_controller("red", controller_id="weapon-red")
+        red = ProductOperationService(red_controller)
+        blue = match.bind_controller("blue", controller_id="weapon-blue")
+        before = red_controller.observe().own_weapon_inventory[0]
+        assert before["ammunition_pools"] == {"0": 20}
+        assert [item["ammunition"] for item in before["weapons"]] == [20, 20]
+        assert all(
+            item["shared_with_weapon_ids"] == [36, 43]
+            for item in before["weapons"]
+        )
+
+        preview = red.preview_operation(
+            [1],
+            "SHOOT",
+            request_id=f"preview-{weapon_id}",
+            target_id=2,
+            weapon_choices={1: weapon_id},
+        )
+        assert preview.executable_count == 1
+        assert f"武器{weapon_id}" in preview.per_unit_results[0].human_readable_summary
+        red.execute_preview(preview.preview_token, request_id=f"submit-{weapon_id}")
+        blue.submit_batch(request_id=f"blue-{weapon_id}")
+
+        result = match.gateway.last_action_results(
+            match.session_id, "weapon-red",
+        )
+        assert len(result) == 1
+        assert result[0]["accepted"] is True
+        assert result[0]["weapon_id"] == weapon_id
+        after = red_controller.observe().own_weapon_inventory[0]
+        assert after["ammunition_pools"] == {"0": 19}
+        assert [item["ammunition"] for item in after["weapons"]] == [19, 19]
+    finally:
+        match.close()
+
+
+def test_currently_illegal_carried_weapon_is_rejected_only_by_engine(
+    tmp_path: Path,
+) -> None:
+    record = json.loads(SCENARIO.read_text(encoding="utf-8"))
+    record["operators"][0]["raw_attributes"]["ammunition"]["0"] = 0
+    record["operators"][0].update({"x": 5, "current_hex": 105})
+    record["deployment"]["positions"]["red"]["1"] = [5, 1]
+    record["scenario_id"] = "empty-ammunition-intent"
+    bundle = ScenarioBundle.from_record(
+        record,
+        provenance=DataProvenance(
+            source_sha256="empty-ammunition-intent",
+            source_kind="test_fixture",
+        ),
+    )
+    app = WargameFacade(
+        ScenarioCatalog.from_bundles({record["scenario_id"]: bundle}),
+        storage_root=tmp_path / "empty-ammunition-sessions",
+    )
+    match = app.create_match(
+        scenario_id=record["scenario_id"],
+        red_controller_id="empty-red",
+        blue_controller_id="empty-blue",
+        seed=42,
+        decision_interval_ms=1_000,
+        frame_interval_ms=1_000,
+    )
+    try:
+        red_controller = match.bind_controller("red", controller_id="empty-red")
+        red = ProductOperationService(red_controller)
+        blue = match.bind_controller("blue", controller_id="empty-blue")
+        assert not any(
+            item["action"]["action_type"] == "SHOOT"
+            for item in red_controller.observe().valid_actions
+        )
+        preview = red.preview_operation(
+            [1], "SHOOT", request_id="empty-preview", target_id=2,
+            weapon_choices={1: 36},
+        )
+        assert preview.executable_count == 1
+        red.execute_preview(preview.preview_token, request_id="empty-submit")
+        blue.submit_batch(request_id="empty-blue-submit")
+
+        result = match.gateway.last_action_results(match.session_id, "empty-red")
+        assert result == ({
+            "action_id": result[0]["action_id"],
+            "side": "red",
+            "actor_id": 1,
+            "action_type": "SHOOT",
+            "weapon_id": 36,
+            "accepted": False,
+            "code": "AMMUNITION_UNAVAILABLE",
+        },)
+        assert red_controller.observe().own_weapon_inventory[0][
+            "ammunition_pools"
+        ] == {"0": 0}
+
+        forged = red.preview_operation(
+            [1], "SHOOT", request_id="forged-preview", target_id=2,
+            weapon_choices={1: 999},
+        )
+        assert forged.executable_count == 0
+        assert forged.per_unit_results[0].reject_code == "weapon_not_carried"
+        step = match.gateway.manager._managed(  # noqa: SLF001
+            match.session_id
+        ).environment.last_step_record
+        assert [
+            value["parameters"]["weapon_id"]
+            for value in step["ordered_actions"]
+            if value["action_type"] == "SHOOT"
+        ] == [36]
+        publication = match.publish(
+            tmp_path / "empty-ammunition-replay", truncated=True,
+        )
+        assert replay_source_archive(
+            bundle.scenario, publication.replay_path, strict=True,
+        ).matches is True
     finally:
         match.close()

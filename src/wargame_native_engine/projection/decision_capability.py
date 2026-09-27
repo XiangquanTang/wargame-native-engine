@@ -18,7 +18,13 @@ from wargame_native_engine.core.action import (
     EngineAction,
     ValidAction,
 )
-from wargame_native_engine.core.boarding import BoardCapability, UnloadCapability
+from wargame_native_engine.core.boarding import (
+    BoardCapability,
+    BoardingCapabilityAssessment,
+    BoardingCapabilityStatus,
+    BoardingTransitionType,
+    UnloadCapability,
+)
 from wargame_native_engine.core.concealment import ConcealmentCapability
 from wargame_native_engine.core.fire_capability import (
     GuidedFireCapability,
@@ -576,6 +582,44 @@ def unload_capability_evidence(
     )
 
 
+def boarding_capability_assessment_evidence(
+    snapshot: DecisionSnapshotIdentity,
+    values: Iterable[BoardingCapabilityAssessment],
+) -> tuple[ExplicitCapabilityEvidence, ...]:
+    result: list[ExplicitCapabilityEvidence] = []
+    for value in tuple(values):
+        if type(value) is not BoardingCapabilityAssessment:
+            raise TypeError(
+                "boarding assessment evidence requires BoardingCapabilityAssessment"
+            )
+        family = (
+            DecisionCapabilityFamily.BOARD
+            if value.operation_type is BoardingTransitionType.BOARD
+            else DecisionCapabilityFamily.UNLOAD
+        )
+        status = {
+            BoardingCapabilityStatus.AVAILABLE: (
+                CapabilityAvailabilityStatus.AVAILABLE
+            ),
+            BoardingCapabilityStatus.BLOCKED: CapabilityAvailabilityStatus.BLOCKED,
+            BoardingCapabilityStatus.NOT_APPLICABLE: (
+                CapabilityAvailabilityStatus.BLOCKED
+            ),
+        }[value.status]
+        result.append(_producer_evidence(
+            snapshot,
+            value.actor_id,
+            family,
+            status,
+            "engine.boarding_capability_assessments",
+            value.blockers,
+        ))
+    return tuple(sorted(
+        result,
+        key=lambda item: (item.operator_reference, item.family.value),
+    ))
+
+
 def concealment_capability_evidence(
     snapshot: DecisionSnapshotIdentity,
     values: Iterable[ConcealmentCapability],
@@ -868,6 +912,7 @@ __all__ = [
     "ActionCatalogSnapshot",
     "ExplicitCapabilityEvidence",
     "board_capability_evidence",
+    "boarding_capability_assessment_evidence",
     "build_action_catalog_snapshot",
     "build_decision_capability_snapshot",
     "build_decision_from_snapshots",

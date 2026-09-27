@@ -25,6 +25,9 @@ from wargame_native_engine.rules.operator_lifecycle import (
 from wargame_native_engine.rules.loitering_munition import (
     load_loitering_munition_attack_authority,
 )
+from wargame_native_engine.rules.boarding import (
+    load_boarding_type_assignment_authority,
+)
 from wargame_native_engine.version import (
     ADJUDICATION_SEMANTICS_VERSION,
     ENGINE_VERSION,
@@ -122,6 +125,21 @@ class ReplayWriter:
         self._write_json("manifest.json", self.manifest)
 
     def record_initial_state(self, snapshot: Mapping[str, Any]) -> None:
+        boarding_assignment = snapshot.get(
+            "boarding_type_assignment_authority"
+        )
+        if isinstance(boarding_assignment, Mapping):
+            self.manifest.update({
+                "boarding_type_assignment_authority_version": (
+                    boarding_assignment.get("authority_version")
+                ),
+                "boarding_type_assignment_authority_hash": (
+                    boarding_assignment.get("authority_hash")
+                ),
+                "boarding_type_assignment_policy": (
+                    boarding_assignment.get("assignment_policy")
+                ),
+            })
         if _snapshot_uses_operator_lifecycle(snapshot):
             self.manifest.update(_operator_lifecycle_replay_identity())
         if _snapshot_uses_loitering_attack_authority(snapshot):
@@ -298,9 +316,19 @@ def replay_actions(scenario: NativeScenario, root: str | Path, *,
             raise ValueError(message)
         warnings.warn(message + "; continuing in non-strict mode", RuntimeWarning,
                       stacklevel=2)
+    boarding_type_assignments = (
+        "boarding_type_assignment_authority" in bundle["initial_state"]
+    )
+    if boarding_type_assignments:
+        _check_boarding_type_assignment_semantics(
+            manifest, strict=strict, kind="replay"
+        )
     engine = NativeEngine(scenario,
                           max_ticks=int(manifest["max_ticks"]),
-                          ruleset=active_ruleset)
+                          ruleset=active_ruleset,
+                          enable_boarding_type_assignments=(
+                              boarding_type_assignments
+                          ))
     engine.reset(int(manifest["seed"]))
     if strict and canonical_hash(engine.snapshot()) != canonical_hash(
         bundle["initial_state"]
@@ -424,6 +452,13 @@ def replay_source_archive(scenario: NativeScenario, source: str | Path, *,
         strict=strict,
         kind="source replay",
     )
+    boarding_type_assignments = (
+        manifest.get("boarding_type_assignment_authority_version") is not None
+    )
+    if boarding_type_assignments:
+        _check_boarding_type_assignment_semantics(
+            manifest, strict=strict, kind="source replay"
+        )
     active_ruleset = (ruleset if isinstance(ruleset, Ruleset)
                       else load_ruleset(ruleset))
     expected = {
@@ -465,6 +500,7 @@ def replay_source_archive(scenario: NativeScenario, source: str | Path, *,
                 "max_ticks", scenario.terminal_rules.max_ticks)),
             ruleset=active_ruleset,
             map_runtime_data=map_runtime_data,
+            enable_boarding_type_assignments=boarding_type_assignments,
         )),
         template=archive.frames[0],
     )
@@ -586,6 +622,36 @@ def _loitering_attack_replay_identity() -> dict[str, str]:
         ),
         "loitering_munition_attack_authority_hash": authority.content_hash,
     }
+
+
+def _boarding_type_assignment_replay_identity() -> dict[str, str]:
+    authority = load_boarding_type_assignment_authority()
+    return {
+        "boarding_type_assignment_authority_version": (
+            authority.authority_version
+        ),
+        "boarding_type_assignment_authority_hash": authority.content_hash,
+        "boarding_type_assignment_policy": authority.assignment_policy,
+    }
+
+
+def _check_boarding_type_assignment_semantics(
+    manifest: Mapping[str, Any], *, strict: bool, kind: str,
+) -> None:
+    expected = _boarding_type_assignment_replay_identity()
+    mismatches = tuple(
+        key for key, value in expected.items() if manifest.get(key) != value
+    )
+    if not mismatches:
+        return
+    message = (
+        f"unsupported {kind} boarding type assignment authority: "
+        + ", ".join(mismatches)
+    )
+    if strict:
+        raise UnsupportedReplaySemanticsError(message)
+    warnings.warn(message + "; continuing in non-strict mode", RuntimeWarning,
+                  stacklevel=3)
 
 
 def _snapshot_uses_operator_lifecycle(snapshot: Mapping[str, Any]) -> bool:

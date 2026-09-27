@@ -1,10 +1,8 @@
 """Side-safe presentation model for the Human command capability UI.
 
-This module only projects an already-frozen :class:`ControllerView`.  It does
-not decide legality: capability availability and direct-fire targets come from
-the Engine's existing ``valid_actions`` records.  The operator registry and
-scenario weapon profiles contribute descriptive labels and current-state
-presentation fields only.
+This module only projects an already-frozen :class:`ControllerView`.  Complete
+OWN weapon inventory comes from its authoritative side-bound read model;
+current legal targets remain a separate annotation from ``valid_actions``.
 """
 
 from __future__ import annotations
@@ -21,7 +19,7 @@ from wargame_native_engine.viewer.operator_registry import (
 )
 
 
-HUMAN_CAPABILITY_SCHEMA = "human-command-capabilities/1.0"
+HUMAN_CAPABILITY_SCHEMA = "human-command-capabilities/1.1"
 
 _CAPABILITY_ORDER = (
     ("MOVE", "MOVE"),
@@ -68,8 +66,8 @@ def build_human_capabilities(
 ) -> dict[str, object]:
     """Enrich a product summary with a capability-oriented UI projection.
 
-    No action ID is returned.  Direct-fire choices are grouped from the current
-    side-only valid actions by ``actor_id + weapon_id + target_id``.
+    No action ID is returned.  Carried weapons never disappear merely because
+    no attack is currently legal.
     """
 
     if not isinstance(summary, Mapping):
@@ -84,6 +82,7 @@ def build_human_capabilities(
     controlled = requested.intersection(friendlies)
     visible_enemy_ids = _visible_enemy_ids(view)
     source_units = _source_units(view, controlled)
+    inventories = _own_weapon_inventories(view, controlled)
     operations = summary.get("operations")
     if not isinstance(operations, Mapping):
         raise ValueError("capability summary operations must be an object")
@@ -95,8 +94,6 @@ def build_human_capabilities(
         weapon_targets = _legal_direct_fire_targets(
             view, actor_id, visible_enemy_ids,
         )
-        if not weapon_targets:
-            continue
         source_unit = source_units.get(actor_id, {})
         identity = registry.resolve_viewer_unit(source_unit)
         summary_unit = next(
@@ -106,15 +103,28 @@ def build_human_capabilities(
             ),
             {},
         )
+        inventory = inventories.get(actor_id)
+        weapon_resources = (
+            inventory.get("weapons", [])
+            if isinstance(inventory, Mapping)
+            else [{"weapon_id": value} for value in sorted(weapon_targets)]
+        )
         weapons = [
             _weapon_record(
-                weapon_id,
-                sorted(target_ids),
+                int(resource["weapon_id"]),
+                sorted(weapon_targets.get(int(resource["weapon_id"]), set())),
                 source_unit,
                 profiles,
-                registry.weapon_profiles.get(weapon_id),
+                registry.weapon_profiles.get(int(resource["weapon_id"])),
+                resource,
+                (
+                    inventory.get("weapon_cooldown_remaining_ms")
+                    if isinstance(inventory, Mapping) else None
+                ),
             )
-            for weapon_id, target_ids in sorted(weapon_targets.items())
+            for resource in weapon_resources
+            if isinstance(resource, Mapping)
+            and type(resource.get("weapon_id")) is int
         ]
         direct_fire_units.append({
             "unit_id": actor_id,
@@ -194,12 +204,54 @@ def build_human_capabilities(
             "metadata": metadata,
         })
 
+    direct_intent_available = (
+        bool(actors)
+        and bool(direct_fire_units)
+        and len(direct_fire_units) == len(controlled)
+        and all(bool(value["weapons"]) for value in direct_fire_units)
+        and bool(visible_enemy_ids)
+    )
+    if direct_intent_available and not any(
+        value["capability_type"] == "DIRECT_FIRE" for value in capabilities
+    ):
+        capabilities.append({
+            "capability_type": "DIRECT_FIRE",
+            "operation_type": "SHOOT",
+            "status": "AVAILABLE",
+            "actor_ids": list(actors),
+            "metadata": {
+                "applicable_count": 0,
+                "unit_count": len(direct_fire_units),
+                "weapon_count": sum(
+                    len(value["weapons"]) for value in direct_fire_units
+                ),
+                "intent_only": True,
+            },
+        })
+        order = {
+            name: index for index, (name, _operation) in enumerate(
+                _CAPABILITY_ORDER
+            )
+        }
+        capabilities.sort(key=lambda value: order[value["capability_type"]])
+
     result = deepcopy(dict(summary))
     result.update({
         "schema": HUMAN_CAPABILITY_SCHEMA,
+        "state_binding": {
+            "decision_window_index": view.step_index,
+            "frame_index": view.frame_index,
+            "sim_time_ms": view.sim_time_ms,
+            "observation_hash": view.observation.get("observation_hash"),
+        },
         "capabilities": capabilities,
         "direct_fire": {
-            "semantics": "current_frozen_valid_direct_fire_actions",
+            "semantics": "complete_carried_weapons_plus_legal_annotations",
+            "selectable_target_ids": sorted(visible_enemy_ids),
+            "units": direct_fire_units,
+        },
+        "weapon_inventory": {
+            "semantics": "authoritative_own_inventory_at_controller_view_version",
             "units": direct_fire_units,
         },
         "guided_fire": {
@@ -369,6 +421,19 @@ def _source_units(
     return result
 
 
+def _own_weapon_inventories(
+    view: ControllerView, actor_ids: set[int],
+) -> dict[int, Mapping[str, Any]]:
+    result: dict[int, Mapping[str, Any]] = {}
+    for value in view.own_weapon_inventory:
+        if not isinstance(value, Mapping):
+            continue
+        actor_id = value.get("operator_id")
+        if type(actor_id) is int and actor_id in actor_ids:
+            result[actor_id] = value
+    return result
+
+
 def _legal_direct_fire_targets(
     view: ControllerView,
     actor_id: int,
@@ -402,6 +467,8 @@ def _weapon_record(
     source_unit: Mapping[str, Any],
     profiles: Mapping[str | int, object],
     descriptor: WeaponDescriptor | None,
+    resource: Mapping[str, Any] | None = None,
+    authoritative_cooldown_ms: object = None,
 ) -> dict[str, object]:
     raw_profile = profiles.get(str(weapon_id), profiles.get(weapon_id, {}))
     profile = raw_profile if isinstance(raw_profile, Mapping) else {}
@@ -415,11 +482,37 @@ def _weapon_record(
         and not isinstance(raw_domains, (str, bytes))
         else list(descriptor.target_domains) if descriptor is not None else []
     )
-    ammo_key = profile.get("ammunition_key")
-    ammunition = _ammunition(source_unit.get("remain_bullet_nums"), ammo_key)
-    cooldown = source_unit.get("weapon_cool_time")
-    if not _nonnegative_number(cooldown):
-        cooldown = None
+    authoritative_resource = resource or {}
+    ammo_key = authoritative_resource.get(
+        "ammunition_key", profile.get("ammunition_key")
+    )
+    if "ammunition" in authoritative_resource:
+        raw_ammunition = authoritative_resource.get("ammunition")
+        ammunition = (
+            raw_ammunition
+            if type(raw_ammunition) is int and raw_ammunition >= 0 else None
+        )
+    else:
+        ammunition = _ammunition(source_unit.get("remain_bullet_nums"), ammo_key)
+    if type(authoritative_cooldown_ms) is int and authoritative_cooldown_ms >= 0:
+        cooldown = authoritative_cooldown_ms / 1000.0
+    else:
+        cooldown = source_unit.get("weapon_cool_time")
+        if not _nonnegative_number(cooldown):
+            cooldown = None
+    shared = authoritative_resource.get("shared_with_weapon_ids", [])
+    shared_ids = (
+        sorted(int(value) for value in shared if type(value) is int)
+        if isinstance(shared, Sequence) and not isinstance(shared, (str, bytes))
+        else []
+    )
+    raw_modes = authoritative_resource.get("attack_modes", [])
+    attack_modes = (
+        sorted(str(value).upper() for value in raw_modes)
+        if isinstance(raw_modes, Sequence)
+        and not isinstance(raw_modes, (str, bytes))
+        else []
+    )
     return {
         "weapon_id": weapon_id,
         "display_name": (
@@ -433,8 +526,22 @@ def _weapon_record(
         "maximum_range": maximum_range,
         "target_domains": target_domains,
         "ammunition": ammunition,
+        "ammunition_status": (
+            "SELF_AS_MUNITION"
+            if authoritative_resource.get("resource_policy")
+            == "SELF_AS_MUNITION"
+            else "KNOWN" if ammunition is not None else "UNKNOWN"
+        ),
+        "ammunition_pool": ammo_key,
+        "shared_ammunition": bool(shared_ids),
+        "shared_with_weapon_ids": shared_ids,
+        "ammunition_cost": authoritative_resource.get("ammunition_cost"),
+        "attack_modes": attack_modes,
         "cooldown_remaining_seconds": cooldown,
-        "ready_state": "READY",
+        "ready_state": (
+            "COOLDOWN" if cooldown is not None and cooldown > 0
+            else "STATE_REPORTED"
+        ),
         "legal_target_ids": target_ids,
         "profile_source": (
             "scenario_weapon_profile" if profile else "operator_registry"

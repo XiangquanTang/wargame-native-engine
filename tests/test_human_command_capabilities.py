@@ -110,7 +110,13 @@ def test_tank_capabilities_include_direct_fire_without_future_operations() -> No
         "target_domains": ["PERSONNEL", "VEHICLE"],
         "ammunition": 5,
         "cooldown_remaining_seconds": 0,
-        "ready_state": "READY",
+        "ammunition_status": "KNOWN",
+        "ammunition_pool": "main",
+        "shared_ammunition": False,
+        "shared_with_weapon_ids": [],
+        "ammunition_cost": None,
+        "attack_modes": [],
+        "ready_state": "STATE_REPORTED",
         "legal_target_ids": [203],
         "profile_source": "scenario_weapon_profile",
     }
@@ -125,6 +131,85 @@ def test_single_weapon_capability_is_a_single_explicit_choice() -> None:
     assert len(weapons) == 1
     assert weapons[0]["weapon_id"] == 36
     assert weapons[0]["legal_target_ids"] == [203]
+
+
+def test_complete_inventory_uses_authoritative_shared_pool_without_legal_shoot() -> None:
+    view = ControllerView(
+        "session-1",
+        "RED",
+        4,
+        {
+            "friendly_operators": [{"operator_id": 103}],
+            "visible_enemies": [{"operator_id": 203}],
+        },
+        {
+            "operators": [{
+                "obj_id": 103,
+                "type": 2,
+                "sub_type": 0,
+                # Deliberately stale compatibility data must not win.
+                "remain_bullet_nums": {"0": 30},
+                "weapon_cool_time": 0,
+            }],
+            "passengers": [],
+        },
+        (),
+        False,
+        None,
+        None,
+        own_weapon_inventory=({
+            "operator_id": 103,
+            "weapons": [
+                {
+                    "weapon_id": 36,
+                    "attack_modes": ["DIRECT"],
+                    "resource_policy": "AMMUNITION_KEY",
+                    "ammunition_key": "0",
+                    "ammunition": 29,
+                    "ammunition_cost": None,
+                    "shared_with_weapon_ids": [36, 43],
+                },
+                {
+                    "weapon_id": 43,
+                    "attack_modes": ["DIRECT"],
+                    "resource_policy": "AMMUNITION_KEY",
+                    "ammunition_key": "0",
+                    "ammunition": 29,
+                    "ammunition_cost": None,
+                    "shared_with_weapon_ids": [36, 43],
+                },
+            ],
+            "ammunition_pools": {"0": 29},
+            "weapon_cooldown_remaining_ms": 2_000,
+        },),
+    )
+    summary = _summary()
+    summary["operations"]["SHOOT"] = {
+        "applicable_count": 0,
+        "unavailable": [{"unit_id": 103, "code": "no_legal_shoot"}],
+    }
+    result = build_human_capabilities(
+        summary,
+        view,
+        [103],
+        weapon_profiles={
+            "36": {"ammunition_key": "0"},
+            "43": {"ammunition_key": "0"},
+        },
+    )
+
+    weapons = result["weapon_inventory"]["units"][0]["weapons"]
+    assert [value["weapon_id"] for value in weapons] == [36, 43]
+    assert [value["ammunition"] for value in weapons] == [29, 29]
+    assert all(value["shared_ammunition"] for value in weapons)
+    assert all(value["ready_state"] == "COOLDOWN" for value in weapons)
+    assert all(value["legal_target_ids"] == [] for value in weapons)
+    assert result["direct_fire"]["selectable_target_ids"] == [203]
+    direct = next(
+        value for value in result["capabilities"]
+        if value["capability_type"] == "DIRECT_FIRE"
+    )
+    assert direct["metadata"]["intent_only"] is True
 
 
 def test_capability_projection_does_not_mutate_inputs() -> None:
@@ -147,12 +232,13 @@ def test_frontend_weapon_switch_clears_preview_and_submits_explicit_weapon() -> 
         source.index("if (!isFriendlySelectable(unit)) return")
     ]
 
-    assert "selectedWeaponId = Number(value.weapon_id)" in selection
+    assert "selectedWeaponIds.set(Number(unitId), Number(value.weapon_id))" in selection
     assert "targetUnitId = null" in selection
     assert "operationPreview = null" in selection
     assert "executeRequestId = null" in selection
     assert "...selectedWeaponChoices()" in target_click
     assert "weapon_choices" in source
+    assert "Object.fromEntries" in source
 
 
 def test_frontend_filters_unknown_future_capabilities() -> None:

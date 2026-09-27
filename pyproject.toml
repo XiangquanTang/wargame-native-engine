@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "wargame-native-engine"
-version = "0.4.0"
+version = "0.4.1"
 description = "A transparent, deterministic, SDK-independent native wargame engine"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -33,6 +33,12 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "wargame_native_engine.viewer" = ["static/*.html", "static/*.js", "static/*.css"]
+
+[tool.setuptools.data-files]
+"config/rulesets" = [
+    "config/rulesets/boarding_profiles_v1.json",
+    "config/rulesets/boarding_type_assignments_v1.json",
+]
 
 [tool.pytest.ini_options]
 addopts = "-ra"

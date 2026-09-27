@@ -866,9 +866,23 @@ class RealtimeAgentSession:
                     "realtime_tick_evidence_mismatch_reset_required",
                     "Gateway advance does not match one authoritative tick",
                 )
-            final_view = match.gateway.view(
-                match.session_id, match.red_controller_id
-            )
+            adjudication_results = {
+                "red": match.gateway.last_action_results(
+                    match.session_id, match.red_controller_id,
+                ),
+                "blue": match.gateway.last_action_results(
+                    match.session_id, match.blue_controller_id,
+                ),
+            }
+            for side, sequence in tuple(applied.items()):
+                rejected_actions = [
+                    value for value in adjudication_results[side]
+                    if value.get("accepted") is False
+                ]
+                if rejected_actions:
+                    code = str(rejected_actions[0].get("code") or "ACTION_REJECTED")
+                    rejected[side] = (sequence, code)
+                    applied.pop(side, None)
             with self._lock:
                 for side, value in rejected.items():
                     sequence, code = value
@@ -887,6 +901,10 @@ class RealtimeAgentSession:
                 descriptor = match.status
                 self._ended = descriptor.terminal
                 self._issue_views_locked()
+                # _issue_views_locked captured the same post-advance frozen
+                # frame.  Reuse its RED projection for terminal presentation
+                # instead of asking the Gateway to clone it once more.
+                final_view = self._controller_views["red"]
                 end_ns = self._clock_now()
                 deadline_ns = anchor + (tick + 1) * self._tick_interval_ns
                 result = RealtimeTickResult(
@@ -896,8 +914,8 @@ class RealtimeAgentSession:
                     advance.sim_time_after_ms,
                     (() if "red" not in applied else (applied["red"],)),
                     (() if "blue" not in applied else (applied["blue"],)),
-                    deepcopy(self._latest["red"]),
-                    deepcopy(self._latest["blue"]),
+                    self._latest["red"],
+                    self._latest["blue"],
                     descriptor.terminated,
                     descriptor.truncated,
                     final_view.winner,
@@ -972,13 +990,49 @@ class RealtimeAgentSession:
             authoritative = self._resolve_binding_locked(binding)
             self._require_accepting()
             service = self._advisory_services[authoritative.seat]
+            seat_view = deepcopy(self._latest[authoritative.seat])
             cached = deepcopy(
-                self._latest[authoritative.seat]
-                .capabilities.operation_summary.get("indirect_fire", {})
+                seat_view.capabilities.operation_summary.get("indirect_fire", {})
             )
             controller_view = deepcopy(
                 self._controller_views[authoritative.seat]
             )
+        return self._operation_capabilities_from_view(
+            service, actor_ids, controller_view, cached,
+        )
+
+    def operation_capabilities_snapshot(
+        self,
+        binding: RealtimeSeatBinding,
+        actor_ids: Sequence[int],
+    ) -> tuple[RealtimeSeatView, ControllerView, dict[str, object]]:
+        """Return capability data and its exact frozen observation version."""
+
+        with self._lock:
+            authoritative = self._resolve_binding_locked(binding)
+            self._require_accepting()
+            service = self._advisory_services[authoritative.seat]
+            seat_view = deepcopy(self._latest[authoritative.seat])
+            controller_view = deepcopy(
+                self._controller_views[authoritative.seat]
+            )
+            cached = deepcopy(
+                seat_view.capabilities.operation_summary.get(
+                    "indirect_fire", {}
+                )
+            )
+        result = self._operation_capabilities_from_view(
+            service, actor_ids, controller_view, cached,
+        )
+        return seat_view, controller_view, result
+
+    @staticmethod
+    def _operation_capabilities_from_view(
+        service: ProductOperationService,
+        actor_ids: Sequence[int],
+        controller_view: ControllerView,
+        cached: object,
+    ) -> dict[str, object]:
         result = deepcopy(service.capabilities(
             actor_ids, view=controller_view,
         ))
@@ -1471,6 +1525,15 @@ class RealtimeAgentSession:
                         value.to_record()
                         for value in (
                             match.gateway.manager.get_indirect_fire_active_areas(
+                                match.session_id,
+                                side,
+                            )
+                        )
+                    ],
+                    "mission_areas": [
+                        value.to_record()
+                        for value in (
+                            match.gateway.manager.get_indirect_fire_mission_areas(
                                 match.session_id,
                                 side,
                             )

@@ -153,6 +153,35 @@ class SideController:
             target_hex=target_hex,
         )
 
+    def plan_direct_fire_intent(
+        self,
+        unit_id: int,
+        weapon_id: int,
+        target_id: int,
+        *,
+        request_id: str,
+        expected_window: int | None = None,
+    ) -> ActionProposal:
+        window = self.window()
+        if (
+            expected_window is not None
+            and expected_window != window.decision_window_index
+        ):
+            raise CommandGatewayError(
+                "stale_expected_step",
+                f"expected {expected_window}, current "
+                f"{window.decision_window_index}",
+            )
+        return self._gateway.plan_direct_fire_intent(
+            self.session_id,
+            self.controller_id,
+            request_id=request_id,
+            expected_window=window.decision_window_index,
+            actor_id=unit_id,
+            weapon_id=weapon_id,
+            target_id=target_id,
+        )
+
     def proposal(self, proposal_id: str) -> ActionProposal:
         return self._gateway.proposal(
             self.session_id, self.controller_id, proposal_id
@@ -216,16 +245,26 @@ class SideController:
                 None,
             )
             if entry is None:
-                raise CommandGatewayError(
-                    "action_not_currently_valid",
-                    f"action {action_id!r} is not in the current side snapshot",
+                authorized = self._gateway.authorized_action(
+                    self.session_id, self.controller_id, action_id,
                 )
-            staged = StagedAction(
-                entry.actor_reference,
-                str(action_id),
-                entry.action_type,
-            )
-            self._staged[entry.actor_reference] = staged
+                if authorized is None:
+                    raise CommandGatewayError(
+                        "action_not_currently_valid",
+                        f"action {action_id!r} is not authorized in this window",
+                    )
+                staged = StagedAction(
+                    authorized.actor_id,
+                    str(action_id),
+                    authorized.action_type.value,
+                )
+            else:
+                staged = StagedAction(
+                    entry.actor_reference,
+                    str(action_id),
+                    entry.action_type,
+                )
+            self._staged[staged.actor_id] = staged
             result = tuple(self._staged.values())
             if request_id is not None:
                 self._stage_requests[str(request_id)] = (signature, result)

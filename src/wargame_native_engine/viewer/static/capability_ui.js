@@ -4,7 +4,7 @@
 // This module never computes legality; it consumes the side-safe capability
 // projection returned by /api/product/capabilities.
 (function installHumanCapabilityUI(root) {
-  const SCHEMA = "human-command-capabilities/1.0";
+  const SCHEMA = "human-command-capabilities/1.1";
   const SUPPORTED = Object.freeze(new Set([
     "MOVE",
     "DIRECT_FIRE",
@@ -53,6 +53,14 @@
     );
     return Array.isArray(weapon?.legal_target_ids)
       ? [...weapon.legal_target_ids] : [];
+  }
+
+  function weaponSelectableTargetIds(model, unitId, weaponId) {
+    if (!Number.isInteger(weaponId) || !directFireWeapons(model, unitId).some(
+      (value) => Number(value.weapon_id) === Number(weaponId)
+    )) return [];
+    const values = model?.direct_fire?.selectable_target_ids;
+    return Array.isArray(values) ? [...values] : [];
   }
 
   function weaponEnvelopeHexes(overlay, weaponId) {
@@ -130,6 +138,7 @@
     directFireUnit,
     directFireWeapons,
     weaponTargetIds,
+    weaponSelectableTargetIds,
     weaponEnvelopeHexes,
     guidedFireOptions,
     guidedFirePlatforms,

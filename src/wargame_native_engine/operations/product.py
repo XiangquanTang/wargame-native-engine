@@ -77,6 +77,7 @@ class GroupOperationPreview:
     rejected_count: int
     per_unit_results: tuple[UnitOperationPreview, ...]
     destination_hex: int | None
+    target_hex: int | None
     target_id: int | None
     estimated_duration_ms: int | None
     warnings: tuple[str, ...]
@@ -94,6 +95,7 @@ class GroupOperationPreview:
             "rejected_count": self.rejected_count,
             "per_unit_results": [item.to_record() for item in self.per_unit_results],
             "destination_hex": self.destination_hex,
+            "target_hex": self.target_hex,
             "target_id": self.target_id,
             "estimated_duration_ms": self.estimated_duration_ms,
             "warnings": list(self.warnings),
@@ -295,7 +297,11 @@ class ProductOperationService:
         """Summarize toolbar applicability without exposing frozen IDs."""
 
         actors = _actor_ids(actor_ids)
-        active_view = self.controller.observe() if view is None else deepcopy(view)
+        # A supplied view is an already-detached frozen-version input and this
+        # method only reads it.  Avoid another full Source-frame copy on the
+        # realtime publication path; the no-view public path remains detached
+        # by SideController.observe().
+        active_view = self.controller.observe() if view is None else view
         decision = active_view.decision_semantic
         catalog = active_view.action_catalog
         if decision is None or catalog is None:
@@ -484,6 +490,13 @@ class ProductOperationService:
                         f"{name} must be a non-negative exact int",
                     )
         choices = _weapon_choices(weapon_choices)
+        if operation == "SHOOT":
+            unexpected = set(choices) - set(actors)
+            if unexpected:
+                raise CommandGatewayError(
+                    "weapon_choice_actor_mismatch",
+                    "weapon choices must belong to selected actors",
+                )
         window = self.controller.window()
         if window.submitted:
             raise CommandGatewayError(
@@ -570,6 +583,7 @@ class ProductOperationService:
                 rejected,
                 tuple(results),
                 destination_hex,
+                target_hex,
                 target_id,
                 max(durations) if durations else None,
                 warnings,
@@ -951,14 +965,40 @@ class ProductOperationService:
                 },),
             ), proposal.action_id
 
-        candidates = _operation_candidates(menu, operation)
         if operation == "SHOOT":
-            candidates = tuple(
-                item
-                for item in candidates
-                if item.get("action", {}).get("target_id") == target_id
-            )
-        elif operation in {"BOARD", "UNLOAD"}:
+            if weapon_choice is None:
+                return _rejected(
+                    unit_id,
+                    name,
+                    "weapon_choice_required",
+                    "请为该单位明确选择携行武器",
+                ), None
+            try:
+                proposal = self.controller.plan_direct_fire_intent(
+                    unit_id,
+                    weapon_choice,
+                    int(target_id),
+                    request_id=f"{request_id}:direct:{unit_id}",
+                    expected_window=menu.decision_window_index,
+                )
+            except (CommandGatewayError, TypeError, ValueError) as exc:
+                code = getattr(exc, "code", "direct_fire_intent_rejected")
+                message = getattr(exc, "message", str(exc))
+                return _rejected(unit_id, name, code, message), None
+            return UnitOperationPreview(
+                unit_id,
+                name,
+                True,
+                f"向目标{target_id}提交武器{weapon_choice}攻击意图，等待引擎裁决",
+                weapon_options=({
+                    "weapon_id": weapon_choice,
+                    "target_id": target_id,
+                    "summary": f"武器{weapon_choice}",
+                },),
+            ), proposal.action_id
+
+        candidates = _operation_candidates(menu, operation)
+        if operation in {"BOARD", "UNLOAD"}:
             candidates = tuple(
                 item
                 for item in candidates
@@ -989,29 +1029,7 @@ class ProductOperationService:
             ), None
         options = tuple(_weapon_option(item) for item in candidates)
         chosen = None
-        if operation == "SHOOT" and len(candidates) > 1:
-            if weapon_choice is None:
-                return UnitOperationPreview(
-                    unit_id,
-                    name,
-                    False,
-                    "存在多个合法武器，请选择武器",
-                    weapon_options=options,
-                    reject_code="weapon_choice_required",
-                    reject_message="存在多个合法武器，请为该单位选择",
-                ), None
-            matching = [
-                item for item in candidates
-                if item.get("action", {}).get("parameters", {}).get("weapon_id")
-                == weapon_choice
-            ]
-            if len(matching) != 1:
-                return _rejected(
-                    unit_id, name, "weapon_choice_invalid", "所选武器当前不可用",
-                    options,
-                ), None
-            chosen = matching[0]
-        elif len(candidates) > 1:
+        if len(candidates) > 1:
             return _rejected(
                 unit_id,
                 name,
@@ -1251,6 +1269,27 @@ def _product_capability_family(
 
 
 def _machine_capability_unavailable(status: Any) -> tuple[str, str]:
+    boarding_messages = {
+        "ALREADY_ON_BOARD": "人员已在载具内；请选择载具执行下车",
+        "CARRIER_FULL": "同格载具已满",
+        "CURRENT_HEX_REQUIRED": "单位当前没有可用地图格位置",
+        "DESTROYED": "单位已被摧毁",
+        "MOVING": "单位或同格载具正在移动",
+        "NO_COMPATIBLE_CARRIER": "当前没有兼容的运输载具",
+        "NO_COMPATIBLE_CARRIER_SAME_HEX": "当前格内没有兼容的运输载具",
+        "NOT_DEPLOYED": "单位当前未部署",
+        "NO_PASSENGER_ON_BOARD": "载具当前没有搭载人员",
+        "SUPPRESSED": "单位或同格载具正受压制",
+        "TRANSITION_IN_PROGRESS": "上车或下车过渡正在进行",
+        "UNIT_TYPE_NOT_CARRIER": "该明确单位类型不是受支持的运输载具",
+        "UNIT_TYPE_NOT_PASSENGER": "该明确单位类型不是受支持的搭载人员",
+    }
+    boarding_reason = next((
+        boarding_messages.get(value.code)
+        for value in status.blocker_codes
+        if value.producer_namespace == "engine.boarding_capability_assessments"
+        and value.code in boarding_messages
+    ), None)
     if status.status is CapabilityAvailabilityStatus.UNKNOWN:
         return (
             "CAPABILITY_UNKNOWN",
@@ -1259,14 +1298,17 @@ def _machine_capability_unavailable(status: Any) -> tuple[str, str]:
     if status.status is CapabilityAvailabilityStatus.MISSING:
         return "CAPABILITY_MISSING", "当前能力证据缺失"
     if status.status is CapabilityAvailabilityStatus.NOT_APPLICABLE:
-        return "CAPABILITY_NOT_APPLICABLE", "该单位不适用此能力"
+        return (
+            "CAPABILITY_NOT_APPLICABLE",
+            boarding_reason or "该单位不适用此能力",
+        )
     blockers = tuple(
         f"{value.producer_namespace}:{value.code}"
         for value in status.blocker_codes
     )
     return (
         blockers[0] if blockers else "CAPABILITY_BLOCKED",
-        "当前能力被权威状态阻塞",
+        boarding_reason or "当前能力被权威状态阻塞",
     )
 
 

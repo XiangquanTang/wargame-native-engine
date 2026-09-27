@@ -128,13 +128,28 @@ def controller_view_record(view: ControllerView) -> dict[str, object]:
     )
     if explicit != view.perspective:
         raise ValueError("controller Source frame perspective mismatch")
-    viewer_units = [
-        _viewer_unit(item, "operator", view.perspective)
+    own_lifecycles = _own_lifecycle_index(view)
+    source_units = tuple(
+        (item, "operator")
         for item in _mapping_array(frame.get("operators"), "operators")
-    ] + [
-        _viewer_unit(item, "passenger", view.perspective)
+    ) + tuple(
+        (item, "passenger")
         for item in _mapping_array(frame.get("passengers"), "passengers")
+    )
+    viewer_units = [
+        _viewer_unit(
+            item,
+            category,
+            view.perspective,
+            own_lifecycles.get(item.get("obj_id")),
+        )
+        for item, category in source_units
     ]
+    _attach_own_transport_details(
+        viewer_units,
+        source_units=source_units,
+        own_lifecycles=own_lifecycles,
+    )
     return {
         **view.to_record(),
         "frame": {
@@ -159,11 +174,43 @@ def _mapping_array(value: object, field: str) -> tuple[Mapping[str, Any], ...]:
 
 
 def _viewer_unit(
-    value: Mapping[str, Any], category: str, perspective: str,
+    value: Mapping[str, Any],
+    category: str,
+    perspective: str,
+    own_lifecycle: object | None = None,
 ) -> dict[str, object]:
-    current_hex = value.get("cur_hex")
-    if type(current_hex) is not int or current_hex < 0:
+    source_current_hex = value.get("cur_hex")
+    if type(source_current_hex) is not int or source_current_hex < 0:
         raise ValueError("controller unit cur_hex must be a non-negative int")
+    current_hex: int | None = source_current_hex
+    map_visible = True
+    spatially_present = True
+    spatial_status = "ON_MAP"
+    boarding_role = None
+    boarding_state = None
+    if own_lifecycle is not None:
+        deployment = own_lifecycle.deployment
+        boarding = own_lifecycle.boarding
+        spatially_present = deployment.spatially_present
+        spatial_status = deployment.spatial_status.value
+        boarding_role = boarding.role.value
+        boarding_state = boarding.state.value
+        # Native BOARD establishes the relationship immediately, but the
+        # product keeps the passenger at its submitted position until the
+        # 75-second transition has completed.  Once complete (and throughout
+        # UNLOAD), the passenger has no independent map/hit-test presence.
+        map_visible = not (
+            boarding_role == "PASSENGER"
+            and boarding_state in {"ON_BOARD", "UNLOADING"}
+        )
+        if map_visible:
+            current_hex = (
+                deployment.current_hex
+                if deployment.current_hex is not None
+                else source_current_hex
+            )
+        else:
+            current_hex = None
     blood = value.get("blood")
     max_blood = value.get("max_blood")
     health_ratio = (
@@ -182,7 +229,7 @@ def _viewer_unit(
     movement_progress = 0.0
     # A friendly unit's submitted route is already known to its own seat.
     # Do not expose the next cell of an opponent route merely to animate it.
-    if side == perspective.lower():
+    if side == perspective.lower() and map_visible:
         move_path = value.get("move_path")
         if (
             isinstance(move_path, Sequence)
@@ -207,8 +254,11 @@ def _viewer_unit(
         "sub_type_code": value.get("sub_type"),
         "icon_key": _icon_key(value.get("type"), value.get("sub_type")),
         "current_hex": current_hex,
-        "row": current_hex // 100,
-        "column": current_hex % 100,
+        "row": None if current_hex is None else current_hex // 100,
+        "column": None if current_hex is None else current_hex % 100,
+        "map_visible": map_visible,
+        "spatially_present": spatially_present,
+        "spatial_status": spatial_status,
         "movement_target_hex": movement_target_hex,
         "movement_progress": movement_progress,
         "blood": blood,
@@ -224,10 +274,84 @@ def _viewer_unit(
         "direction": value.get("direction"),
         "lose_control": bool(value.get("lose_control", False)),
         "can_to_move": value.get("can_to_move"),
-        "on_board": bool(value.get("on_board", False)),
-        "carrier_id": value.get("car"),
+        "on_board": (
+            bool(value.get("on_board", False))
+            if own_lifecycle is None
+            else own_lifecycle.deployment.on_board
+        ),
+        "boarding_role": boarding_role,
+        "boarding_state": boarding_state,
+        "carrier_id": (
+            value.get("car")
+            if own_lifecycle is None or boarding_role == "PASSENGER"
+            else None
+        ),
         "launcher_id": value.get("launcher"),
     }
+
+
+def _own_lifecycle_index(view: ControllerView) -> dict[int, object]:
+    """Index only frame-bound OWN lifecycle payloads; never inspect GREEN."""
+
+    decision = view.decision_semantic
+    if decision is None:
+        # Legacy/replay ControllerViews predate the machine Decision core.
+        # Their historical Source projection stays byte-compatible.
+        return {}
+    values: dict[int, object] = {}
+    for lifecycle in decision.own_operators:
+        operator_id = lifecycle.operator_reference
+        if operator_id in values:
+            raise ValueError("duplicate OWN lifecycle operator reference")
+        if lifecycle.identity.side.lower() != view.perspective.lower():
+            raise ValueError("OWN lifecycle perspective mismatch")
+        values[operator_id] = lifecycle
+    return values
+
+
+def _attach_own_transport_details(
+    viewer_units: list[dict[str, object]],
+    *,
+    source_units: tuple[tuple[Mapping[str, Any], str], ...],
+    own_lifecycles: Mapping[int, object],
+) -> None:
+    """Attach same-side completed occupancy without exposing enemy links."""
+
+    projected = {item["operator_id"]: item for item in viewer_units}
+    source_by_id = {item.get("obj_id"): item for item, _category in source_units}
+    for operator_id, lifecycle in sorted(own_lifecycles.items()):
+        if lifecycle.boarding.role.value != "CARRIER":
+            continue
+        if lifecycle.boarding.state.value not in {"CARRYING", "UNLOADING"}:
+            continue
+        carrier = projected.get(operator_id)
+        source = source_by_id.get(operator_id)
+        if carrier is None or source is None:
+            raise ValueError("OWN carrier is absent from controller Source frame")
+        raw_ids = source.get("passenger_ids", [])
+        if not isinstance(raw_ids, Sequence) or isinstance(raw_ids, (str, bytes)):
+            raise ValueError("OWN carrier passenger_ids must be an array")
+        passenger_ids = tuple(sorted(
+            value for value in raw_ids if type(value) is int and value >= 0
+        ))
+        if len(passenger_ids) != 1 or len(passenger_ids) != len(raw_ids):
+            raise ValueError("OWN carrying relation must contain one passenger")
+        passenger_id = passenger_ids[0]
+        passenger = projected.get(passenger_id)
+        passenger_lifecycle = own_lifecycles.get(passenger_id)
+        if passenger is None or passenger_lifecycle is None:
+            raise ValueError("OWN passenger is absent from the bound side frame")
+        if passenger_lifecycle.boarding.role.value != "PASSENGER":
+            raise ValueError("OWN transport relationship is not reciprocal")
+        carrier["transport_display_count"] = 2
+        carrier["carried_units"] = [{
+            "operator_id": passenger_id,
+            "name": passenger.get("name"),
+            "icon_key": passenger.get("icon_key"),
+            "alive": passenger.get("alive"),
+            "destroyed": passenger.get("destroyed"),
+            "boarding_state": passenger.get("boarding_state"),
+        }]
 
 
 def _icon_key(raw_type: object, raw_sub_type: object) -> str:

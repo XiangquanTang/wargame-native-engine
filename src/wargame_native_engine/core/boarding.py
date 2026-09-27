@@ -19,6 +19,38 @@ class BoardingTransitionStatus(str, Enum):
     COMPLETED = "COMPLETED"
 
 
+class BoardingCapabilityStatus(str, Enum):
+    AVAILABLE = "AVAILABLE"
+    BLOCKED = "BLOCKED"
+    NOT_APPLICABLE = "NOT_APPLICABLE"
+
+
+@dataclass(frozen=True, slots=True)
+class BoardingCapabilityAssessment:
+    operation_type: BoardingTransitionType
+    actor_id: int
+    status: BoardingCapabilityStatus
+    blockers: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.operation_type, BoardingTransitionType):
+            raise TypeError("operation_type must be BoardingTransitionType")
+        if type(self.actor_id) is not int or self.actor_id < 0:
+            raise ValueError("actor_id must be a non-negative exact int")
+        if not isinstance(self.status, BoardingCapabilityStatus):
+            raise TypeError("status must be BoardingCapabilityStatus")
+        if (
+            not isinstance(self.blockers, tuple)
+            or self.blockers != tuple(sorted(set(self.blockers)))
+            or any(not isinstance(value, str) or not value for value in self.blockers)
+        ):
+            raise ValueError("blockers must be sorted unique non-empty strings")
+        if self.status is BoardingCapabilityStatus.AVAILABLE and self.blockers:
+            raise ValueError("AVAILABLE assessment cannot contain blockers")
+        if self.status is not BoardingCapabilityStatus.AVAILABLE and not self.blockers:
+            raise ValueError("unavailable assessment requires blockers")
+
+
 @dataclass(frozen=True, slots=True)
 class BoardCapability:
     passenger_id: int
@@ -230,6 +262,8 @@ def _authority(profile_id: object, version: object, content_hash: object) -> Non
 
 __all__ = [
     "BoardCapability",
+    "BoardingCapabilityAssessment",
+    "BoardingCapabilityStatus",
     "BoardingTransition",
     "BoardingTransitionStatus",
     "BoardingTransitionType",

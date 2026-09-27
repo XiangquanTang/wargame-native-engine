@@ -107,6 +107,7 @@ class ControllerView:
     truncated: bool = False
     decision_semantic: SideDecisionSemanticProjection | None = None
     action_catalog: ActionCatalogSnapshot | None = None
+    own_weapon_inventory: tuple[Mapping[str, Any], ...] = ()
 
     def __post_init__(self) -> None:
         _exact_bool(self.terminal, "terminal")
@@ -116,6 +117,11 @@ class ControllerView:
             raise DecisionProjectionContractError(
                 "ControllerView decision core must be complete or legacy-only"
             )
+        object.__setattr__(
+            self,
+            "own_weapon_inventory",
+            tuple(json_clone(self.own_weapon_inventory)),
+        )
         if self.decision_semantic is not None:
             self._validate_decision_core()
 

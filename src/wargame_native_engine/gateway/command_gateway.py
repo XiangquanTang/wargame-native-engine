@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field
 from threading import RLock
@@ -332,6 +333,105 @@ class CommandGateway:
                 side, valid, engine_capability="INDIRECT_FIRE"
             )
             return registered
+
+    def plan_direct_fire_intent(
+        self,
+        session_id: str,
+        controller_id: str,
+        *,
+        request_id: str,
+        expected_window: int,
+        actor_id: int,
+        weapon_id: int,
+        target_id: int,
+    ) -> ActionProposal:
+        """Admit a carried-weapon intent; NativeEngine later decides legality."""
+
+        if not isinstance(request_id, str) or not request_id.strip():
+            raise CommandGatewayError(
+                "invalid_request_id", "request_id must be a non-empty string"
+            )
+        for name, value in (
+            ("expected_window", expected_window),
+            ("actor_id", actor_id),
+            ("weapon_id", weapon_id),
+            ("target_id", target_id),
+        ):
+            if type(value) is not int or value < 0:
+                raise CommandGatewayError(
+                    f"invalid_{name}", f"{name} must be a non-negative exact int"
+                )
+        gateway_session = self._gateway_session(session_id)
+        with gateway_session.lock:
+            side = _bound_side(gateway_session, controller_id)
+            window = gateway_session.window
+            if window.decision_window_index != expected_window:
+                raise CommandGatewayError(
+                    "stale_expected_step",
+                    f"expected {expected_window}, current "
+                    f"{window.decision_window_index}",
+                )
+            if window.lifecycle_state is not DecisionWindowState.OPEN:
+                raise CommandGatewayError(
+                    "decision_window_closed", window.lifecycle_state.value
+                )
+            signature = (
+                str(controller_id), expected_window, "DIRECT_FIRE_INTENT",
+                actor_id, weapon_id, target_id,
+            )
+            registry = gateway_session.proposals
+            if registry is None:
+                raise RuntimeError("active window lacks proposal registry")
+            try:
+                cached = registry.cached(request_id, signature)
+            except OperationError as exc:
+                raise CommandGatewayError(exc.code, exc.message) from exc
+            if cached is not None:
+                return cached
+            try:
+                action, state_hash = self.manager.plan_direct_fire_intent(
+                    session_id, side, actor_id, weapon_id, target_id,
+                )
+            except (TypeError, ValueError) as exc:
+                code = str(exc) or "DIRECT_FIRE_INTENT_REJECTED"
+                raise CommandGatewayError(
+                    code.lower(), code,
+                ) from exc
+            private_action = ValidAction(
+                action,
+                ACTION_PRIORITY[ActionType.SHOOT],
+                "operation_direct_fire_intent",
+            )
+            proposal = ActionProposal.from_direct_fire_intent(
+                session_id=session_id,
+                decision_window_index=expected_window,
+                side=side,
+                actor_id=actor_id,
+                target_id=target_id,
+                state_hash=state_hash,
+                action=action,
+            )
+            try:
+                registered = registry.register(
+                    request_id=request_id,
+                    signature=signature,
+                    proposal=proposal,
+                    valid_action=private_action,
+                )
+            except OperationError as exc:
+                raise CommandGatewayError(exc.code, exc.message) from exc
+            window.authorize_direct_fire_intent(side, action)
+            return registered
+
+    def authorized_action(
+        self, session_id: str, controller_id: str, action_id: str,
+    ) -> EngineAction | None:
+        """Resolve only actions privately authorized in the active window."""
+
+        gateway_session = self._gateway_session(session_id)
+        with gateway_session.lock:
+            side = _bound_side(gateway_session, controller_id)
+            return gateway_session.window.authorized_action(side, action_id)
 
     def query_unit_tactical_overlay(
         self,
@@ -696,6 +796,16 @@ class CommandGateway:
             _bound_side(gateway_session, controller_id)
             return deepcopy(gateway_session.last_advance)
 
+    def last_action_results(
+        self, session_id: str, controller_id: str,
+    ) -> tuple[Mapping[str, object], ...]:
+        """Return current side adjudication outcomes after an advanced window."""
+
+        gateway_session = self._gateway_session(session_id)
+        with gateway_session.lock:
+            side = _bound_side(gateway_session, controller_id)
+            return self.manager.last_action_results(session_id, side)
+
     def expire_window(self, session_id: str) -> SimulationAdvance:
         """Close a wall-deadline window and substitute empty missing batches."""
 
@@ -849,6 +959,7 @@ class CommandGateway:
             side,
             decision_window_index=window.decision_window_index,
             frozen_valid_actions=actions,
+            frozen_valid_actions_revision=window.action_revision(side),
             frame_index=descriptor.frame_index,
             sim_time_ms=descriptor.sim_time_ms,
         )

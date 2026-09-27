@@ -11,17 +11,20 @@ from dataclasses import dataclass
 from typing import Mapping, Sequence
 
 from wargame_native_engine.core.action import ValidAction
+from wargame_native_engine.core.boarding import (
+    BoardingCapabilityStatus,
+    BoardingTransitionType,
+)
 from wargame_native_engine.core.observation import SideObservation
 from wargame_native_engine.projection.decision_capability import (
     ActionCatalogSnapshot,
-    board_capability_evidence,
+    boarding_capability_assessment_evidence,
     build_action_catalog_snapshot,
     build_decision_capability_snapshot,
     build_decision_from_snapshots,
     concealment_capability_evidence,
     guided_capability_evidence,
     indirect_capability_evidence,
-    unload_capability_evidence,
 )
 from wargame_native_engine.projection.decision_semantic import (
     DecisionMissionContext,
@@ -104,6 +107,32 @@ def build_controller_decision_core(
         snapshot_identity=snapshot_identity,
         frozen_valid_actions=tuple(frozen_valid_actions),
     )
+    board_capabilities = session.get_board_capabilities(observation.side)
+    unload_capabilities = session.get_unload_capabilities(observation.side)
+    boarding_assessments = session.get_boarding_capability_assessments(
+        observation.side
+    )
+    available_board_actors = {
+        value.actor_id
+        for value in boarding_assessments
+        if value.operation_type is BoardingTransitionType.BOARD
+        and value.status is BoardingCapabilityStatus.AVAILABLE
+    }
+    available_unload_actors = {
+        value.actor_id
+        for value in boarding_assessments
+        if value.operation_type is BoardingTransitionType.UNLOAD
+        and value.status is BoardingCapabilityStatus.AVAILABLE
+    }
+    if available_board_actors != {
+        value.passenger_id for value in board_capabilities
+    }:
+        raise RuntimeError("BOARD capability assessment mismatch")
+    if available_unload_actors != {
+        value.carrier_id for value in unload_capabilities
+    }:
+        raise RuntimeError("UNLOAD capability assessment mismatch")
+
     explicit = (
         *guided_capability_evidence(
             snapshot_identity,
@@ -113,13 +142,9 @@ def build_controller_decision_core(
             snapshot_identity,
             session.get_indirect_fire_capabilities(observation.side),
         ),
-        *board_capability_evidence(
+        *boarding_capability_assessment_evidence(
             snapshot_identity,
-            session.get_board_capabilities(observation.side),
-        ),
-        *unload_capability_evidence(
-            snapshot_identity,
-            session.get_unload_capabilities(observation.side),
+            boarding_assessments,
         ),
         *concealment_capability_evidence(
             snapshot_identity,

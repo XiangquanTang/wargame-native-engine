@@ -126,6 +126,48 @@ class ActionProposal:
             action_id=action.action_id,
         )
 
+    @classmethod
+    def from_direct_fire_intent(
+        cls,
+        *,
+        session_id: str,
+        decision_window_index: int,
+        side: str,
+        actor_id: int,
+        target_id: int,
+        state_hash: str,
+        action: EngineAction,
+    ) -> "ActionProposal":
+        """Wrap an identity-authorized, not-yet-adjudicated DIRECT intent."""
+
+        identity = {
+            "operation_type": "DIRECT_FIRE_INTENT",
+            "session_id": str(session_id),
+            "decision_window_index": decision_window_index,
+            "side": side,
+            "actor_id": actor_id,
+            "target_id": target_id,
+            "action_id": action.action_id,
+            "created_from_state_hash": state_hash,
+        }
+        return cls(
+            proposal_id="proposal-" + canonical_hash(identity)[:24],
+            session_id=str(session_id),
+            decision_window_index=decision_window_index,
+            side=side,
+            unit_id=actor_id,
+            source_hex=None,
+            destination_hex=target_id,
+            movement_mode="DIRECT_FIRE_INTENT",
+            ordered_path=(),
+            estimated_duration_ms=None,
+            segment_details=(),
+            reachable=True,
+            blocked_reason=None,
+            created_from_state_hash=state_hash,
+            action_id=action.action_id,
+        )
+
     def to_record(self) -> dict[str, object]:
         return {
             "proposal_id": self.proposal_id,

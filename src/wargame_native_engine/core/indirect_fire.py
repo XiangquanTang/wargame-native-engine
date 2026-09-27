@@ -71,6 +71,52 @@ class IndirectFireActiveAreaView:
 
 
 @dataclass(frozen=True, slots=True)
+class IndirectFireMissionAreaView:
+    """Detached own-side projection for a waiting or active area mission."""
+
+    mission_id: str
+    shooter_id: int
+    weapon_id: int
+    phase: IndirectFireMissionState
+    planned_hex: int
+    display_hex: int
+    remaining_flight_seconds: int
+    active_remaining_seconds: int
+    affected_operator_ids: tuple[int, ...]
+
+    def __post_init__(self) -> None:
+        _require_nonempty(self.mission_id, "mission_id")
+        for name in (
+            "shooter_id", "weapon_id", "planned_hex", "display_hex",
+            "remaining_flight_seconds", "active_remaining_seconds",
+        ):
+            _require_nonnegative_exact_int(getattr(self, name), name)
+        if self.phase not in {
+            IndirectFireMissionState.PLANNED,
+            IndirectFireMissionState.FLYING,
+            IndirectFireMissionState.ACTIVE,
+        }:
+            raise ValueError("mission area phase must be planned, flying or active")
+        if self.affected_operator_ids != tuple(sorted(set(
+            self.affected_operator_ids
+        ))):
+            raise ValueError("affected_operator_ids must be sorted unique ids")
+
+    def to_record(self) -> dict[str, object]:
+        return {
+            "mission_id": self.mission_id,
+            "shooter_id": self.shooter_id,
+            "weapon_id": self.weapon_id,
+            "phase": self.phase.value,
+            "planned_hex": self.planned_hex,
+            "display_hex": self.display_hex,
+            "remaining_flight_seconds": self.remaining_flight_seconds,
+            "active_remaining_seconds": self.active_remaining_seconds,
+            "affected_operator_ids": list(self.affected_operator_ids),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class FireMissionScatterEvidence:
     """Persisted scatter result needed by later ACTIVE-area entrants."""
 
@@ -587,6 +633,7 @@ __all__ = [
     "FireMissionPhase",
     "FireMissionScatterEvidence",
     "IndirectFireActiveAreaView",
+    "IndirectFireMissionAreaView",
     "IndirectFireAffectedLedger",
     "advance_indirect_fire_active_missions",
     "advance_indirect_fire_missions",

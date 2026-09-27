@@ -1,0 +1,31 @@
+{
+  "schema": "native-boarding-type-assignments/v1.0",
+  "authority_version": "native-boarding-type-assignment-authority/1.0",
+  "assignment_policy": "EXPLICIT_PROFILE_THEN_EXACT_OPERATOR_TYPE",
+  "unknown_policy": "REPORT_UNSUPPORTED_WITHOUT_NAME_INFERENCE",
+  "provenance": {
+    "basis": "curated Native simplified exact operator type/subtype capability binding",
+    "passenger_type": "PERSONNEL/source-1-2",
+    "carrier_type": "VEHICLE/source-2-1",
+    "explicit_exclusions": [
+      "VEHICLE/source-2-0",
+      "VEHICLE/source-2-3",
+      "VEHICLE/source-2-4"
+    ],
+    "note": "No map, scenario, unit id, display name, or raw compatibility field participates in resolution."
+  },
+  "assignments": [
+    {
+      "operator_type": "PERSONNEL",
+      "subtype": "source-1-2",
+      "role": "PASSENGER",
+      "profile_id": "GROUND_PERSONNEL_SINGLE_V1"
+    },
+    {
+      "operator_type": "VEHICLE",
+      "subtype": "source-2-1",
+      "role": "CARRIER",
+      "profile_id": "GROUND_PERSONNEL_SINGLE_V1"
+    }
+  ]
+}

@@ -34,6 +34,7 @@ class SourceCompatibleEnvironment:
         self._setup = False
         self._last_bundle: ObservationBundle | None = None
         self._last_step_record: Mapping[str, Any] | None = None
+        self._last_action_results: tuple[Mapping[str, Any], ...] = ()
         self._initial_state_hash: str | None = None
 
     def setup(self, seed: int = 42) -> Mapping[str, Any]:
@@ -44,6 +45,7 @@ class SourceCompatibleEnvironment:
         self._setup = True
         self._initial_state_hash = canonical_hash(world.to_dict())
         self._last_step_record = None
+        self._last_action_results = ()
         green = self._export_green(world, actions=[], judge_info=[])
         bundle = self._project(green)
         self._last_bundle = bundle
@@ -57,6 +59,7 @@ class SourceCompatibleEnvironment:
         self._setup = True
         self._initial_state_hash = canonical_hash(world.to_dict())
         self._last_step_record = None
+        self._last_action_results = ()
         bundle = self._project(self._export_green(
             world, actions=[], judge_info=[]))
         self._last_bundle = bundle
@@ -105,12 +108,23 @@ class SourceCompatibleEnvironment:
                      "unload_started", "unload_completed",
                      "unit_concealed", "unit_exposed"}]
         action_records = []
+        action_results = []
         for action, decision in zip(result.actions, result.decisions):
             record = action.to_dict()
             if not decision.accepted:
                 record.update({"accepted": False,
                                "decision_code": decision.code})
             action_records.append(record)
+            action_results.append({
+                "action_id": action.action_id,
+                "side": action.side,
+                "actor_id": action.actor_id,
+                "action_type": action.action_type.value,
+                "weapon_id": action.parameters.get("weapon_id"),
+                "accepted": decision.accepted,
+                "code": decision.code,
+            })
+        self._last_action_results = tuple(json_clone(action_results))
         green = self._export_green(
             world, actions=action_records,
             judge_info=judge)
@@ -141,6 +155,12 @@ class SourceCompatibleEnvironment:
     def last_step_record(self) -> Mapping[str, Any] | None:
         return None if self._last_step_record is None else json_clone(
             self._last_step_record)
+
+    @property
+    def last_action_results(self) -> tuple[Mapping[str, Any], ...]:
+        """Ephemeral adjudication results; intentionally not a replay field."""
+
+        return tuple(json_clone(self._last_action_results))
 
     @property
     def initial_state_hash(self) -> str:
@@ -193,6 +213,17 @@ class SourceCompatibleEnvironment:
         }
         if "map_runtime_data" in snapshot:
             value["map_runtime_data"] = json_clone(snapshot["map_runtime_data"])
+        if "boarding_type_assignment_authority" in snapshot:
+            boarding = snapshot["boarding_type_assignment_authority"]
+            value["boarding_type_assignment_authority_version"] = boarding[
+                "authority_version"
+            ]
+            value["boarding_type_assignment_authority_hash"] = boarding[
+                "authority_hash"
+            ]
+            value["boarding_type_assignment_policy"] = boarding[
+                "assignment_policy"
+            ]
         if "operator_lifecycle_authority" in snapshot:
             lifecycle = snapshot["operator_lifecycle_authority"]
             value["operator_lifecycle_authority_version"] = lifecycle[

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError, replace
+import json
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,7 @@ from wargame_native_engine.adjudication.boarding import BoardRequest
 from wargame_native_engine.core.action import ActionType, EngineAction
 from wargame_native_engine.core.boarding import (
     BoardCapability,
+    BoardingCapabilityStatus,
     BoardingTransitionStatus,
     BoardingTransitionType,
 )
@@ -17,9 +19,43 @@ from wargame_native_engine.core.event import EventType
 from wargame_native_engine.io.replay import ReplayWriter, replay_actions
 from wargame_native_engine.io.scenario import scenario_from_dict
 from wargame_native_engine.io.serialization import canonical_hash
+from wargame_native_engine.rules.boarding import (
+    default_boarding_profiles_path,
+    default_boarding_type_assignments_path,
+    load_boarding_type_assignment_authority,
+)
 
 
 PROFILE_ID = "GROUND_PERSONNEL_SINGLE_V1"
+
+
+def test_boarding_type_assignment_resources_load_from_default_paths() -> None:
+    assert default_boarding_profiles_path().is_file()
+    assignments_path = default_boarding_type_assignments_path()
+    assert assignments_path.is_file()
+
+    authority = load_boarding_type_assignment_authority()
+
+    assert authority.content_hash == canonical_hash(
+        json.loads(assignments_path.read_text(encoding="utf-8"))
+    )
+    assert authority.profile_id_for(
+        "PERSONNEL", "source-1-2", "PASSENGER"
+    ) == PROFILE_ID
+    assert authority.profile_id_for(
+        "VEHICLE", "source-2-1", "CARRIER"
+    ) == PROFILE_ID
+
+
+def _type_derived_scenario_record() -> dict[str, object]:
+    value = _scenario_record(carrier_profile=None)
+    value["scenario_id"] = "type-derived-boarding-public-fixture"
+    value["map"]["map_id"] = "type-derived-boarding-other-map"
+    operators = value["operators"]
+    assert isinstance(operators, list)
+    operators[0]["subtype"] = "source-1-2"
+    operators[1]["subtype"] = "source-2-1"
+    return value
 
 
 def _operator(
@@ -200,6 +236,88 @@ def test_same_hex_explicit_profile_generates_frozen_board_capability() -> None:
     assert capabilities[0].profile_id == PROFILE_ID
     with pytest.raises(FrozenInstanceError):
         capabilities[0].carrier_id = 9  # type: ignore[misc]
+
+
+def test_exact_unit_types_enable_cross_scenario_board_and_unload_roundtrip() -> None:
+    scenario = scenario_from_dict(_type_derived_scenario_record())
+    original_hash = scenario.scenario_hash
+    engine = NativeEngine(scenario)
+    engine.reset(42)
+
+    capabilities = engine.get_board_capabilities("red")
+    assert [(value.passenger_id, value.carrier_id) for value in capabilities] == [
+        (1, 2)
+    ]
+    assert scenario.scenario_hash == original_hash
+    assert engine.snapshot()["boarding_type_assignment_authority"][
+        "assignment_policy"
+    ] == "EXPLICIT_PROFILE_THEN_EXACT_OPERATOR_TYPE"
+
+    boarded = engine.step(
+        [engine.board_action(capabilities[0])], delta_time_ms=75_000
+    )
+    assert boarded.decisions[0].accepted is True
+    assert engine._world.operators[1].mounted_on == 2  # type: ignore[union-attr]  # noqa: SLF001
+    assert engine._world.operators[2].passenger_id == 1  # type: ignore[union-attr]  # noqa: SLF001
+    unloaded = engine.step(
+        [engine.unload_action(engine.get_unload_capabilities("red")[0])],
+        delta_time_ms=75_000,
+    )
+    assert unloaded.decisions[0].accepted is True
+    assert engine._world.operators[1].mounted_on is None  # type: ignore[union-attr]  # noqa: SLF001
+    assert engine._world.operators[1].current_hex == 101  # type: ignore[union-attr]  # noqa: SLF001
+
+
+def test_type_assignment_does_not_turn_artillery_or_unknown_vehicle_into_carrier() -> None:
+    value = _type_derived_scenario_record()
+    operators = value["operators"]
+    assert isinstance(operators, list)
+    operators[1]["subtype"] = "source-2-3"
+    engine = NativeEngine(scenario_from_dict(value))
+    engine.reset(42)
+
+    assert engine.get_board_capabilities("red") == ()
+    assessment = next(
+        item for item in engine.get_boarding_capability_assessments("red")
+        if item.actor_id == 1 and item.operation_type is BoardingTransitionType.BOARD
+    )
+    assert assessment.status is BoardingCapabilityStatus.BLOCKED
+    assert assessment.blockers == ("NO_COMPATIBLE_CARRIER",)
+
+
+def test_explicit_disable_prevents_type_assignment_fallback() -> None:
+    value = _type_derived_scenario_record()
+    operators = value["operators"]
+    assert isinstance(operators, list)
+    operators[1]["boarding_profile_id"] = "DISABLED"
+    engine = NativeEngine(scenario_from_dict(value))
+    engine.reset(42)
+
+    assert engine.get_board_capabilities("red") == ()
+
+
+def test_full_type_derived_carrier_reports_known_blocker() -> None:
+    value = _type_derived_scenario_record()
+    operators = value["operators"]
+    assert isinstance(operators, list)
+    second = dict(operators[0])
+    second["operator_id"] = 4
+    operators.append(second)
+    positions = value["deployment"]["positions"]
+    positions["red"]["4"] = [1, 1]
+    engine = NativeEngine(scenario_from_dict(value))
+    engine.reset(42)
+    engine.step(
+        [engine.board_action(engine.get_board_capabilities("red")[0])],
+        delta_time_ms=75_000,
+    )
+
+    assessment = next(
+        item for item in engine.get_boarding_capability_assessments("red")
+        if item.actor_id == 4 and item.operation_type is BoardingTransitionType.BOARD
+    )
+    assert assessment.status is BoardingCapabilityStatus.BLOCKED
+    assert assessment.blockers == ("CARRIER_FULL",)
 
 
 @pytest.mark.parametrize(
@@ -462,6 +580,60 @@ def test_board_runtime_state_strictly_reexecutes(tmp_path: Path) -> None:
 
     assert verification.matches is True
     assert verification.expected_world_hash == expected_hash
+
+
+def test_type_derived_boarding_strict_replay_records_assignment_identity(
+    tmp_path: Path,
+) -> None:
+    scenario = scenario_from_dict(_type_derived_scenario_record())
+    engine = NativeEngine(scenario)
+    engine.reset(42)
+    writer = ReplayWriter(
+        tmp_path / "type-derived-boarding-replay",
+        run_id="type-derived-boarding-replay",
+        scenario=scenario,
+        seed=42,
+        agents={"red": "test", "blue": "test"},
+        max_ticks=engine.terminal_rules.max_ticks,
+        ruleset=engine.ruleset,
+        project_commit=None,
+    )
+    writer.record_initial_state(engine.snapshot())
+    writer.record_step(_board(engine), engine.snapshot())
+    writer.record_step(engine.step([], delta_time_ms=74_000), engine.snapshot())
+    writer.finalize({"result": engine.result().to_dict()}, status="complete")
+
+    verification = replay_actions(scenario, writer.root, strict=True)
+    assert verification.matches is True
+    assert "boarding_type_assignment_authority" in engine.snapshot()
+
+
+def test_legacy_explicit_only_replay_does_not_gain_type_assignments(
+    tmp_path: Path,
+) -> None:
+    scenario = scenario_from_dict(_scenario_record())
+    engine = NativeEngine(
+        scenario,
+        enable_boarding_type_assignments=False,
+    )
+    engine.reset(42)
+    writer = ReplayWriter(
+        tmp_path / "legacy-explicit-boarding-replay",
+        run_id="legacy-explicit-boarding-replay",
+        scenario=scenario,
+        seed=42,
+        agents={"red": "test", "blue": "test"},
+        max_ticks=engine.terminal_rules.max_ticks,
+        ruleset=engine.ruleset,
+        project_commit=None,
+    )
+    initial = engine.snapshot()
+    assert "boarding_type_assignment_authority" not in initial
+    writer.record_initial_state(initial)
+    writer.record_step(_board(engine), engine.snapshot())
+    writer.finalize({"result": engine.result().to_dict()}, status="complete")
+
+    assert replay_actions(scenario, writer.root, strict=True).matches is True
 
 
 def test_board_and_unload_action_types_do_not_change_fire_contracts() -> None:

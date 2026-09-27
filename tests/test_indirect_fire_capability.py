@@ -9,9 +9,16 @@ import pytest
 
 from tests.test_realtime_dual_side_control import (
     Fixture,
+    MatchFactory,
     decoded,
     request,
     running_server,
+)
+from wargame_native_engine.agents import (
+    CommandStatus,
+    ManualRealtimeClock,
+    RealtimeAgentSession,
+    SeatOperation,
 )
 from wargame_native_engine.data import DataProvenance, ScenarioBundle
 from wargame_native_engine.core.engine import NativeEngine
@@ -26,6 +33,10 @@ from wargame_native_engine.rules.indirect_fire import (
     ArtilleryClass,
     IndirectRangePolicy,
     IndirectTargetDomain,
+)
+from wargame_native_engine.viewer.human_capabilities import (
+    build_human_capabilities,
+    source_weapon_profiles,
 )
 
 
@@ -58,6 +69,43 @@ def _bundle_with_red_weapon_72() -> ScenarioBundle:
         provenance=DataProvenance(
             source_sha256=canonical_hash(payload),
             source_kind="project_authored_indirect_fire_capability_test",
+        ),
+    )
+
+
+def _bundle_with_unobserved_empty_target() -> ScenarioBundle:
+    payload = json.loads(SCENARIO_PATH.read_text(encoding="utf-8"))
+    payload["scenario_id"] = "indirect-fire-unobserved-empty-target-test"
+    payload["operators"][0]["weapon_ids"] = [72]
+    payload["operators"][1].update({
+        "current_hex": 999,
+        "x": 9,
+        "y": 9,
+    })
+    payload["deployment"]["positions"]["blue"]["2"] = [9, 9]
+    payload["map"]["width"] = max(float(payload["map"]["width"]), 10.0)
+    payload["map"]["height"] = max(float(payload["map"]["height"]), 10.0)
+    payload["map"]["hexes"].append({
+        "pos": 103,
+        "elev": 0,
+        "cond": 0,
+        "neighbors": [-1, -1, -1, -1, -1, -1],
+        "roads": [0, 0, 0, 0, 0, 0],
+        "rivers": [0, 0, 0, 0, 0, 0],
+    })
+    payload["map"]["hexes"].append({
+        "pos": 999,
+        "elev": 0,
+        "cond": 0,
+        "neighbors": [-1, -1, -1, -1, -1, -1],
+        "roads": [0, 0, 0, 0, 0, 0],
+        "rivers": [0, 0, 0, 0, 0, 0],
+    })
+    return ScenarioBundle.from_record(
+        payload,
+        provenance=DataProvenance(
+            source_sha256=canonical_hash(payload),
+            source_kind="project_authored_indirect_fire_empty_area_test",
         ),
     )
 
@@ -284,6 +332,77 @@ def test_human_indirect_fire_preview_builds_explicit_fire_action(
             assert applied.status.value == "APPLIED"
     finally:
         fixture.close()
+
+
+def test_no_visible_enemy_empty_hex_creates_waiting_area_without_target_id(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle_with_unobserved_empty_target()
+    session = RealtimeAgentSession(
+        MatchFactory(tmp_path, bundle=bundle),
+        run_namespace="indirect-empty-area-service-test",
+        tick_interval_ms=1_000,
+        clock=ManualRealtimeClock(),
+    )
+    reset = session.reset(seed=42)
+    try:
+        seat_view, controller_view, summary = (
+            session.operation_capabilities_snapshot(
+                reset.red_binding, [1]
+            )
+        )
+        assert controller_view.observation["visible_enemies"] == []
+        model = build_human_capabilities(
+            summary,
+            controller_view,
+            [1],
+            weapon_profiles=source_weapon_profiles(bundle.scenario.metadata),
+        )
+        assert model["indirect_fire"]["options"][0]["weapon_id"] == 72
+        operation = SeatOperation(
+            operation_type="INDIRECT_FIRE",
+            actor_ids=(1,),
+            target_hex=103,
+            fire_mode="INDIRECT",
+            shooter_id=1,
+            weapon_id=72,
+        )
+        preview = session.preview_operation(
+            reset.red_binding,
+            operation,
+            observation_version=seat_view.observation_version,
+            request_id="indirect-empty-area-preview",
+        )
+        assert preview.can_execute is True
+        assert preview.target_hex == 103
+        assert preview.target_id is None
+        receipt = session.submit_operation(
+            reset.red_binding,
+            observation_version=seat_view.observation_version,
+            operation=operation,
+        )
+        assert receipt.accepted is True
+
+        session.advance_tick()
+        event = session.command_events[receipt.command_sequence]
+        assert event.status is CommandStatus.APPLIED
+        latest, _view = session.controller_snapshot(reset.red_binding)
+        areas = latest.capabilities.operation_summary[
+            "indirect_fire"
+        ]["mission_areas"]
+        assert areas == [{
+            "mission_id": areas[0]["mission_id"],
+            "shooter_id": 1,
+            "weapon_id": 72,
+            "phase": "FLYING",
+            "planned_hex": 103,
+            "display_hex": 103,
+            "remaining_flight_seconds": 149,
+            "active_remaining_seconds": 0,
+            "affected_operator_ids": [],
+        }]
+    finally:
+        session.close()
 
 
 @pytest.mark.parametrize("side", ["RED", "unknown", ""])

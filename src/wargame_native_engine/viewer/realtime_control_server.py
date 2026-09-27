@@ -329,20 +329,21 @@ class RealtimeDualControlRequestHandler(BaseHTTPRequestHandler):
                         "capabilities requires exactly token and actor_ids"
                     )
                 _side, binding = self._seat(body["token"])
-                base = self.server.realtime_session.operation_capabilities(
-                    binding, body["actor_ids"]
+                seat_view, controller_view, base = (
+                    self.server.realtime_session.operation_capabilities_snapshot(
+                        binding, body["actor_ids"]
+                    )
                 )
-                _seat_view, controller_view = (
-                    self.server.realtime_session.controller_snapshot(binding)
+                record = build_human_capabilities(
+                    base,
+                    controller_view,
+                    body["actor_ids"],
+                    weapon_profiles=self.server.weapon_profiles,
                 )
+                record["observation_version"] = seat_view.observation_version
+                record["frame_index"] = seat_view.frame_index
                 self._send_json(
-                    HTTPStatus.OK,
-                    build_human_capabilities(
-                        base,
-                        controller_view,
-                        body["actor_ids"],
-                        weapon_profiles=self.server.weapon_profiles,
-                    ),
+                    HTTPStatus.OK, record,
                 )
                 return
             if path == "/api/product/tactical-overlay":
@@ -486,6 +487,11 @@ class RealtimeDualControlRequestHandler(BaseHTTPRequestHandler):
                 seat_view.capabilities.operation_summary.get(
                     "indirect_fire", {}
                 ).get("active_areas", [])
+            ),
+            "indirect_fire_mission_areas": deepcopy(
+                seat_view.capabilities.operation_summary.get(
+                    "indirect_fire", {}
+                ).get("mission_areas", [])
             ),
         }
         return {

@@ -103,6 +103,35 @@ Both actors are qualified against the same pre-state and are destroyed in one
 joint Tick. The generated Replay is strictly re-executed before success is
 reported.
 
+## Development workflow
+
+Install the project in editable mode with its development dependencies:
+
+```bash
+python -m pip install -e ".[dev]"
+```
+
+During development, run the smallest relevant test module or test case, for
+example:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 pytest -p no:cacheprovider \
+  tests/test_joint_tick_semantics.py -q
+```
+
+Before submitting a change, run the complete Python suite and check the diff
+for whitespace errors:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 pytest -p no:cacheprovider -q
+git diff --check
+```
+
+Keep generated runs under ignored `local_data/` paths or `/tmp`, and review
+`AGENTS.md` plus `CONTRIBUTING.md` before changing adjudication, replay, or
+side-observation behavior. Node.js is optional for Engine development; when it
+is unavailable, the static browser JavaScript contract tests are skipped.
+
 ## Demo showcase
 
 ### 1. Realtime Human Control

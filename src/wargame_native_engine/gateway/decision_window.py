@@ -53,6 +53,16 @@ class DecisionWindow:
     close_reason: str | None = None
     submissions: dict[str, SideActionSubmission] = field(default_factory=dict)
     merged_action_batch: tuple[EngineAction, ...] = ()
+    authorized_intents: Mapping[str, Mapping[str, EngineAction]] = field(
+        default_factory=lambda: MappingProxyType({
+            "red": MappingProxyType({}), "blue": MappingProxyType({}),
+        }),
+        repr=False,
+    )
+    _action_revisions: Mapping[str, int] = field(
+        default_factory=lambda: MappingProxyType({"red": 0, "blue": 0}),
+        repr=False,
+    )
 
     @classmethod
     def open(
@@ -100,16 +110,19 @@ class DecisionWindow:
             )
         action_ids = _validate_ordered_action_ids(ordered_action_ids)
         snapshot = self.valid_action_snapshots[side]
+        intents = self.authorized_intents[side]
         actors: set[int] = set()
         for action_id in action_ids:
             value = snapshot.get(action_id)
-            if value is None:
+            action = (
+                None if value is None else value.action
+            ) or intents.get(action_id)
+            if action is None:
                 raise CommandGatewayError(
                     "action_not_currently_valid",
                     f"action {action_id!r} is not a current {side.upper()} action "
                     "in the frozen window snapshot",
                 )
-            action = value.action
             if action.side != side:
                 raise CommandGatewayError(
                     "action_side_mismatch",
@@ -139,10 +152,12 @@ class DecisionWindow:
         actions = []
         for side, submission in self.submissions.items():
             snapshot = self.valid_action_snapshots[side]
-            actions.extend(
-                deepcopy(snapshot[action_id].action)
-                for action_id in submission.ordered_action_ids
-            )
+            intents = self.authorized_intents[side]
+            for action_id in submission.ordered_action_ids:
+                value = snapshot.get(action_id)
+                actions.append(deepcopy(
+                    value.action if value is not None else intents[action_id]
+                ))
         self.merged_action_batch = tuple(sorted(actions, key=canonical_action_order_key))
         self.close_reason = str(reason)
         self.lifecycle_state = DecisionWindowState.CLOSED
@@ -179,6 +194,14 @@ class DecisionWindow:
         return tuple(
             deepcopy(value) for value in self.valid_action_snapshots[side].values()
         )
+
+    def action_revision(self, side: str) -> int:
+        """Return the monotonic authorization revision for one side."""
+
+        try:
+            return self._action_revisions[side]
+        except KeyError as exc:
+            raise ValueError(f"unknown side: {side!r}") from exc
 
     def authorize_proposal(
         self,
@@ -249,6 +272,55 @@ class DecisionWindow:
         outer = dict(self.valid_action_snapshots)
         outer[side] = MappingProxyType(updated)
         self.valid_action_snapshots = MappingProxyType(outer)
+        revisions = dict(self._action_revisions)
+        revisions[side] += 1
+        self._action_revisions = MappingProxyType(revisions)
+
+    def authorize_direct_fire_intent(
+        self, side: str, action: EngineAction,
+    ) -> None:
+        """Privately admit one carried-weapon intent outside the legal catalog."""
+
+        if self.lifecycle_state is not DecisionWindowState.OPEN:
+            raise CommandGatewayError(
+                "decision_window_closed", "cannot authorize a closed intent"
+            )
+        detached = deepcopy(action)
+        if (
+            detached.side != side
+            or detached.action_type is not ActionType.SHOOT
+            or detached.actor_id is None
+            or detached.target_id is None
+            or type(detached.parameters.get("weapon_id")) is not int
+        ):
+            raise CommandGatewayError(
+                "invalid_direct_fire_intent", "intent contract is invalid"
+            )
+        if detached.action_id in self.valid_action_snapshots[side]:
+            return
+        existing = self.authorized_intents[side].get(detached.action_id)
+        if existing is not None:
+            if existing != detached:
+                raise CommandGatewayError(
+                    "intent_action_id_conflict", detached.action_id
+                )
+            return
+        updated = dict(self.authorized_intents[side])
+        updated[detached.action_id] = detached
+        outer = dict(self.authorized_intents)
+        outer[side] = MappingProxyType(updated)
+        self.authorized_intents = MappingProxyType(outer)
+
+    def authorized_action(
+        self, side: str, action_id: str,
+    ) -> EngineAction | None:
+        """Return a detached legal-catalog action or private admitted intent."""
+
+        value = self.valid_action_snapshots[side].get(str(action_id))
+        if value is not None:
+            return deepcopy(value.action)
+        intent = self.authorized_intents[side].get(str(action_id))
+        return None if intent is None else deepcopy(intent)
 
 
 def canonical_action_order_key(action: EngineAction) -> tuple[object, ...]:

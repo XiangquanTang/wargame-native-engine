@@ -14,8 +14,10 @@ from wargame_native_engine.data.map_runtime import (
     MapRuntimeData,
     MapRuntimeDataError,
     MovementCostLookup,
+    PreparedMapRuntimeData,
     PublishedMapRuntimeData,
     StaticVisibilityLookup,
+    prepare_map_runtime_data,
     publish_map_runtime_data,
 )
 from wargame_native_engine.data.source_scenario import (
@@ -41,8 +43,10 @@ __all__ = [
     "MapRuntimeData",
     "MapRuntimeDataError",
     "MovementCostLookup",
+    "PreparedMapRuntimeData",
     "PublishedMapRuntimeData",
     "StaticVisibilityLookup",
+    "prepare_map_runtime_data",
     "publish_map_runtime_data",
     "EXPLICIT_NATIVE_SUPPLEMENT",
     "STRICT_SOURCE",

@@ -51,6 +51,8 @@ from wargame_native_engine.core.action import (
 from wargame_native_engine.core.action_router import ActionRouter, RoutedAction
 from wargame_native_engine.core.boarding import (
     BoardCapability,
+    BoardingCapabilityAssessment,
+    BoardingCapabilityStatus,
     BoardingTransition,
     BoardingTransitionStatus,
     BoardingTransitionType,
@@ -88,6 +90,7 @@ from wargame_native_engine.core.indirect_fire import (
     FireMission,
     FireMissionScatterEvidence,
     IndirectFireActiveAreaView,
+    IndirectFireMissionAreaView,
     advance_indirect_fire_active_missions,
     advance_indirect_fire_missions,
     can_cancel_mission,
@@ -124,7 +127,7 @@ from wargame_native_engine.io.scenario import (
     NativeScenario,
     native_map_identity_hash,
 )
-from wargame_native_engine.io.serialization import canonical_hash
+from wargame_native_engine.io.serialization import canonical_hash, json_clone
 from wargame_native_engine.movement.map_adapter import SourceHexMap
 from wargame_native_engine.movement.models import MovementMode, RoutePlan
 from wargame_native_engine.movement.planner import MovementPlanner
@@ -135,9 +138,12 @@ from wargame_native_engine.movement.runtime import MovementRuntime
 from wargame_native_engine.movement.route_planner import DeterministicRoutePlanner
 from wargame_native_engine.rules.config import Ruleset, load_ruleset
 from wargame_native_engine.rules.boarding import (
+    BOARDING_EXPLICIT_DISABLED,
     BoardingAuthority,
     BoardingProfile,
+    BoardingTypeAssignmentAuthority,
     load_boarding_authority,
+    load_boarding_type_assignment_authority,
 )
 from wargame_native_engine.rules.guidance import (
     GuidanceAffiliationEvidence,
@@ -250,7 +256,8 @@ class NativeEngine:
     def __init__(self, scenario: NativeScenario, *,
                  max_ticks: int | None = None,
                  ruleset: Ruleset | str | Path | None = None,
-                 map_runtime_data: "MapRuntimeData | None" = None) -> None:
+                 map_runtime_data: "MapRuntimeData | None" = None,
+                 enable_boarding_type_assignments: bool = True) -> None:
         self.scenario = scenario
         if (
             map_runtime_data is not None
@@ -265,6 +272,12 @@ class NativeEngine:
         self.ruleset = (ruleset if isinstance(ruleset, Ruleset)
                         else load_ruleset(ruleset))
         self._boarding_authority = load_boarding_authority()
+        if type(enable_boarding_type_assignments) is not bool:
+            raise TypeError("enable_boarding_type_assignments must be bool")
+        self._boarding_type_assignments_enabled = enable_boarding_type_assignments
+        self._boarding_type_assignment_authority = (
+            load_boarding_type_assignment_authority()
+        )
         self._guidance_authority = load_guidance_authority()
         self._operator_lifecycle_authority = (
             load_operator_lifecycle_authority()
@@ -368,16 +381,21 @@ class NativeEngine:
         self._world.elapsed_time_ms = self._world.tick * 1000
         self._action_counts = {side: 0 for side in self.scenario.side_order}
         self._error_counts = {side: 0 for side in self.scenario.side_order}
+        reset_data = {"scenario_id": self.scenario.scenario_id,
+                      "scenario_hash": self.scenario.scenario_hash,
+                      "seed": self._seed,
+                      "ruleset_id": self.ruleset.ruleset_id,
+                      "ruleset_version": self.ruleset.ruleset_version,
+                      "ruleset_hash": self.ruleset.content_hash,
+                      "adjudication_semantics_version": (
+                          ADJUDICATION_SEMANTICS_VERSION)}
+        if self._boarding_type_assignments_enabled:
+            reset_data["boarding_type_assignment_authority"] = (
+                self._boarding_type_assignment_authority.identity_record()
+            )
         self._last_events = (EngineEvent(
             0, EventType.ENGINE_RESET,
-            data={"scenario_id": self.scenario.scenario_id,
-                  "scenario_hash": self.scenario.scenario_hash,
-                  "seed": self._seed,
-                  "ruleset_id": self.ruleset.ruleset_id,
-                  "ruleset_version": self.ruleset.ruleset_version,
-                  "ruleset_hash": self.ruleset.content_hash,
-                  "adjudication_semantics_version": (
-                      ADJUDICATION_SEMANTICS_VERSION)},
+            data=reset_data,
         ),)
         self._source_valid_actions_cache.clear()
         self._source_valid_actions_state_hash = None
@@ -432,6 +450,130 @@ class NativeEngine:
                 "objective_score_to_win": self.terminal_rules.objective_score_to_win,
                 "max_ticks": self.terminal_rules.max_ticks,
             }},
+        )
+
+    def own_weapon_inventory(self, side: str) -> tuple[Mapping[str, Any], ...]:
+        """Return detached carried-weapon resources for one controlling side.
+
+        This is a read model, not a legal-action projection.  It intentionally
+        includes carried weapons whose current attack would be rejected.  The
+        ammunition mapping is resolved from the same Native authorities used
+        by adjudication, and values come only from the current WorldState.
+        """
+
+        self._require_side(side)
+        world = self._require_world()
+        values: list[Mapping[str, Any]] = []
+        indirect_weapon_ids = {
+            profile.weapon_id for profile in self._indirect_fire_authority.profiles
+        }
+        for operator in sorted(
+            world.operators.values(), key=lambda item: item.operator_id
+        ):
+            if operator.side != side:
+                continue
+            ammunition = self._ammunition(operator)
+            resources: list[dict[str, Any]] = []
+            for weapon_id in operator.weapon_ids:
+                modes: set[str] = set()
+                ammunition_key: str | None = None
+                resource_policy = "UNKNOWN"
+                ammunition_cost: int | None = None
+                try:
+                    profile = self._source_weapon_profile(int(weapon_id))
+                except ValueError:
+                    profile = None
+                if profile is not None:
+                    modes.update(value.value for value in profile.supported_fire_modes)
+                    ammunition_key = profile.ammunition_key
+                    resource_policy = "AMMUNITION_KEY"
+                    if self._loitering_attack_policy_for(
+                        operator, int(weapon_id), profile,
+                    ) is not None:
+                        ammunition_key = None
+                        resource_policy = "SELF_AS_MUNITION"
+                indirect = (
+                    self._indirect_fire_ammunition_authority
+                    .mapping_for_weapon(int(weapon_id))
+                )
+                if indirect is not None and int(weapon_id) in indirect_weapon_ids:
+                    modes.add(FireMode.INDIRECT.value)
+                    if ammunition_key is None and resource_policy == "UNKNOWN":
+                        ammunition_key = indirect.ammunition_key
+                        resource_policy = "AMMUNITION_KEY"
+                    ammunition_cost = indirect.ammo_cost_per_mission
+                resources.append({
+                    "weapon_id": int(weapon_id),
+                    "attack_modes": sorted(modes),
+                    "resource_policy": resource_policy,
+                    "ammunition_key": ammunition_key,
+                    "ammunition": (
+                        ammunition.get(ammunition_key)
+                        if ammunition_key is not None else None
+                    ),
+                    "ammunition_cost": ammunition_cost,
+                })
+            by_pool: dict[str, list[int]] = defaultdict(list)
+            for resource in resources:
+                key = resource["ammunition_key"]
+                if isinstance(key, str):
+                    by_pool[key].append(int(resource["weapon_id"]))
+            for resource in resources:
+                key = resource["ammunition_key"]
+                resource["shared_with_weapon_ids"] = (
+                    sorted(by_pool[key])
+                    if isinstance(key, str) and len(by_pool[key]) > 1 else []
+                )
+            values.append({
+                "operator_id": operator.operator_id,
+                "weapons": resources,
+                "ammunition_pools": dict(sorted(ammunition.items())),
+                "weapon_cooldown_remaining_ms": (
+                    operator.weapon_cooldown_remaining_ms
+                ),
+            })
+        return tuple(json_clone(values))
+
+    def direct_fire_intent_action(
+        self,
+        side: str,
+        actor_id: int,
+        weapon_id: int,
+        target_id: int,
+    ) -> EngineAction:
+        """Authorize identity/visibility only and preserve a DIRECT intent.
+
+        Range, target domain, ammunition, cooldown, movement and all other
+        rule checks remain exclusively in the normal step adjudication path.
+        """
+
+        self._require_side(side)
+        for name, value in (
+            ("actor_id", actor_id),
+            ("weapon_id", weapon_id),
+            ("target_id", target_id),
+        ):
+            if type(value) is not int or value < 0:
+                raise ValueError(f"{name.upper()}_INVALID")
+        world = self._require_world()
+        actor = world.operators.get(actor_id)
+        if actor is None:
+            raise ValueError("ACTOR_NOT_FOUND")
+        if actor.side != side:
+            raise ValueError("ACTOR_NOT_CONTROLLED")
+        if weapon_id not in actor.weapon_ids:
+            raise ValueError("WEAPON_NOT_CARRIED")
+        visible_enemy_ids = {
+            value.operator_id for value in self._visible_enemies(side)
+        }
+        if target_id not in visible_enemy_ids:
+            raise ValueError("TARGET_NOT_VISIBLE")
+        return EngineAction(
+            side,
+            actor_id,
+            ActionType.SHOOT,
+            target_id=target_id,
+            parameters={"weapon_id": weapon_id},
         )
 
     def guidance_profile_for_operator(
@@ -509,6 +651,174 @@ class NativeEngine:
         self._require_side(side)
         pre_state = WorldState.from_dict(self._require_world().to_dict())
         return self._unload_capabilities_from_pre_state(pre_state, side)
+
+    def get_boarding_capability_assessments(
+        self,
+        side: str,
+    ) -> tuple[BoardingCapabilityAssessment, ...]:
+        """Explain BOARD/UNLOAD availability for every own operator."""
+
+        self._require_side(side)
+        pre_state = WorldState.from_dict(self._require_world().to_dict())
+        board = self._board_capabilities_from_pre_state(pre_state, side)
+        unload = self._unload_capabilities_from_pre_state(pre_state, side)
+        board_actors = {value.passenger_id for value in board}
+        unload_actors = {value.carrier_id for value in unload}
+        result: list[BoardingCapabilityAssessment] = []
+        for operator in sorted(
+            (value for value in pre_state.operators.values() if value.side == side),
+            key=lambda value: value.operator_id,
+        ):
+            result.append(self._board_assessment(
+                operator, pre_state, operator.operator_id in board_actors,
+            ))
+            result.append(self._unload_assessment(
+                operator, pre_state, operator.operator_id in unload_actors,
+            ))
+        return tuple(sorted(
+            result,
+            key=lambda value: (value.actor_id, value.operation_type.value),
+        ))
+
+    def _board_assessment(
+        self,
+        passenger: OperatorState,
+        pre_state: WorldState,
+        available: bool,
+    ) -> BoardingCapabilityAssessment:
+        operation = BoardingTransitionType.BOARD
+        if available:
+            return BoardingCapabilityAssessment(
+                operation, passenger.operator_id,
+                BoardingCapabilityStatus.AVAILABLE,
+            )
+        if passenger.mounted_on is not None or passenger.state.upper() == "ON_BOARD":
+            return BoardingCapabilityAssessment(
+                operation, passenger.operator_id,
+                BoardingCapabilityStatus.NOT_APPLICABLE,
+                ("ALREADY_ON_BOARD",),
+            )
+        if _unit_domain(passenger.operator_type) is not UnitDomain.PERSONNEL:
+            return BoardingCapabilityAssessment(
+                operation, passenger.operator_id,
+                BoardingCapabilityStatus.NOT_APPLICABLE,
+                ("UNIT_TYPE_NOT_PASSENGER",),
+            )
+        blockers = self._boarding_operator_blockers(passenger, pre_state)
+        candidates: list[tuple[OperatorState, BoardingProfile, bool]] = []
+        for carrier in pre_state.operators.values():
+            if carrier.side != passenger.side or carrier.operator_id == passenger.operator_id:
+                continue
+            profile, derived = self._boarding_profile_for_carrier(carrier)
+            if profile is None:
+                continue
+            if derived and self._boarding_type_assignment_authority.profile_id_for(
+                passenger.operator_type, passenger.subtype, "PASSENGER"
+            ) != profile.profile_id:
+                continue
+            if _unit_domain(passenger.operator_type).value not in profile.passenger_domains:
+                continue
+            candidates.append((carrier, profile, derived))
+        if not candidates:
+            blockers.append("NO_COMPATIBLE_CARRIER")
+        else:
+            same_hex = [
+                value for value in candidates
+                if value[0].current_hex == passenger.current_hex
+                and passenger.current_hex is not None
+            ]
+            if not same_hex:
+                blockers.append("NO_COMPATIBLE_CARRIER_SAME_HEX")
+            else:
+                carrier_reasons = [
+                    self._boarding_carrier_blocker(
+                        carrier, profile, pre_state, require_empty=True,
+                    )
+                    for carrier, profile, _derived in same_hex
+                ]
+                blockers.extend(
+                    reason for reason in carrier_reasons if reason is not None
+                )
+        return BoardingCapabilityAssessment(
+            operation,
+            passenger.operator_id,
+            BoardingCapabilityStatus.BLOCKED,
+            tuple(sorted(set(blockers or ["BOARDING_UNAVAILABLE"]))),
+        )
+
+    def _unload_assessment(
+        self,
+        carrier: OperatorState,
+        pre_state: WorldState,
+        available: bool,
+    ) -> BoardingCapabilityAssessment:
+        operation = BoardingTransitionType.UNLOAD
+        if available:
+            return BoardingCapabilityAssessment(
+                operation, carrier.operator_id,
+                BoardingCapabilityStatus.AVAILABLE,
+            )
+        profile, _derived = self._boarding_profile_for_carrier(carrier)
+        if profile is None:
+            return BoardingCapabilityAssessment(
+                operation, carrier.operator_id,
+                BoardingCapabilityStatus.NOT_APPLICABLE,
+                ("UNIT_TYPE_NOT_CARRIER",),
+            )
+        if carrier.passenger_id is None:
+            return BoardingCapabilityAssessment(
+                operation, carrier.operator_id,
+                BoardingCapabilityStatus.NOT_APPLICABLE,
+                ("NO_PASSENGER_ON_BOARD",),
+            )
+        reason = self._boarding_carrier_blocker(
+            carrier, profile, pre_state, require_empty=False,
+        )
+        return BoardingCapabilityAssessment(
+            operation,
+            carrier.operator_id,
+            BoardingCapabilityStatus.BLOCKED,
+            (reason or "UNLOAD_UNAVAILABLE",),
+        )
+
+    @staticmethod
+    def _boarding_operator_blockers(
+        operator: OperatorState,
+        pre_state: WorldState,
+    ) -> list[str]:
+        values: list[str] = []
+        if not operator.alive or operator.state.upper() == "DESTROYED":
+            values.append("DESTROYED")
+        if not operator.deployed:
+            values.append("NOT_DEPLOYED")
+        if operator.current_hex is None:
+            values.append("CURRENT_HEX_REQUIRED")
+        if not _boarding_operator_stopped(operator):
+            values.append("MOVING")
+        if _boarding_operator_suppressed(operator):
+            values.append("SUPPRESSED")
+        if operator.movement_locked or _operator_has_boarding_transition(
+            pre_state, operator.operator_id
+        ):
+            values.append("TRANSITION_IN_PROGRESS")
+        return values
+
+    def _boarding_carrier_blocker(
+        self,
+        carrier: OperatorState,
+        profile: BoardingProfile,
+        pre_state: WorldState,
+        *,
+        require_empty: bool,
+    ) -> str | None:
+        if require_empty and carrier.passenger_id is not None:
+            return "CARRIER_FULL"
+        blockers = self._boarding_operator_blockers(carrier, pre_state)
+        if blockers:
+            return blockers[0]
+        if _unit_domain(carrier.operator_type).value not in profile.carrier_domains:
+            return "UNIT_TYPE_NOT_CARRIER"
+        return None
 
     def get_concealment_capabilities(
         self,
@@ -727,14 +1037,18 @@ class NativeEngine:
         capabilities: list[BoardCapability] = []
         carriers = tuple(sorted(
             (
-                operator for operator in pre_state.operators.values()
+                (operator, profile, derived)
+                for operator in pre_state.operators.values()
+                for profile, derived in (
+                    self._boarding_profile_for_carrier(operator),
+                )
                 if operator.side == side
                 and operator.alive
                 and operator.deployed
                 and operator.current_hex is not None
-                and operator.boarding_profile_id is not None
+                and profile is not None
             ),
-            key=lambda item: item.operator_id,
+            key=lambda item: item[0].operator_id,
         ))
         passengers = tuple(sorted(
             (
@@ -748,11 +1062,8 @@ class NativeEngine:
             ),
             key=lambda item: item.operator_id,
         ))
-        for carrier in carriers:
-            profile = self._boarding_authority.profile(
-                str(carrier.boarding_profile_id)
-            )
-            if profile is None or not self._boarding_carrier_ready(
+        for carrier, profile, derived in carriers:
+            if not self._boarding_carrier_ready(
                 carrier,
                 profile,
                 pre_state,
@@ -761,7 +1072,12 @@ class NativeEngine:
             ):
                 continue
             for passenger in passengers:
-                if not self._boarding_passenger_ready(passenger, profile, pre_state):
+                if not self._boarding_passenger_ready(
+                    passenger,
+                    profile,
+                    pre_state,
+                    require_type_assignment=derived,
+                ):
                     continue
                 if passenger.current_hex != carrier.current_hex:
                     continue
@@ -789,12 +1105,9 @@ class NativeEngine:
                 or not carrier.deployed
                 or carrier.current_hex is None
                 or carrier.passenger_id is None
-                or carrier.boarding_profile_id is None
             ):
                 continue
-            profile = self._boarding_authority.profile(
-                carrier.boarding_profile_id
-            )
+            profile, _derived = self._boarding_profile_for_carrier(carrier)
             passenger = pre_state.operators.get(carrier.passenger_id)
             if (
                 profile is None
@@ -849,16 +1162,53 @@ class NativeEngine:
         passenger: OperatorState,
         profile: BoardingProfile,
         pre_state: WorldState,
+        *,
+        require_type_assignment: bool = False,
     ) -> bool:
         return (
             _unit_domain(passenger.operator_type).value
             in profile.passenger_domains
+            and (
+                not require_type_assignment
+                or self._boarding_type_assignment_authority.profile_id_for(
+                    passenger.operator_type,
+                    passenger.subtype,
+                    "PASSENGER",
+                ) == profile.profile_id
+            )
             and _boarding_operator_stopped(passenger)
             and not _boarding_operator_suppressed(passenger)
             and not _operator_has_boarding_transition(
                 pre_state, passenger.operator_id
             )
         )
+
+    def _boarding_profile_for_carrier(
+        self,
+        carrier: OperatorState,
+    ) -> tuple[BoardingProfile | None, bool]:
+        """Resolve explicit authority first, then one exact typed assignment.
+
+        ``None`` means the scenario omitted an explicit choice.  Any explicit
+        string, including the reserved DISABLED value or an unknown profile,
+        prevents fallback so explicit disable/fail-closed semantics win.
+        """
+
+        explicit = carrier.boarding_profile_id
+        if explicit is not None:
+            if explicit == BOARDING_EXPLICIT_DISABLED:
+                return None, False
+            return self._boarding_authority.profile(explicit), False
+        if not self._boarding_type_assignments_enabled:
+            return None, False
+        profile_id = self._boarding_type_assignment_authority.profile_id_for(
+            carrier.operator_type,
+            carrier.subtype,
+            "CARRIER",
+        )
+        if profile_id is None:
+            return None, False
+        return self._boarding_authority.profile(profile_id), True
 
     def _build_board_request_from_pre_state(
         self,
@@ -1618,6 +1968,45 @@ class NativeEngine:
             )
             if mission.phase is IndirectFireMissionState.ACTIVE
             and mission.impact_hex is not None
+            and world.operators.get(mission.shooter_id) is not None
+            and world.operators[mission.shooter_id].side == side
+        )
+
+    def get_indirect_fire_mission_areas(
+        self,
+        side: str,
+    ) -> tuple[IndirectFireMissionAreaView, ...]:
+        """Return own accepted waiting/active missions without enemy data."""
+
+        if side not in self.scenario.side_order:
+            raise ValueError(f"unknown side: {side}")
+        world = self._require_world()
+        visible_phases = {
+            IndirectFireMissionState.PLANNED,
+            IndirectFireMissionState.FLYING,
+            IndirectFireMissionState.ACTIVE,
+        }
+        return tuple(
+            IndirectFireMissionAreaView(
+                mission_id=mission.mission_id,
+                shooter_id=mission.shooter_id,
+                weapon_id=mission.weapon_id,
+                phase=mission.phase,
+                planned_hex=mission.planned_hex,
+                display_hex=(
+                    mission.planned_hex
+                    if mission.impact_hex is None
+                    else mission.impact_hex
+                ),
+                remaining_flight_seconds=mission.remaining_flight_seconds,
+                active_remaining_seconds=mission.active_remaining_seconds,
+                affected_operator_ids=mission.affected_operator_ids,
+            )
+            for mission in sorted(
+                world.indirect_fire_missions,
+                key=fire_mission_sort_key,
+            )
+            if mission.phase in visible_phases
             and world.operators.get(mission.shooter_id) is not None
             and world.operators[mission.shooter_id].side == side
         )
@@ -5436,6 +5825,14 @@ class NativeEngine:
             world_hash=canonical_hash(world.to_dict()),
         )
 
+    def sim_time_ms(self) -> int:
+        """Return the authoritative clock without constructing a snapshot."""
+
+        value = self._require_world().elapsed_time_ms
+        if type(value) is not int or value < 0:
+            raise RuntimeError("invalid_authoritative_sim_time")
+        return value
+
     def snapshot(self) -> Mapping[str, Any]:
         world = self._require_world()
         if self._rng is None:
@@ -5469,6 +5866,10 @@ class NativeEngine:
             }
         if self.map_runtime_data is not None:
             value["map_runtime_data"] = self.map_runtime_data.identity_record()
+        if self._boarding_type_assignments_enabled:
+            value["boarding_type_assignment_authority"] = (
+                self._boarding_type_assignment_authority.identity_record()
+            )
         if _world_uses_operator_lifecycle(world):
             value["operator_lifecycle_authority"] = (
                 self._operator_lifecycle_authority.identity_record()
@@ -5523,6 +5924,20 @@ class NativeEngine:
                 raise ValueError("snapshot map runtime data mismatch")
         elif runtime_data is not None:
             raise ValueError("snapshot requires map runtime data")
+        boarding_assignment = snapshot.get(
+            "boarding_type_assignment_authority"
+        )
+        if self._boarding_type_assignments_enabled:
+            if boarding_assignment != (
+                self._boarding_type_assignment_authority.identity_record()
+            ):
+                raise ValueError(
+                    "snapshot boarding type assignment authority mismatch"
+                )
+        elif boarding_assignment is not None:
+            raise ValueError(
+                "snapshot unexpectedly requires boarding type assignment authority"
+            )
         restored_seed = int(snapshot["seed"])
         restored_rng = NativeRNG.restore(snapshot["rng"])
         restored_world = WorldState.from_dict(snapshot["world"])
@@ -5629,14 +6044,24 @@ class NativeEngine:
             if passenger.mounted_on is None:
                 continue
             carrier = world.operators.get(passenger.mounted_on)
+            carrier_profile = (
+                (None, False)
+                if carrier is None
+                else self._boarding_profile_for_carrier(carrier)
+            )
             if (
                 carrier is None
                 or carrier.passenger_id != passenger.operator_id
                 or carrier.side != passenger.side
-                or carrier.boarding_profile_id is None
-                or self._boarding_authority.profile(
-                    carrier.boarding_profile_id
-                ) is None
+                or carrier_profile[0] is None
+                or (
+                    carrier_profile[1]
+                    and self._boarding_type_assignment_authority.profile_id_for(
+                        passenger.operator_type,
+                        passenger.subtype,
+                        "PASSENGER",
+                    ) != carrier_profile[0].profile_id
+                )
                 or passenger.deployed
             ):
                 raise ValueError("snapshot boarding relation mismatch")

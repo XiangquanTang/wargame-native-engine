@@ -30,26 +30,48 @@ class NativeEngineBackend:
     def __init__(self, scenario: NativeScenario, *,
                  max_ticks: int | None = None,
                  ruleset: Ruleset | str | Path | None = None,
-                 map_runtime_data: "MapRuntimeData | None" = None) -> None:
+                 map_runtime_data: "MapRuntimeData | None" = None,
+                 enable_boarding_type_assignments: bool = True) -> None:
         self.scenario = scenario
         self.engine = NativeEngine(scenario, max_ticks=max_ticks,
                                    ruleset=ruleset,
-                                   map_runtime_data=map_runtime_data)
+                                   map_runtime_data=map_runtime_data,
+                                   enable_boarding_type_assignments=(
+                                       enable_boarding_type_assignments
+                                   ))
         self.ruleset = self.engine.ruleset
         self.max_ticks = self.engine.terminal_rules.max_ticks
 
     @property
     def determinism_identity(self) -> Mapping[str, object]:
         runtime = self.engine.map_runtime_data
-        return {} if runtime is None else {
-            "map_runtime_data": runtime.identity_record()
-        }
+        value: dict[str, object] = {}
+        if runtime is not None:
+            value["map_runtime_data"] = runtime.identity_record()
+        if self.engine._boarding_type_assignments_enabled:  # noqa: SLF001
+            value["boarding_type_assignment_authority"] = (
+                self.engine._boarding_type_assignment_authority  # noqa: SLF001
+                .identity_record()
+            )
+        return value
 
     def reset(self, seed: int = 42) -> WorldState:
         return self.engine.reset(seed)
 
     def observe(self, side: str) -> SideObservation:
         return self.engine.observe(side)
+
+    def own_weapon_inventory(
+        self, side: str,
+    ) -> tuple[Mapping[str, object], ...]:
+        return self.engine.own_weapon_inventory(side)
+
+    def direct_fire_intent_action(
+        self, side: str, actor_id: int, weapon_id: int, target_id: int,
+    ) -> EngineAction:
+        return self.engine.direct_fire_intent_action(
+            side, actor_id, weapon_id, target_id,
+        )
 
     def valid_actions(self, side: str) -> tuple[ValidAction, ...]:
         return self.engine.valid_actions(side)
@@ -90,6 +112,9 @@ class NativeEngineBackend:
     def get_unload_capabilities(self, side: str):
         return self.engine.get_unload_capabilities(side)
 
+    def get_boarding_capability_assessments(self, side: str):
+        return self.engine.get_boarding_capability_assessments(side)
+
     def get_concealment_capabilities(self, side: str):
         return self.engine.get_concealment_capabilities(side)
 
@@ -110,6 +135,9 @@ class NativeEngineBackend:
 
     def get_indirect_fire_active_areas(self, side: str):
         return self.engine.get_indirect_fire_active_areas(side)
+
+    def get_indirect_fire_mission_areas(self, side: str):
+        return self.engine.get_indirect_fire_mission_areas(side)
 
     def indirect_fire_action(
         self,
@@ -136,6 +164,9 @@ class NativeEngineBackend:
 
     def result(self) -> GameResult:
         return self.engine.result()
+
+    def sim_time_ms(self) -> int:
+        return self.engine.sim_time_ms()
 
     def snapshot(self) -> Mapping[str, object]:
         return self.engine.snapshot()

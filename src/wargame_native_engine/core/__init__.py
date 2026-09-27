@@ -1,6 +1,8 @@
 from wargame_native_engine.core.action import ActionType, EngineAction, ValidAction
 from wargame_native_engine.core.boarding import (
     BoardCapability,
+    BoardingCapabilityAssessment,
+    BoardingCapabilityStatus,
     BoardingTransition,
     BoardingTransitionStatus,
     BoardingTransitionType,
@@ -21,6 +23,7 @@ from wargame_native_engine.core.indirect_fire import (
     FireMissionPhase,
     FireMissionScatterEvidence,
     IndirectFireActiveAreaView,
+    IndirectFireMissionAreaView,
     IndirectFireAffectedLedger,
 )
 from wargame_native_engine.core.operator import OperatorState
@@ -35,6 +38,8 @@ from wargame_native_engine.core.world import Stage, WorldState
 __all__ = [
     "ActionType",
     "BoardCapability",
+    "BoardingCapabilityAssessment",
+    "BoardingCapabilityStatus",
     "BoardingTransition",
     "BoardingTransitionStatus",
     "BoardingTransitionType",
@@ -46,6 +51,7 @@ __all__ = [
     "FireMissionPhase",
     "FireMissionScatterEvidence",
     "IndirectFireActiveAreaView",
+    "IndirectFireMissionAreaView",
     "IndirectFireAffectedLedger",
     "IndirectFireCapability",
     "IndirectFireCapabilityStatus",

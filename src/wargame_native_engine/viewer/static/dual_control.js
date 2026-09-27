@@ -5,7 +5,7 @@ const selectedUnitIds = new Set();
 let current = null;
 let capabilities = null;
 let selectedCapability = null;
-let selectedWeaponId = null;
+const selectedWeaponIds = new Map();
 let selectedGuidedPlatform = null;
 let selectedIndirectOption = null;
 let activeTool = null;
@@ -83,6 +83,7 @@ function isFriendlySelectable(unit) {
   return Boolean(unit)
     && String(unit.side).toLowerCase() === current?.side
     && unit.category === "operator"
+    && unit.map_visible !== false
     && !unit.destroyed;
 }
 
@@ -102,7 +103,7 @@ function reconcileInteractionDraft() {
   selectedUnitIds.clear();
   retained.forEach((unitId) => selectedUnitIds.add(unitId));
   selectedCapability = null;
-  selectedWeaponId = null;
+  selectedWeaponIds.clear();
   selectedGuidedPlatform = null;
   selectedIndirectOption = null;
   activeTool = null;
@@ -129,6 +130,9 @@ function tacticalOverlayHexes(kind) {
   if (kind === "contacts") {
     return tacticalOverlay.confirmed_contacts?.hex_ids || [];
   }
+  const unitIds = selectedIds();
+  const selectedWeaponId = unitIds.length === 1
+    ? selectedWeaponIds.get(unitIds[0]) : null;
   if (selectedCapability === "DIRECT_FIRE" && Number.isInteger(selectedWeaponId)) {
     return capabilityUI.weaponEnvelopeHexes(tacticalOverlay, selectedWeaponId);
   }
@@ -146,17 +150,23 @@ function directFireWeapons() {
 }
 
 function activeShootTargetIds() {
-  if (activeTool !== "SHOOT" || selectedIds().length !== 1) return [];
-  return capabilityUI.weaponTargetIds(
-    capabilities, selectedIds()[0], selectedWeaponId,
-  );
+  if (activeTool !== "SHOOT" || !selectedIds().length) return [];
+  if (!selectedIds().every((unitId) => Number.isInteger(
+    selectedWeaponIds.get(unitId)
+  ))) return [];
+  const values = capabilities?.direct_fire?.selectable_target_ids;
+  return Array.isArray(values) ? [...values] : [];
 }
 
 function selectedWeaponChoices() {
   const unitIds = selectedIds();
-  if (selectedCapability !== "DIRECT_FIRE"
-      || unitIds.length !== 1 || !Number.isInteger(selectedWeaponId)) return {};
-  return { weapon_choices: { [unitIds[0]]: selectedWeaponId } };
+  if (selectedCapability !== "DIRECT_FIRE" || !unitIds.length
+      || !unitIds.every((unitId) => Number.isInteger(
+        selectedWeaponIds.get(unitId)
+      ))) return {};
+  return { weapon_choices: Object.fromEntries(
+    unitIds.map((unitId) => [unitId, selectedWeaponIds.get(unitId)])
+  ) };
 }
 
 function guidedFirePlatforms() {
@@ -198,7 +208,8 @@ function plannedPaths() {
 function renderMap() {
   if (!mapRenderer || !current?.scene) return;
   mapRenderer.setIndirectFireAreas(
-    current.scene?.overlays?.indirect_fire_active_areas || [],
+    current.scene?.overlays?.indirect_fire_mission_areas
+      || current.scene?.overlays?.indirect_fire_active_areas || [],
   );
   mapRenderer.setTacticalOverlay({
     side: current.side,
@@ -212,7 +223,8 @@ function renderMap() {
     shoot_target_ids: activeTool === "SHOOT"
       ? activeShootTargetIds()
       : activeTool === "GUIDED_FIRE" ? activeGuidedTargetIds() : [],
-    preview_move_position: targetHex,
+    preview_move_position: activeTool === "MOVE" ? targetHex : null,
+    preview_area_position: activeTool === "INDIRECT_FIRE" ? targetHex : null,
     preview_shoot_target_id: targetUnitId,
     planned_paths: plannedPaths(),
   });
@@ -225,6 +237,18 @@ function statusText() {
   if (lastError) return ["操作失败", lastError];
   if (lastNotice) return ["命令已入队", lastNotice];
   const state = current?.product_status?.product_state || "WAITING_SELECTION";
+  if (state === "COMMAND_REJECTED") {
+    const code = current?.product_status?.last_command?.error_code;
+    const reasons = {
+      AMMUNITION_UNAVAILABLE: "所选武器弹药不足。",
+      WEAPON_COOLDOWN_ACTIVE: "所选武器仍在冷却。",
+      TARGET_OUT_OF_RANGE: "目标不在所选武器射程内。",
+      TARGET_DOMAIN_UNSUPPORTED: "所选武器不适用于该目标类型。",
+      WEAPON_NOT_UNFOLDED: "所选武器尚未展开。",
+      ATTACKER_MOVING: "单位当前运动状态不允许该武器射击。",
+    };
+    return ["命令未执行", reasons[code] || `引擎拒绝攻击意图：${code || "条件不满足"}`];
+  }
   return PRODUCT_STATE[state] || PRODUCT_STATE.WAITING_SELECTION;
 }
 
@@ -255,6 +279,26 @@ function renderSelection() {
   details.textContent = Array.from(groups.entries())
     .map(([name, count]) => `${name} × ${count}`).join(" · ");
   root.append(title, details);
+  if (selected.length === 1) {
+    const carried = Array.isArray(selected[0].carried_units)
+      ? selected[0].carried_units : [];
+    if (carried.length) {
+      const transport = document.createElement("small");
+      transport.textContent = `已搭载：${carried.map((value) => (
+        `${value.name || "单位"} ${value.operator_id} · ${value.boarding_state}`
+      )).join("；")}`;
+      root.appendChild(transport);
+    }
+    const boardingMessages = ["BOARD", "UNLOAD"].flatMap((kind) => (
+      capabilities?.operations?.[kind]?.unavailable || []
+    )).filter((value) => selectedUnitIds.has(Number(value.unit_id)))
+      .map((value) => value.message).filter(Boolean);
+    if (boardingMessages.length) {
+      const status = document.createElement("small");
+      status.textContent = Array.from(new Set(boardingMessages)).join("；");
+      root.appendChild(status);
+    }
+  }
 }
 
 function operationCount(kind) {
@@ -330,14 +374,24 @@ function renderDirectFirePanel() {
   const panel = $("direct-fire-panel");
   const root = $("weapon-choices");
   root.replaceChildren();
-  const unit = directFireUnit();
-  if (selectedCapability !== "DIRECT_FIRE" || unit === null) {
+  const units = (capabilities?.direct_fire?.units || []).filter(
+    (unit) => selectedUnitIds.has(Number(unit.unit_id))
+  );
+  if (!units.length) {
     panel.hidden = true;
     return;
   }
   panel.hidden = false;
-  $("direct-fire-unit").textContent = unit.display_name;
-  for (const weapon of unit.weapons) {
+  $("direct-fire-unit").textContent = units.length === 1
+    ? units[0].display_name : `${units.length} 个单位的携行武器`;
+  for (const unit of units) {
+    const group = document.createElement("section");
+    group.className = "weapon-unit-group";
+    const heading = document.createElement("strong");
+    heading.textContent = unit.display_name;
+    group.appendChild(heading);
+    for (const weapon of unit.weapons) {
+    const selectedWeaponId = selectedWeaponIds.get(Number(unit.unit_id));
     const button = document.createElement("button");
     button.type = "button";
     button.className = "weapon-card";
@@ -347,6 +401,7 @@ function renderDirectFirePanel() {
     button.disabled = !current?.product_status?.can_operate
       || isPlanning || isExecuting;
     button.dataset.weaponId = String(weapon.weapon_id);
+    button.dataset.unitId = String(unit.unit_id);
     const marker = document.createElement("span");
     marker.textContent = Number(weapon.weapon_id) === selectedWeaponId ? "◉" : "○";
     const content = document.createElement("span");
@@ -359,16 +414,22 @@ function renderDirectFirePanel() {
       ? "未知" : `${weapon.maximum_range} hex`;
     const domains = weapon.target_domains?.join(" / ") || "未知";
     const ammunition = weapon.ammunition === null ? "未知" : weapon.ammunition;
+    const shared = weapon.shared_ammunition
+      ? `（与武器 ${weapon.shared_with_weapon_ids.join(" / ")} 共用）` : "";
+    const modes = weapon.attack_modes?.length
+      ? weapon.attack_modes.join(" / ") : "模式未知";
     const cooldown = weapon.cooldown_remaining_seconds === null
       ? "未知" : `${weapon.cooldown_remaining_seconds} s`;
-    facts.textContent = `射程 ${range} · 目标 ${domains} · 弹药 ${ammunition} · 冷却 ${cooldown} · `;
+    facts.textContent = `模式 ${modes} · 射程 ${range} · 目标 ${domains} · 弹药 ${ammunition}${shared} · 冷却 ${cooldown} · `;
     const status = document.createElement("span");
     status.className = "weapon-status";
-    status.textContent = `${weapon.ready_state} · ${weapon.legal_target_ids.length} 个合法目标`;
+    status.textContent = `${weapon.ready_state} · 当前合法目标 ${weapon.legal_target_ids.length} 个 · 提交后由引擎裁决`;
     facts.appendChild(status);
     content.append(title, facts);
     button.append(marker, content);
-    root.appendChild(button);
+    group.appendChild(button);
+    }
+    root.appendChild(group);
   }
 }
 
@@ -522,7 +583,7 @@ function render({ redrawMap = true } = {}) {
 
 function clearOperation({ clearSelection = false } = {}) {
   selectedCapability = null;
-  selectedWeaponId = null;
+  selectedWeaponIds.clear();
   selectedGuidedPlatform = null;
   selectedIndirectOption = null;
   activeTool = null;
@@ -570,6 +631,15 @@ async function loadCapabilities({ expectedEpoch = interactionEpoch } = {}) {
     if (expectedEpoch !== interactionEpoch
         || JSON.stringify(requestedActorIds) !== JSON.stringify(selectedIds())) return;
     capabilities = nextCapabilities;
+    for (const [unitId, weaponId] of selectedWeaponIds) {
+      const weapons = capabilityUI.directFireWeapons(capabilities, unitId);
+      if (!weapons.some((weapon) => Number(weapon.weapon_id) === weaponId)) {
+        selectedWeaponIds.delete(unitId);
+        targetUnitId = null;
+        operationPreview = null;
+        executeRequestId = null;
+      }
+    }
     lastError = null;
   } catch (error) {
     if (expectedEpoch !== interactionEpoch) return;
@@ -639,6 +709,18 @@ async function toggleTacticalOverlay(kind) {
 
 async function handleUnitSelection(operatorId, modifiers = {}) {
   const unit = unitById(operatorId);
+  if (activeTool === "INDIRECT_FIRE" && selectedIndirectOption
+      && Number.isInteger(unit?.current_hex)) {
+    targetHex = Number(unit.current_hex);
+    advanceInteractionEpoch();
+    await previewOperation("INDIRECT_FIRE", {
+      fire_mode: "INDIRECT",
+      shooter_id: selectedIds()[0],
+      weapon_id: selectedIndirectOption.weapon_id,
+      target_hex: targetHex,
+    });
+    return;
+  }
   if (activeTool === "MOVE" && Number.isInteger(unit?.current_hex)) {
     targetHex = Number(unit.current_hex);
     advanceInteractionEpoch();
@@ -719,13 +801,13 @@ async function handleHexSelection(value) {
   }
 }
 
-async function selectDirectFireWeapon(weaponId) {
+async function selectDirectFireWeapon(unitId, weaponId) {
   if (isPlanning || isExecuting || !current?.product_status?.can_operate) return;
-  const value = directFireWeapons().find(
+  const value = capabilityUI.directFireWeapons(capabilities, unitId).find(
     (weapon) => Number(weapon.weapon_id) === Number(weaponId),
   );
   if (!value) return;
-  selectedWeaponId = Number(value.weapon_id);
+  selectedWeaponIds.set(Number(unitId), Number(value.weapon_id));
   targetUnitId = null;
   operationPreview = null;
   executeRequestId = null;
@@ -784,7 +866,7 @@ async function activateCapability(capabilityType) {
   targetHex = null;
   targetUnitId = null;
   selectedCapability = capabilityType;
-  selectedWeaponId = null;
+  if (capabilityType !== "DIRECT_FIRE") selectedWeaponIds.clear();
   selectedGuidedPlatform = null;
   selectedIndirectOption = null;
   activeTool = kind;
@@ -792,12 +874,16 @@ async function activateCapability(capabilityType) {
   if (kind === "MOVE") {
     $("tool-instruction").textContent = "请在地图上点击目的六边形。";
   } else if (capabilityType === "DIRECT_FIRE") {
-    const weapons = directFireWeapons();
-    if (weapons.length === 1) {
-      selectedWeaponId = Number(weapons[0].weapon_id);
-      $("tool-instruction").textContent = "请点击地图上黄色高亮的合法射击目标。";
+    const allChosen = selectedIds().every((unitId) => {
+      const chosen = selectedWeaponIds.get(unitId);
+      return Number.isInteger(chosen) && capabilityUI.directFireWeapons(
+        capabilities, unitId,
+      ).some((weapon) => Number(weapon.weapon_id) === chosen);
+    });
+    if (allChosen) {
+      $("tool-instruction").textContent = "请点击地图上黄色高亮的可见攻击目标。";
     } else {
-      $("tool-instruction").textContent = "请先在 Direct Fire 面板选择武器。";
+      $("tool-instruction").textContent = "请为每个单位明确选择携行武器。";
     }
   } else if (capabilityType === "GUIDED_FIRE") {
     const platforms = guidedFirePlatforms();
@@ -902,7 +988,7 @@ async function executeOperation() {
     });
     operationPreview = null;
     selectedCapability = null;
-    selectedWeaponId = null;
+    selectedWeaponIds.clear();
     selectedGuidedPlatform = null;
     selectedIndirectOption = null;
     activeTool = null;
@@ -992,7 +1078,9 @@ $("capability-panel").addEventListener("click", (event) => {
 $("weapon-choices").addEventListener("click", (event) => {
   const button = event.target instanceof Element
     ? event.target.closest("[data-weapon-id]") : null;
-  if (button) selectDirectFireWeapon(Number(button.dataset.weaponId));
+  if (button) selectDirectFireWeapon(
+    Number(button.dataset.unitId), Number(button.dataset.weaponId),
+  );
 });
 $("guided-fire-choices").addEventListener("click", (event) => {
   const button = event.target instanceof Element
