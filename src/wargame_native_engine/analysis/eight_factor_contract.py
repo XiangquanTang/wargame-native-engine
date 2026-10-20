@@ -35,7 +35,7 @@ def _copy_value(value: Any) -> Any:
 
 
 def extract_unit_factor_evidence(
-    unit: Mapping[str, Any],
+    unit: Mapping[str, Any], *, null_is_missing: bool = False,
 ) -> tuple[FactorEvidence, ...]:
     if not isinstance(unit, Mapping):
         raise TypeError(
@@ -48,7 +48,7 @@ def extract_unit_factor_evidence(
         missing: list[str] = []
         present_values: dict[str, Any] = {}
         for key in field_keys:
-            if key in unit:
+            if key in unit and (not null_is_missing or unit[key] is not None):
                 present_values[key] = _copy_value(unit[key])
             else:
                 missing.append(key)

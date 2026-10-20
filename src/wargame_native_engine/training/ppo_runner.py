@@ -51,6 +51,9 @@ from wargame_native_engine.training.ppo_runner_config import (
 from wargame_native_engine.training.reward_replay import (
     write_reward_records_jsonl,
 )
+from wargame_native_engine.training.objective_task import (
+    write_task_records_jsonl,
+)
 from wargame_native_engine.training.training_seed import TrainingSeedStream
 
 
@@ -125,6 +128,14 @@ class PPOEpisodeMetrics:
     action_ids: tuple[str, ...]
     reward_record_hashes: tuple[str, ...]
     reward_rederivation_verified: bool
+    task_return: float = 0.0
+    training_return: float | None = None
+    task_success: bool = False
+    task_termination_reason: str | None = None
+    engine_terminated: bool | None = None
+    engine_winner: str | None = None
+    task_identity: Mapping[str, str] | None = None
+    task_reward_rederivation_verified: bool | None = None
     semantic_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -136,7 +147,12 @@ class PPOEpisodeMetrics:
             raise PPORunnerError("episode outcome bucket is invalid")
         if self.terminated == self.truncated:
             raise PPORunnerError("completed episode must terminate xor truncate")
-        for value in (self.base_return, self.shaping_return, self.composite_return):
+        if self.training_return is None:
+            object.__setattr__(self, "training_return", self.composite_return)
+        for value in (
+            self.base_return, self.shaping_return, self.composite_return,
+            self.task_return, self.training_return,
+        ):
             if not math.isfinite(value):
                 raise PPORunnerError("episode return must be finite")
         if not math.isclose(
@@ -148,6 +164,23 @@ class PPOEpisodeMetrics:
             raise PPORunnerError("episode reward component totals are inconsistent")
         if self.reward_rederivation_verified is not True:
             raise PPORunnerError("episode reward re-derivation is not verified")
+        if type(self.task_success) is not bool:
+            raise TypeError("task_success must be exact bool")
+        if self.task_identity is None:
+            if self.task_return != 0.0 or self.task_success or (
+                self.task_reward_rederivation_verified is not None
+            ):
+                raise PPORunnerError("non-task episode carries task results")
+        else:
+            if set(self.task_identity) != {"task_id", "task_version", "task_hash"}:
+                raise PPORunnerError("task episode identity is incomplete")
+            if self.task_reward_rederivation_verified is not True:
+                raise PPORunnerError("task reward re-derivation is not verified")
+            if not math.isclose(
+                float(self.training_return), self.task_return,
+                rel_tol=0.0, abs_tol=1e-7,
+            ):
+                raise PPORunnerError("task-only training return mismatch")
         object.__setattr__(self, "semantic_hash", canonical_hash(self._payload()))
 
     def _payload(self) -> dict[str, object]:
@@ -173,6 +206,18 @@ class PPOEpisodeMetrics:
             "action_ids": list(self.action_ids),
             "reward_record_hashes": list(self.reward_record_hashes),
             "reward_rederivation_verified": self.reward_rederivation_verified,
+            "task_return": self.task_return,
+            "training_return": self.training_return,
+            "task_success": self.task_success,
+            "task_termination_reason": self.task_termination_reason,
+            "engine_terminated": self.engine_terminated,
+            "engine_winner": self.engine_winner,
+            "task_identity": (
+                None if self.task_identity is None else dict(self.task_identity)
+            ),
+            "task_reward_rederivation_verified": (
+                self.task_reward_rederivation_verified
+            ),
         }
 
     def to_dict(self) -> dict[str, object]:
@@ -288,6 +333,13 @@ class PPOEvaluationReport:
             "base_return": stats("base_return"),
             "shaping_return": stats("shaping_return"),
             "composite_return": stats("composite_return"),
+            "task_return": stats("task_return"),
+            "training_return": stats("training_return"),
+            "task_successes": sum(item.task_success for item in self.episodes),
+            "task_success_rate": (
+                sum(item.task_success for item in self.episodes) / count
+                if count else 0.0
+            ),
             "episode_length": stats("decision_count"),
             "terminal_reason_counts": dict(sorted(reasons.items())),
             "episodes": [item.to_dict() for item in self.episodes],
@@ -323,7 +375,8 @@ class NativePPORunner:
         self.core = core
         self.config = load_ppo_runner_config() if config is None else config
         self.preprocessor = (
-            LearnerObservationPreprocessor() if preprocessor is None else preprocessor
+            LearnerObservationPreprocessor(core.preprocessor_spec)
+            if preprocessor is None else preprocessor
         )
         if not isinstance(self.config, PPORunnerConfig):
             raise TypeError("config must be PPORunnerConfig")
@@ -333,10 +386,23 @@ class NativePPORunner:
             raise PPORunnerError("runner/core seed config mismatch")
         if self.preprocessor.spec.semantic_hash != core.config.observation_preprocessor.identity_hash:
             raise PPORunnerError("runner/core preprocessor mismatch")
+        if (
+            env.observation_encoder_schema
+            != self.preprocessor.spec.input_encoder_schema
+            or env.observation_encoder.contract_hash
+            != self.preprocessor.spec.input_encoder_hash
+        ):
+            raise PPORunnerError("runner/environment observation contract mismatch")
         if env.controlled_side != self.config.trained_side.lower():
             raise PPORunnerError("runner trained side does not match environment")
         enabled = env.shaping_policy is not None
-        if enabled != (self.config.reward_mode is PPORewardMode.COMPOSITE_EIGHT_FACTOR):
+        task_enabled = env.objective_task_config is not None
+        expected_mode = (
+            PPORewardMode.TASK_OBJECTIVE_CAPTURE if task_enabled
+            else PPORewardMode.COMPOSITE_EIGHT_FACTOR if enabled
+            else PPORewardMode.BASE_ONLY
+        )
+        if self.config.reward_mode is not expected_mode:
             raise PPORunnerError("runner reward mode does not match environment")
         if env.action_encoder.contract_hash != core.config.action_encoder.contract_hash:
             raise PPORunnerError("runner action encoder mismatch")
@@ -362,6 +428,7 @@ class NativePPORunner:
         self._episode_seed = 0
         self._episode_base = 0.0
         self._episode_shaping = 0.0
+        self._episode_task = 0.0
         self._episode_actions: list[str] = []
         self._episode_rewards: list[str] = []
         self._episode_id: str | None = None
@@ -369,6 +436,9 @@ class NativePPORunner:
     @property
     def reward_identity(self) -> PPORewardIdentity:
         identity = (
+            self.env.objective_task_config.reward_policy.identity
+            if self.env.objective_task_config is not None
+            else
             self.env.base_reward_policy.identity
             if self.env.shaping_policy is None
             else self.env.composite_reward_policy.identity
@@ -383,14 +453,26 @@ class NativePPORunner:
             raise PPORunnerError("runner has not reset an environment")
         return dict(self._runtime_authority)
 
-    def reset_episode(self, *, evaluation: bool = False) -> TrainingDecisionBinding:
+    def reset_episode(
+        self, *, evaluation: bool = False,
+        evaluation_env_index: int | None = None,
+    ) -> TrainingDecisionBinding:
         if self._active:
             raise PPORunnerError("cannot reset an active runner episode")
         stream = TrainingSeedStream.EVALUATION if evaluation else TrainingSeedStream.ENVIRONMENT
+        if evaluation_env_index is not None and (
+            not evaluation
+            or type(evaluation_env_index) is not int
+            or evaluation_env_index < 0
+        ):
+            raise PPORunnerError("evaluation env index override is invalid")
         seed = self.core.seed.derive_seed(
             stream,
             worker_index=self.config.worker_index,
-            env_index=self.config.env_index,
+            env_index=(
+                self.config.env_index
+                if evaluation_env_index is None else evaluation_env_index
+            ),
             episode_index=self.episode_index,
         )
         if not evaluation:
@@ -399,9 +481,17 @@ class NativePPORunner:
                 env_index=self.config.env_index,
                 episode_index=self.episode_index,
             )
-        result = self.env.reset(seed)
-        if result.info["training_interface_version"] != "decision-v1":
-            raise PPORunnerError("PPO runner requires Decision-v1 environment")
+        with self.env.timing.measure("runner.reset_episode"):
+            result = self.env.reset(seed)
+        expected_interface = (
+            "decision-v2"
+            if self.preprocessor.spec.input_encoder_schema.endswith("/2.0")
+            else "decision-v1"
+        )
+        if result.info["training_interface_version"] != expected_interface:
+            raise PPORunnerError(
+                "PPO runner environment/preprocessor version mismatch"
+            )
         authority = dict(self.env.runtime_authority)
         if self._runtime_authority is None:
             self._runtime_authority = authority
@@ -409,6 +499,7 @@ class NativePPORunner:
             raise PPORunnerError("environment runtime authority drifted between episodes")
         self._episode_seed = seed
         self._episode_base = self._episode_shaping = 0.0
+        self._episode_task = 0.0
         self._episode_actions = []
         self._episode_rewards = []
         self._episode_id = None
@@ -429,12 +520,14 @@ class NativePPORunner:
             self.reset_episode(evaluation=False)
         while len(transitions) < target:
             binding = self.env.current_decision_binding
-            processed = self._process(binding)
+            with self.env.timing.measure("runner.observation_preprocess"):
+                processed = self._process(binding)
             tensor = processed.to_torch_cpu()
             mask = torch.tensor(binding.action_space.mask, dtype=torch.bool)
             if not bool(mask.any()):
                 raise PPORunnerError("active Decision window has no catalog action")
-            output = self.core.act(tensor, mask, evaluation=False)
+            with self.env.timing.measure("runner.network_action"):
+                output = self.core.act(tensor, mask, evaluation=False)
             action_index = int(output.action_index.item())
             try:
                 selected = LiveActionBinding.select(binding, action_index)
@@ -442,16 +535,24 @@ class NativePPORunner:
                 self.invalid_action_attempts += 1
                 raise
             try:
-                step = self.env.step_bound_action(action_index, binding)
+                with self.env.timing.measure("runner.env_step"):
+                    step = self.env.step_bound_action(action_index, binding)
             except NativeTrainingError as exc:
                 if "stale" in str(exc):
                     self.stale_action_rejections += 1
                 raise PPORunnerError(f"bound action submission failed: {exc}") from exc
             next_binding = self.env.current_decision_binding
-            next_processed = self._process(next_binding)
-            next_value = 0.0 if step.terminated else float(
-                self.core.predict_value(next_processed.to_torch_cpu()).item()
-            )
+            with self.env.timing.measure("runner.observation_preprocess"):
+                next_processed = self._process(next_binding)
+            if step.terminated:
+                next_value = 0.0
+            else:
+                with self.env.timing.measure("runner.network_value"):
+                    next_value = float(
+                        self.core.predict_value(
+                            next_processed.to_torch_cpu()
+                        ).item()
+                    )
             record = step.reward_record
             identity = record.transition_identity
             if (
@@ -463,6 +564,11 @@ class NativePPORunner:
             ):
                 raise PPORunnerError("reward/Decision/action binding misalignment")
             base, shaping = _reward_components(record.components)
+            task_amount = (
+                0.0
+                if step.task_reward_record is None
+                else step.task_reward_record.task_reward
+            )
             is_boundary = len(transitions) + 1 == target
             delta_ms = identity.sim_time_after_ms - identity.sim_time_before_ms
             discount_gamma = self.core.discount.effective_gamma(delta_time_ms=delta_ms)
@@ -481,7 +587,11 @@ class NativePPORunner:
                 old_log_prob=float(output.log_prob.item()),
                 value_prediction=float(output.value_prediction.item()),
                 reward=float(step.reward),
-                reward_record_hash=record.semantic_hash,
+                reward_record_hash=(
+                    record.semantic_hash
+                    if step.task_reward_record is None
+                    else step.task_reward_record.semantic_hash
+                ),
                 base_reward_amount=base,
                 shaping_reward_amount=shaping,
                 terminated=step.terminated,
@@ -496,6 +606,12 @@ class NativePPORunner:
                     not step.terminated and not step.truncated and not is_boundary
                 ),
                 preprocessor_hash=processed.preprocessor_hash,
+                task_reward_amount=task_amount,
+                training_reward_mode=(
+                    "TASK_OBJECTIVE_CAPTURE"
+                    if step.task_reward_record is not None
+                    else "BASE_OR_COMPOSITE"
+                ),
             )
             transitions.append(transition)
             action_ids.append(selected.action_id)
@@ -504,10 +620,12 @@ class NativePPORunner:
             self._episode_id = identity.episode_id
             self._episode_base += base
             self._episode_shaping += shaping
+            self._episode_task += task_amount
             self._episode_actions.append(selected.action_id)
-            self._episode_rewards.append(record.semantic_hash)
+            self._episode_rewards.append(transition.reward_record_hash)
             if step.terminated or step.truncated:
-                episodes.append(self._finish_episode(step))
+                with self.env.timing.measure("runner.episode_finish"):
+                    episodes.append(self._finish_episode(step))
                 if len(transitions) < target:
                     self.reset_episode(evaluation=False)
         batch = PPORolloutBatch.from_transitions(transitions, self.core.config)
@@ -610,10 +728,32 @@ class NativePPORunner:
             episodes, checkpoint_identity=str(manifest["semantic_hash"])
         )
 
-    def evaluate(self, episodes: int | None = None, *, checkpoint_identity: str = "IN_MEMORY") -> PPOEvaluationReport:
+    def evaluate(
+        self,
+        episodes: int | None = None,
+        *,
+        checkpoint_identity: str = "IN_MEMORY",
+        episode_index_start: int | None = None,
+        evaluation_env_index: int | None = None,
+        policy_mode: str = "ARGMAX",
+        policy_seed: int | None = None,
+    ) -> PPOEvaluationReport:
         count = self.config.evaluation_episodes if episodes is None else episodes
         if type(count) is not int or count <= 0:
             raise PPORunnerError("evaluation episode count must be positive")
+        mode = str(policy_mode).upper()
+        if mode not in {"ARGMAX", "SAMPLE"}:
+            raise PPORunnerError("evaluation policy mode must be ARGMAX or SAMPLE")
+        if mode == "SAMPLE" and (
+            type(policy_seed) is not int or policy_seed < 0
+        ):
+            raise PPORunnerError("sample evaluation requires a non-negative policy seed")
+        if mode == "ARGMAX" and policy_seed is not None:
+            raise PPORunnerError("argmax evaluation does not accept a policy seed")
+        evaluation_generator = None
+        if mode == "SAMPLE":
+            evaluation_generator = torch.Generator(device="cpu")
+            evaluation_generator.manual_seed(policy_seed)
         before_update = self.core.update_step
         before_sample = self.core.sample_step
         before_parameters = self.core.parameter_content_hash()
@@ -623,29 +763,53 @@ class NativePPORunner:
         seeds: list[int] = []
         if self._active:
             raise PPORunnerError("evaluation requires an episode/rollout boundary")
+        if episode_index_start is not None:
+            if type(episode_index_start) is not int or episode_index_start < 0:
+                raise PPORunnerError("evaluation episode index start is invalid")
+            self.episode_index = episode_index_start
         for _ in range(count):
-            self.reset_episode(evaluation=True)
+            self.reset_episode(
+                evaluation=True,
+                evaluation_env_index=evaluation_env_index,
+            )
             seeds.append(self._episode_seed)
             while self._active:
                 binding = self.env.current_decision_binding
-                processed = self._process(binding)
-                output = self.core.act(
-                    processed.to_torch_cpu(),
-                    torch.tensor(binding.action_space.mask, dtype=torch.bool),
-                    evaluation=True,
-                )
+                with self.env.timing.measure("runner.observation_preprocess"):
+                    processed = self._process(binding)
+                with self.env.timing.measure("runner.network_action"):
+                    output = self.core.act(
+                        processed.to_torch_cpu(),
+                        torch.tensor(
+                            binding.action_space.mask, dtype=torch.bool
+                        ),
+                        evaluation=True,
+                        evaluation_generator=evaluation_generator,
+                    )
                 index = int(output.action_index.item())
                 selected = LiveActionBinding.select(binding, index)
-                step = self.env.step_bound_action(index, binding)
+                with self.env.timing.measure("runner.env_step"):
+                    step = self.env.step_bound_action(index, binding)
                 base, shaping = _reward_components(step.reward_record.components)
+                task_amount = (
+                    0.0
+                    if step.task_reward_record is None
+                    else step.task_reward_record.task_reward
+                )
                 self.environment_steps += 1
                 self._episode_id = step.reward_record.transition_identity.episode_id
                 self._episode_base += base
                 self._episode_shaping += shaping
+                self._episode_task += task_amount
                 self._episode_actions.append(selected.action_id)
-                self._episode_rewards.append(step.reward_record.semantic_hash)
+                self._episode_rewards.append(
+                    step.reward_record.semantic_hash
+                    if step.task_reward_record is None
+                    else step.task_reward_record.semantic_hash
+                )
                 if step.terminated or step.truncated:
-                    result = self._finish_episode(step)
+                    with self.env.timing.measure("runner.episode_finish"):
+                        result = self._finish_episode(step)
                     results.append(result)
                     sequences.append(result.action_ids)
         if self.core.update_step != before_update or self.core.sample_step != before_sample:
@@ -670,7 +834,7 @@ class NativePPORunner:
 
     def save_checkpoint(self, target: str | Path) -> Path:
         if not self._at_rollout_boundary:
-            raise PPORunnerError("v1 checkpoint requires a rollout/update boundary")
+            raise PPORunnerError("checkpoint requires a rollout/update boundary")
         if self._runtime_authority is None:
             raise PPORunnerError("cannot checkpoint before environment authority is known")
         destination = Path(target)
@@ -692,7 +856,7 @@ class NativePPORunner:
 
     def load_checkpoint(self, source: str | Path) -> None:
         if self._active or not self._at_rollout_boundary:
-            raise PPORunnerError("v1 checkpoint restore requires a new runner boundary")
+            raise PPORunnerError("checkpoint restore requires a new runner boundary")
         if self._runtime_authority is None:
             self.reset_episode(evaluation=True)
             self._active = False
@@ -702,8 +866,11 @@ class NativePPORunner:
         if file_sha256(state_path) != manifest.get("state_hash"):
             raise PPOCheckpointError("runner checkpoint state hash mismatch")
         expected = self._checkpoint_static_payload()
-        if any(manifest.get(name) != value for name, value in expected.items()):
-            raise PPOCheckpointError("runner checkpoint/runtime authority mismatch")
+        from wargame_native_engine.training.checkpoint_authority import require_checkpoint_authority
+        try:
+            require_checkpoint_authority(manifest, expected)
+        except ValueError as exc:
+            raise PPOCheckpointError(str(exc)) from exc
         semantic = dict(manifest)
         claimed = semantic.pop("semantic_hash", None)
         if claimed != canonical_hash(semantic):
@@ -780,12 +947,24 @@ class NativePPORunner:
             ),
             "shaping": None if shaping is None else shaping.to_dict(),
             "discount": self.env.discount_config.to_dict(),
+            "task": (
+                None
+                if self.env.objective_task_config is None
+                else self.env.objective_task_config.authority_record()
+            ),
         }
 
     def _process(self, binding: TrainingDecisionBinding) -> ProcessedLearnerObservation:
         result = self.preprocessor.preprocess(binding.observation)
         if result.decision_window_index != binding.action_space.decision_window_index:
             raise PPORunnerError("preprocessed observation/catalog window mismatch")
+        candidate_mask = getattr(binding.observation, "action_candidate_mask", None)
+        candidate_catalog_hash = getattr(binding.observation, "catalog_hash", None)
+        if candidate_mask is not None and (
+            tuple(candidate_mask) != tuple(binding.action_space.mask)
+            or candidate_catalog_hash != binding.action_space.catalog_hash
+        ):
+            raise PPORunnerError("v2 candidate rows/catalog mask mismatch")
         return result
 
     def _finish_episode(self, step) -> PPOEpisodeMetrics:
@@ -804,6 +983,13 @@ class NativePPORunner:
         verification = self.env.verify_reward_rederivation()
         if not verification.matches:
             raise PPORunnerError("episode reward re-derivation mismatch")
+        task_config = self.env.objective_task_config
+        task_verification = (
+            None if task_config is None
+            else self.env.verify_task_reward_rederivation()
+        )
+        task_records = self.env.task_reward_records
+        last_task = None if not task_records else task_records[-1]
         result = PPOEpisodeMetrics(
             schema_version=PPO_EPISODE_METRICS_SCHEMA_VERSION,
             episode_id=self._episode_id, run_namespace=self.run_namespace,
@@ -821,6 +1007,26 @@ class NativePPORunner:
             action_ids=tuple(self._episode_actions),
             reward_record_hashes=tuple(self._episode_rewards),
             reward_rederivation_verified=True,
+            task_return=self._episode_task,
+            training_return=(
+                self._episode_task
+                if task_config is not None
+                else self._episode_base + self._episode_shaping
+            ),
+            task_success=(False if last_task is None else last_task.task_success),
+            task_termination_reason=(
+                None if last_task is None else last_task.termination_reason
+            ),
+            engine_terminated=(
+                None if last_task is None else last_task.engine_terminated
+            ),
+            engine_winner=(None if last_task is None else last_task.engine_winner),
+            task_identity=(
+                None if task_config is None else task_config.identity_record()
+            ),
+            task_reward_rederivation_verified=(
+                None if task_verification is None else task_verification.matches
+            ),
         )
         if self.artifact_root is not None:
             episode_root = self.artifact_root / "episodes" / f"{self.episode_index:06d}"
@@ -829,6 +1035,11 @@ class NativePPORunner:
                 episode_root / "joint_reward_records.native.jsonl",
                 self.env.reward_records,
             )
+            if task_config is not None:
+                write_task_records_jsonl(
+                    episode_root / "objective_task_records.native.jsonl",
+                    task_records,
+                )
             _atomic_json(episode_root / "ppo_episode_metrics.json", result.to_dict())
             self._ensure_run_manifest(publication.replay_path)
         self.completed_episodes += 1
@@ -854,6 +1065,7 @@ class NativePPORunner:
             "ppo": self.core.config.to_dict(),
             "runtime_authority": self.runtime_authority,
             "reward_identity": self.reward_identity.to_dict(),
+            "reward_authority": self._reward_authority(),
             "seed_identity": self.core.seed.identity.to_dict(),
             "artifact_policy": {
                 "world_payload_in_learner_metrics": False,

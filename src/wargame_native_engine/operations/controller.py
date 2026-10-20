@@ -15,6 +15,7 @@ from wargame_native_engine.gateway.models import (
     DecisionWindowView,
 )
 from wargame_native_engine.operations.commands import (
+    _FrozenActionRecords,
     UnitCommandMenu,
     unit_command_menu,
 )
@@ -85,7 +86,11 @@ class SideController:
         return deepcopy(view.decision_semantic), deepcopy(view.action_catalog)
 
     def get_unit_commands(
-        self, unit_id: int, *, view: ControllerView | None = None,
+        self,
+        unit_id: int,
+        *,
+        view: ControllerView | None = None,
+        action_records: _FrozenActionRecords | None = None,
     ) -> UnitCommandMenu:
         value = self.observe() if view is None else view
         staged = self._staged.get(unit_id)
@@ -93,6 +98,7 @@ class SideController:
             value,
             unit_id,
             staged_action_id=None if staged is None else staged.action_id,
+            action_records=action_records,
         )
 
     def plan_move(

@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Sequence
 import hashlib
 import json
 from pathlib import Path
 from pathlib import PurePosixPath
 import re
-from typing import Any, Mapping
+from typing import Any, Iterator, Mapping
 from zipfile import BadZipFile, ZipFile, ZipInfo
 
+from wargame_native_engine.compat.source_frame.contract import (
+    source_contract_from_manifest, validate_frame_contract,
+)
 from wargame_native_engine.compat.source_frame.importer import SourceFrameImporter
 from wargame_native_engine.compat.source_frame.models import SourceFrame
 from wargame_native_engine.io.serialization import canonical_hash, file_sha256, json_clone
@@ -23,7 +27,7 @@ MAX_ARCHIVE_TOTAL_BYTES = 8 * 1024 * 1024 * 1024
 @dataclass(frozen=True, slots=True)
 class SourceReplayArchive:
     source_hash: str
-    frames: tuple[SourceFrame, ...]
+    frames: Sequence[SourceFrame]
     frame_names: tuple[str, ...]
     steps: tuple[Mapping[str, Any], ...]
     manifest: Mapping[str, Any]
@@ -99,6 +103,7 @@ class SourceReplayArchiveImporter:
             manifest: Mapping[str, Any],
             frames: list[tuple[int, str, SourceFrame, str]],
             steps: list[Mapping[str, Any]], steps_payload: bytes) -> None:
+        source_contract_from_manifest(manifest)
         if manifest.get("replay_format") != "native-source-frame-replay/1.0":
             raise ValueError("unsupported Native source replay format")
         if manifest.get("perspective") != "GREEN":
@@ -107,6 +112,8 @@ class SourceReplayArchiveImporter:
         expected_names = [f"{index}.json" for index in range(len(frames))]
         if names != expected_names:
             raise ValueError("Native replay numbered frames are not continuous")
+        for _, _, frame, _ in frames:
+            validate_frame_contract(frame.raw, source_contract_from_manifest(manifest))
         hashes = [item[3] for item in frames]
         if int(manifest.get("frame_count", -1)) != len(frames):
             raise ValueError("Native replay frame_count mismatch")
@@ -126,6 +133,191 @@ class SourceReplayArchiveImporter:
             raise ValueError("Native replay deterministic manifest hash mismatch")
 
 
+class SourceReplayArchiveReader:
+    """Metadata and one-at-a-time frame access for resource-bounded consumers.
+
+    ``SourceReplayArchiveImporter.import_path`` intentionally remains the
+    compatible full-materialization API.  This reader is the production path
+    for replay verification, analysis and viewers that do not need all parsed
+    frames to be resident together.
+    """
+
+    def __init__(
+        self,
+        source: str | Path,
+        *,
+        frame_importer: SourceFrameImporter | None = None,
+    ) -> None:
+        self.path = Path(source)
+        self.frame_importer = frame_importer or SourceFrameImporter()
+        if self.path.is_dir():
+            files = tuple(item for item in self.path.iterdir() if item.is_file())
+            _validate_member_sizes(
+                (item.name, item.stat().st_size) for item in files
+            )
+            self._member_names = tuple(item.name for item in files)
+            self._zip = False
+            self.source_hash = _directory_hash(self.path)
+        elif self.path.is_file() and self.path.suffix.lower() == ".zip":
+            self._zip = True
+            self.source_hash = file_sha256(self.path)
+            try:
+                with ZipFile(self.path) as archive:
+                    files = _validated_zip_files(archive)
+                    self._member_names = tuple(info.filename for info in files)
+            except BadZipFile:
+                raise
+        else:
+            raise ValueError("source replay must be a directory or .zip")
+
+        numbered = [
+            (int(match.group(1)), name)
+            for name in self._member_names
+            if (match := _NUMBERED_FRAME.fullmatch(name))
+        ]
+        numbered.sort(key=lambda item: item[0])
+        if not numbered:
+            raise ValueError("source replay has no numbered JSON frames")
+        self._frame_numbers = tuple(number for number, _ in numbered)
+        self.frame_names = tuple(name for _, name in numbered)
+        self.steps_payload = self._read_member("steps.jsonl", required=False)
+        self.steps = tuple(json_clone(_jsonl(self.steps_payload)))
+        manifest_present = "replay_manifest.native.jsonl" in self._member_names
+        manifest_values = _jsonl(self._read_member(
+            "replay_manifest.native.jsonl", required=False
+        ))
+        if manifest_present and len(manifest_values) != 1:
+            raise ValueError(
+                "Native replay manifest must contain exactly one JSONL record"
+            )
+        self.manifest = json_clone(manifest_values[0] if manifest_values else {})
+        if self.manifest:
+            self._validate_native_metadata()
+
+    @property
+    def frame_count(self) -> int:
+        return len(self.frame_names)
+
+    def iter_frame_payloads(self) -> Iterator[tuple[int, str, bytes]]:
+        if self._zip:
+            with ZipFile(self.path) as archive:
+                for numeric, name in zip(
+                    self._frame_numbers, self.frame_names, strict=True
+                ):
+                    yield numeric, name, _read_zip_member(archive, name)
+            return
+        for numeric, name in zip(
+            self._frame_numbers, self.frame_names, strict=True
+        ):
+            yield numeric, name, (self.path / name).read_bytes()
+
+    def iter_frames(self) -> Iterator[tuple[int, str, SourceFrame]]:
+        expected_hashes = self.manifest.get("frame_hashes")
+        for numeric, name, payload in self.iter_frame_payloads():
+            source_hash = hashlib.sha256(payload).hexdigest()
+            if isinstance(expected_hashes, list) and (
+                numeric >= len(expected_hashes)
+                or expected_hashes[numeric] != source_hash
+            ):
+                raise ValueError("Native replay numbered frame hash mismatch")
+            value = json.loads(payload.decode("utf-8"))
+            if not isinstance(value, Mapping):
+                raise ValueError(f"frame {name} root must be an object")
+            if self.manifest:
+                validate_frame_contract(value, source_contract_from_manifest(self.manifest))
+            yield numeric, name, self.frame_importer.from_dict(
+                value, source_hash=source_hash
+            )
+
+    def frame_at(self, frame_index: int) -> SourceFrame:
+        if type(frame_index) is not int or not 0 <= frame_index < self.frame_count:
+            raise IndexError("source replay frame index out of range")
+        name = self.frame_names[frame_index]
+        payload = self._read_member(name, required=True)
+        source_hash = hashlib.sha256(payload).hexdigest()
+        expected_hashes = self.manifest.get("frame_hashes")
+        if (
+            isinstance(expected_hashes, list)
+            and expected_hashes[frame_index] != source_hash
+        ):
+            raise ValueError("Native replay numbered frame hash mismatch")
+        value = json.loads(payload.decode("utf-8"))
+        if not isinstance(value, Mapping):
+            raise ValueError(f"frame {name} root must be an object")
+        if self.manifest:
+            validate_frame_contract(value, source_contract_from_manifest(self.manifest))
+        return self.frame_importer.from_dict(value, source_hash=source_hash)
+
+    def lazy_frames(self) -> "LazySourceFrameSequence":
+        return LazySourceFrameSequence(self)
+
+    def _read_member(self, name: str, *, required: bool) -> bytes:
+        if name not in self._member_names:
+            if required:
+                raise ValueError(f"source replay member is missing: {name}")
+            return b""
+        if self._zip:
+            with ZipFile(self.path) as archive:
+                return _read_zip_member(archive, name)
+        return (self.path / name).read_bytes()
+
+    def _validate_native_metadata(self) -> None:
+        manifest = self.manifest
+        source_contract_from_manifest(manifest)
+        if manifest.get("replay_format") != "native-source-frame-replay/1.0":
+            raise ValueError("unsupported Native source replay format")
+        if manifest.get("perspective") != "GREEN":
+            raise ValueError("Native production replay must contain GREEN frames")
+        if self.frame_names != tuple(
+            f"{index}.json" for index in range(self.frame_count)
+        ):
+            raise ValueError("Native replay numbered frames are not continuous")
+        if int(manifest.get("frame_count", -1)) != self.frame_count:
+            raise ValueError("Native replay frame_count mismatch")
+        if int(manifest.get("step_count", -1)) != len(self.steps):
+            raise ValueError("Native replay step_count mismatch")
+        if self.frame_count != len(self.steps) + 1:
+            raise ValueError(
+                "Native replay must have exactly one frame per step plus zero"
+            )
+        hashes = manifest.get("frame_hashes")
+        if not isinstance(hashes, list) or len(hashes) != self.frame_count:
+            raise ValueError("Native replay numbered frame hash mismatch")
+        if manifest.get("frames_merkle_root") != canonical_hash(hashes):
+            raise ValueError("Native replay frame collection hash mismatch")
+        if manifest.get("steps_sha256") != hashlib.sha256(
+            self.steps_payload
+        ).hexdigest():
+            raise ValueError("Native replay steps hash mismatch")
+        deterministic = {
+            key: json_clone(value) for key, value in manifest.items()
+            if key not in {"started_at", "deterministic_content_hash"}
+        }
+        if manifest.get("deterministic_content_hash") != canonical_hash(deterministic):
+            raise ValueError("Native replay deterministic manifest hash mismatch")
+
+
+class LazySourceFrameSequence(Sequence[SourceFrame]):
+    """Random-access frame sequence that never caches parsed frame payloads."""
+
+    def __init__(self, reader: SourceReplayArchiveReader) -> None:
+        self.reader = reader
+
+    def __len__(self) -> int:
+        return self.reader.frame_count
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return tuple(
+                self.reader.frame_at(value)
+                for value in range(*index.indices(len(self)))
+            )
+        if type(index) is not int:
+            raise TypeError("frame index must be an int or slice")
+        normalized = index if index >= 0 else len(self) + index
+        return self.reader.frame_at(normalized)
+
+
 def _jsonl(payload: bytes) -> list[Mapping[str, Any]]:
     if not payload:
         return []
@@ -141,6 +333,14 @@ def _jsonl(payload: bytes) -> list[Mapping[str, Any]]:
 
 
 def _read_zip_members(archive: ZipFile) -> dict[str, bytes]:
+    files = _validated_zip_files(archive)
+    values: dict[str, bytes] = {}
+    for info in files:
+        values[info.filename] = _read_zip_member(archive, info.filename)
+    return values
+
+
+def _validated_zip_files(archive: ZipFile) -> list[ZipInfo]:
     infos = archive.infolist()
     if len(infos) > MAX_ARCHIVE_MEMBERS:
         raise ValueError(
@@ -167,14 +367,15 @@ def _read_zip_members(archive: ZipFile) -> dict[str, bytes]:
         file_paths.add(normalized)
         files.append(info)
     _validate_member_sizes((info.filename, info.file_size) for info in files)
-    values: dict[str, bytes] = {}
-    for info in files:
-        with archive.open(info) as stream:
-            payload = stream.read(MAX_ARCHIVE_MEMBER_BYTES + 1)
-        if len(payload) > MAX_ARCHIVE_MEMBER_BYTES:
-            raise ValueError(f"ZIP member exceeds size limit: {info.filename}")
-        values[info.filename] = payload
-    return values
+    return files
+
+
+def _read_zip_member(archive: ZipFile, name: str) -> bytes:
+    with archive.open(name) as stream:
+        payload = stream.read(MAX_ARCHIVE_MEMBER_BYTES + 1)
+    if len(payload) > MAX_ARCHIVE_MEMBER_BYTES:
+        raise ValueError(f"ZIP member exceeds size limit: {name}")
+    return payload
 
 
 def _validate_zip_member_name(name: str) -> None:
@@ -211,7 +412,9 @@ def _directory_hash(path: Path) -> str:
     for item in sorted(value for value in path.iterdir() if value.is_file()):
         digest.update(item.name.encode("utf-8"))
         digest.update(b"\0")
-        digest.update(item.read_bytes())
+        with item.open("rb") as stream:
+            while chunk := stream.read(1024 * 1024):
+                digest.update(chunk)
         digest.update(b"\0")
     return digest.hexdigest()
 

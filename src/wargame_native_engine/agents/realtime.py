@@ -13,10 +13,17 @@ from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from enum import Enum
+import sys
+import tempfile
 from threading import Condition, Event, RLock, Thread, current_thread, get_ident
 from time import monotonic, monotonic_ns, sleep
+import traceback
 from typing import Any, Protocol
 
+from wargame_native_engine._framed_history import (
+    append_private_record,
+    read_private_record,
+)
 from wargame_native_engine.agents.protocol import AgentResetContext
 from wargame_native_engine.agents.seat import (
     AgentDecisionContext,
@@ -29,6 +36,12 @@ from wargame_native_engine.core.tactical_overlay import UnitTacticalOverlay
 from wargame_native_engine.gateway.models import ControllerView
 from wargame_native_engine.io.serialization import canonical_hash, json_clone
 from wargame_native_engine.operations import ProductOperationService
+from wargame_native_engine.operations.execution_lifecycle import (
+    OperationExecutionAvailability,
+    OperationExecutionPage,
+    OperationExecutionRecord,
+    OperationExecutionTracker,
+)
 from wargame_native_engine.operations.facade import MatchHandle
 from wargame_native_engine.projection.decision_capability import (
     ActionCatalogSnapshot,
@@ -274,6 +287,7 @@ class SeatCommandReceipt:
     target_tick: int | None
     status: CommandStatus
     error_code: str | None
+    execution_handles: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.command_sequence is not None:
@@ -284,6 +298,7 @@ class SeatCommandReceipt:
             _nonnegative_int(self.target_tick, "target_tick")
         if not isinstance(self.status, CommandStatus):
             object.__setattr__(self, "status", CommandStatus(self.status))
+        object.__setattr__(self, "execution_handles", tuple(self.execution_handles))
 
 
 @dataclass(frozen=True, slots=True)
@@ -364,6 +379,85 @@ class RealtimeTickResult:
         value.pop("overrun_ns")
         return value
 
+    def lightweight_record(self) -> "RealtimeTickRecord":
+        """Return the publication facts without retaining either side view."""
+
+        return RealtimeTickRecord(
+            tick_index=self.tick_index,
+            frame_index=self.frame_index,
+            sim_time_start_ms=self.sim_time_start_ms,
+            sim_time_end_ms=self.sim_time_end_ms,
+            red_command_sequences=self.red_command_sequences,
+            blue_command_sequences=self.blue_command_sequences,
+            red_observation_version=self.red.observation_version,
+            blue_observation_version=self.blue.observation_version,
+            terminated=self.terminated,
+            truncated=self.truncated,
+            winner=self.winner,
+            outcome=self.outcome,
+            processing_duration_ns=self.processing_duration_ns,
+            overrun_ns=self.overrun_ns,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class RealtimeTickRecord:
+    """Lightweight retained evidence for one completed realtime tick."""
+
+    tick_index: int
+    frame_index: int
+    sim_time_start_ms: int
+    sim_time_end_ms: int
+    red_command_sequences: tuple[int, ...]
+    blue_command_sequences: tuple[int, ...]
+    red_observation_version: int
+    blue_observation_version: int
+    terminated: bool
+    truncated: bool
+    winner: str | None
+    outcome: str | None
+    processing_duration_ns: int
+    overrun_ns: int
+
+    def __post_init__(self) -> None:
+        for name in (
+            "tick_index", "frame_index", "sim_time_start_ms", "sim_time_end_ms",
+            "red_observation_version", "blue_observation_version",
+            "processing_duration_ns", "overrun_ns",
+        ):
+            _nonnegative_int(getattr(self, name), name)
+        _exact_bool(self.terminated, "terminated")
+        _exact_bool(self.truncated, "truncated")
+        for name in ("red_command_sequences", "blue_command_sequences"):
+            object.__setattr__(self, name, tuple(
+                _nonnegative_int(value, name) for value in getattr(self, name)
+            ))
+
+    def to_record(self) -> dict[str, object]:
+        return {
+            "record_schema": "native-realtime-tick/1.0",
+            "tick_index": self.tick_index,
+            "frame_index": self.frame_index,
+            "sim_time_start_ms": self.sim_time_start_ms,
+            "sim_time_end_ms": self.sim_time_end_ms,
+            "red_command_sequences": list(self.red_command_sequences),
+            "blue_command_sequences": list(self.blue_command_sequences),
+            "red_observation_version": self.red_observation_version,
+            "blue_observation_version": self.blue_observation_version,
+            "terminated": self.terminated,
+            "truncated": self.truncated,
+            "winner": self.winner,
+            "outcome": self.outcome,
+            "processing_duration_ns": self.processing_duration_ns,
+            "overrun_ns": self.overrun_ns,
+        }
+
+    def authoritative_record(self) -> dict[str, object]:
+        value = self.to_record()
+        value.pop("processing_duration_ns")
+        value.pop("overrun_ns")
+        return value
+
 
 class RealtimeAgentSession:
     """One fixed-tick session with independently admitted seat commands."""
@@ -412,8 +506,15 @@ class RealtimeAgentSession:
         self._next_observation_version = 0
         self._events: dict[int, SeatCommandEvent] = {}
         self._pending: dict[tuple[int, str], int] = {}
-        self._ticks: list[RealtimeTickResult] = []
+        self._ticks: list[RealtimeTickRecord] = []
+        self._recent_ticks: deque[RealtimeTickResult] = deque(
+            maxlen=self._history_size
+        )
+        self._tick_history = None
+        self._tick_history_offsets: list[tuple[int, int]] = []
         self._next_command_sequence = 0
+        self._execution_tracker: OperationExecutionTracker | None = None
+        self._command_execution_handles: dict[int, tuple[str, ...]] = {}
         self._current_tick = 0
         self._episode_sequence = 0
         self._episode_id: str | None = None
@@ -428,6 +529,7 @@ class RealtimeAgentSession:
         self._published = False
         self._closed = False
         self._background_error: BaseException | None = None
+        self._background_failure_diagnostic: str | None = None
         self._background_tick_limit: int | None = None
         self._stop = Event()
         self._thread: Thread | None = None
@@ -444,13 +546,21 @@ class RealtimeAgentSession:
         with self._lock:
             self._require_open()
             old = self._match
+            old_services = tuple(self._services.values()) + tuple(
+                self._advisory_services.values()
+            )
             self._match = None
+            self._services.clear()
+            self._advisory_services.clear()
+        _close_product_services(old_services)
         if old is not None:
             old.close()
         self._episode_sequence += 1
         match = self._match_factory(seed, self._episode_sequence)
         if not isinstance(match, MatchHandle):
             raise TypeError("match_factory must return MatchHandle")
+        services: dict[str, ProductOperationService] = {}
+        advisory_services: dict[str, ProductOperationService] = {}
         try:
             self._validate_match(match)
             episode_id = realtime_episode_id(
@@ -506,7 +616,11 @@ class RealtimeAgentSession:
                 self._events.clear()
                 self._pending.clear()
                 self._ticks.clear()
+                self._recent_ticks.clear()
+                self._reset_tick_history_locked()
                 self._next_command_sequence = 0
+                self._execution_tracker = OperationExecutionTracker(episode_id)
+                self._command_execution_handles.clear()
                 self._current_tick = 0
                 self._episode_id = episode_id
                 self._seed = seed
@@ -521,6 +635,7 @@ class RealtimeAgentSession:
                 self._lifecycle = RealtimeLifecycleState.ACCEPTING
                 self._stop_reason = None
                 self._background_error = None
+                self._background_failure_diagnostic = None
                 self._background_tick_limit = None
                 self._catch_up_yield_count = 0
                 self._stop.clear()
@@ -545,6 +660,9 @@ class RealtimeAgentSession:
                     self._latest.clear()
                     self._controller_views.clear()
                     self._tactical_overlay_cache.clear()
+            _close_product_services(
+                tuple(services.values()) + tuple(advisory_services.values())
+            )
             match.close()
             raise
 
@@ -665,14 +783,16 @@ class RealtimeAgentSession:
                 old, status=CommandStatus.SUPERSEDED,
                 error_code="superseded_by_later_seat_decision",
             )
+            self._sync_execution_command_locked(old_sequence)
         event = SeatCommandEvent(
             self._episode(), sequence, side, version, decision,
             self._current_tick, target, CommandStatus.PENDING, now,
         )
         self._events[sequence] = event
         self._pending[(target, side)] = sequence
+        handles = self._track_command_locked(event)
         return SeatCommandReceipt(
-            sequence, side, True, target, CommandStatus.PENDING, None,
+            sequence, side, True, target, CommandStatus.PENDING, None, handles,
         )
 
     def submit_recorded(
@@ -734,6 +854,7 @@ class RealtimeAgentSession:
                     status=CommandStatus.SUPERSEDED,
                     error_code="superseded_by_later_seat_decision",
                 )
+                self._sync_execution_command_locked(old_sequence)
             self._events[sequence] = SeatCommandEvent(
                 self._episode(),
                 sequence,
@@ -746,8 +867,10 @@ class RealtimeAgentSession:
                 received,
             )
             self._pending[(target, side)] = sequence
+            handles = self._track_command_locked(self._events[sequence])
             return SeatCommandReceipt(
                 sequence, side, True, target, CommandStatus.PENDING, None,
+                handles,
             )
 
     def advance_tick(self) -> RealtimeTickResult:
@@ -756,9 +879,12 @@ class RealtimeAgentSession:
                 "realtime_manual_advance_forbidden_while_background_active",
                 "background sessions are advanced only by their realtime loop",
             )
-        return self._advance_tick(authority="manual")
+        result = self._advance_tick(authority="manual")
+        if result is None:  # pragma: no cover - background-only stop handoff
+            raise AssertionError("manual tick unexpectedly skipped")
+        return result
 
-    def _advance_tick_from_background(self) -> RealtimeTickResult:
+    def _advance_tick_from_background(self) -> RealtimeTickResult | None:
         if self.execution_mode is not RealtimeExecutionMode.BACKGROUND:
             raise RealtimeAgentSessionError(
                 "realtime_background_advance_forbidden_in_manual_mode",
@@ -771,9 +897,18 @@ class RealtimeAgentSession:
             )
         return self._advance_tick(authority="background")
 
-    def _advance_tick(self, *, authority: str) -> RealtimeTickResult:
+    def _advance_tick(self, *, authority: str) -> RealtimeTickResult | None:
         frozen: dict[str, int | None] = {"red": None, "blue": None}
         with self._lock:
+            # A stop may linearize after the loop's ACCEPTING check but before
+            # this lock is acquired.  That handoff is a normal stop, not a
+            # background engine failure, and must not start one more tick.
+            if (
+                authority == "background"
+                and self._lifecycle is RealtimeLifecycleState.STOPPING
+                and self._stop.is_set()
+            ):
+                return None
             self._require_accepting()
             if self._processing:
                 raise RealtimeAgentSessionError(
@@ -806,6 +941,7 @@ class RealtimeAgentSession:
         applied: dict[str, int] = {}
         try:
             previews = {}
+            correlations = {}
             decisions = {}
             for side in ("red", "blue"):
                 sequence = frozen[side]
@@ -822,6 +958,11 @@ class RealtimeAgentSession:
                             f"{sequence if sequence is not None else 'empty'}"
                         ),
                     )
+                    correlations[side] = (
+                        self._services[side]._decision_action_correlations(  # noqa: SLF001
+                            previews[side].preview_token
+                        )
+                    )
                 except CommandGatewayError as exc:
                     if sequence is None:
                         raise
@@ -834,6 +975,15 @@ class RealtimeAgentSession:
                             f"rejected-empty:{sequence}"
                         ),
                     )
+                    correlations[side] = ()
+            with self._lock:
+                tracker = self._require_execution_tracker_locked()
+                for side, sequence in frozen.items():
+                    if sequence is not None and side not in rejected:
+                        tracker.bind_plan(
+                            self._command_execution_handles.get(sequence, ()),
+                            correlations[side],
+                        )
             executions = {}
             with self._lock:
                 self._processing_phase = "game_session_step"
@@ -891,16 +1041,39 @@ class RealtimeAgentSession:
                         status=CommandStatus.REJECTED_AT_APPLY,
                         error_code=code,
                     )
+                    self._sync_execution_command_locked(sequence)
                 for side, sequence in applied.items():
                     self._events[sequence] = replace(
                         self._events[sequence],
                         status=CommandStatus.APPLIED,
                         applied_frame_index=advance.last_frame_index,
                     )
+                    self._sync_execution_command_locked(sequence)
+                tracker = self._require_execution_tracker_locked()
+                for side in ("red", "blue"):
+                    fact_batch = match.gateway.manager._operation_execution_facts(  # noqa: SLF001
+                        match.session_id,
+                        side,
+                        first_frame_index=advance.first_frame_index,
+                        last_frame_index=advance.last_frame_index,
+                    )
+                    for facts in fact_batch.get("frames", ()):
+                        tracker.consume(side, facts)
+                self._prune_command_execution_handles_locked()
                 self._current_tick += 1
                 descriptor = match.status
                 self._ended = descriptor.terminal
                 self._issue_views_locked()
+                if self._ended:
+                    tracker.end_active(
+                        frame_index=advance.last_frame_index,
+                        sim_time_ms=advance.sim_time_after_ms,
+                        reason_code=(
+                            "SESSION_TERMINATED_WITHOUT_TERMINAL_EXECUTION_FACT"
+                            if descriptor.terminated
+                            else "SESSION_TRUNCATED_WITHOUT_TERMINAL_EXECUTION_FACT"
+                        ),
+                    )
                 # _issue_views_locked captured the same post-advance frozen
                 # frame.  Reuse its RED projection for terminal presentation
                 # instead of asking the Gateway to clone it once more.
@@ -923,7 +1096,12 @@ class RealtimeAgentSession:
                     max(0, end_ns - start_ns),
                     max(0, start_ns - deadline_ns),
                 )
-                self._ticks.append(result)
+                self._store_full_tick_locked(result)
+                # World/RNG and authoritative facts have already committed.
+                # Commit compatibility history before its lightweight index;
+                # failure enters the existing reset-required lifecycle.
+                self._ticks.append(result.lightweight_record())
+                self._recent_ticks.append(result)
                 if self._ended:
                     reason = (
                         RealtimeCancellationReason.TERMINAL
@@ -932,8 +1110,11 @@ class RealtimeAgentSession:
                     )
                     self._begin_stopping_locked(reason)
                 return deepcopy(result)
-        except BaseException:
+        except BaseException as exc:
+            diagnostic = None
             with self._lock:
+                if authority == "background":
+                    diagnostic = self._capture_background_failure_locked(exc)
                 self._failed = True
                 self._lifecycle = RealtimeLifecycleState.FAILED
                 self._stop_reason = RealtimeCancellationReason.FAILURE
@@ -942,6 +1123,8 @@ class RealtimeAgentSession:
                     RealtimeCancellationReason.FAILURE,
                 )
                 self._cancel_pending_locked(RealtimeCancellationReason.FAILURE)
+            if diagnostic is not None:
+                _emit_background_failure(diagnostic)
             raise
         finally:
             with self._lock:
@@ -1286,7 +1469,8 @@ class RealtimeAgentSession:
                     self._stop.wait(remaining / 1_000_000_000)
                     catch_up_count = 0
                     continue
-                self._advance_tick_from_background()
+                if self._advance_tick_from_background() is None:
+                    return
                 catch_up_count += 1
                 if catch_up_count >= self.max_catch_up_ticks_per_batch:
                     with self._lock:
@@ -1294,12 +1478,15 @@ class RealtimeAgentSession:
                     sleep(0)
                     catch_up_count = 0
         except BaseException as exc:
+            diagnostic = None
             with self._lock:
-                self._background_error = exc
+                diagnostic = self._capture_background_failure_locked(exc)
                 self._failed = True
                 self._lifecycle = RealtimeLifecycleState.FAILED
                 self._stop_reason = RealtimeCancellationReason.FAILURE
                 self._cancel_pending_locked(RealtimeCancellationReason.FAILURE)
+            if diagnostic is not None:
+                _emit_background_failure(diagnostic)
             self._stop.set()
         finally:
             with self._condition:
@@ -1318,6 +1505,7 @@ class RealtimeAgentSession:
             _exact_bool(truncated, "truncated")
         with self._lock:
             self._require_reset()
+            self._raise_if_failed_publication_locked()
             match = self._require_match()
             if cancellation_reason is None:
                 if match.status.terminated:
@@ -1334,6 +1522,9 @@ class RealtimeAgentSession:
         )
         with self._lock:
             self._require_reset()
+            # A background failure can occur after the entry check while
+            # stop_realtime() is waiting for the in-flight tick to finish.
+            self._raise_if_failed_publication_locked()
             if self._processing:
                 raise RealtimeAgentSessionError(
                     "realtime_tick_processing", "cannot publish during a tick"
@@ -1364,7 +1555,7 @@ class RealtimeAgentSession:
             events = deepcopy(
                 tuple(self._events[key] for key in sorted(self._events))
             )
-            ticks = deepcopy(tuple(self._ticks))
+            ticks = tuple(self._ticks)
         from wargame_native_engine.agents.realtime_publication import (
             publish_realtime_episode,
         )
@@ -1398,6 +1589,60 @@ class RealtimeAgentSession:
             self._condition.notify_all()
         return publication
 
+    def execution_status(
+        self,
+        binding: RealtimeSeatBinding,
+        execution_handle: str,
+    ) -> OperationExecutionRecord:
+        """Read one detached side-bound execution record without advancing."""
+
+        with self._lock:
+            authoritative = self._resolve_binding_locked(binding)
+            tracker = self._require_execution_tracker_locked()
+            return tracker.get(authoritative.seat, execution_handle)
+
+    def current_executions(
+        self,
+        binding: RealtimeSeatBinding,
+        *,
+        limit: int = 100,
+    ) -> tuple[OperationExecutionRecord, ...]:
+        with self._lock:
+            authoritative = self._resolve_binding_locked(binding)
+            tracker = self._require_execution_tracker_locked()
+            return tracker.current(authoritative.seat, limit=limit)
+
+    def execution_changes(
+        self,
+        binding: RealtimeSeatBinding,
+        *,
+        cursor: str | None = None,
+        limit: int = 100,
+    ) -> OperationExecutionPage:
+        with self._lock:
+            authoritative = self._resolve_binding_locked(binding)
+            tracker = self._require_execution_tracker_locked()
+            return tracker.changes(
+                authoritative.seat, cursor=cursor, limit=limit,
+            )
+
+    @property
+    def execution_tracking_available(self) -> bool:
+        """Compatibility aggregate; prefer side-bound tracking status."""
+
+        with self._lock:
+            return self._require_execution_tracker_locked().available
+
+    def execution_tracking_status(
+        self,
+        binding: RealtimeSeatBinding,
+    ) -> OperationExecutionAvailability:
+        with self._lock:
+            authoritative = self._resolve_binding_locked(binding)
+            return self._require_execution_tracker_locked().tracking_status(
+                authoritative.seat
+            )
+
     @property
     def command_events(self) -> tuple[SeatCommandEvent, ...]:
         with self._lock:
@@ -1405,8 +1650,77 @@ class RealtimeAgentSession:
 
     @property
     def tick_results(self) -> tuple[RealtimeTickResult, ...]:
+        """Materialize the compatible full-view history on explicit request.
+
+        Production publication and runners use the lightweight ledger and
+        bounded incremental reads instead.  Calling this property is therefore
+        intentionally proportional to the complete episode history.
+        """
+
         with self._lock:
-            return deepcopy(tuple(self._ticks))
+            return tuple(
+                self._load_full_tick_locked(index)
+                for index in range(len(self._ticks))
+            )
+
+    @property
+    def tick_records(self) -> tuple[RealtimeTickRecord, ...]:
+        with self._lock:
+            return tuple(self._ticks)
+
+    @property
+    def tick_count(self) -> int:
+        with self._lock:
+            return len(self._ticks)
+
+    @property
+    def retained_full_tick_count(self) -> int:
+        with self._lock:
+            return len(self._recent_ticks)
+
+    def tick_results_since(self, start: int) -> tuple[RealtimeTickResult, ...]:
+        """Return detached results from *start* without loading earlier ticks."""
+
+        _nonnegative_int(start, "start")
+        with self._lock:
+            count = len(self._ticks)
+            if start > count:
+                raise IndexError("tick result start is beyond current history")
+            if start == count:
+                return ()
+            recent_start = count - len(self._recent_ticks)
+            if start >= recent_start:
+                offset = start - recent_start
+                return deepcopy(tuple(self._recent_ticks)[offset:])
+            return tuple(
+                self._load_full_tick_locked(index)
+                for index in range(start, count)
+            )
+
+    def _reset_tick_history_locked(self) -> None:
+        if self._tick_history is not None:
+            self._tick_history.close()
+        self._tick_history = tempfile.TemporaryFile(
+            mode="w+b", prefix="wargame-realtime-history."
+        )
+        self._tick_history_offsets.clear()
+
+    def _store_full_tick_locked(self, value: RealtimeTickResult) -> None:
+        if self._tick_history is None:
+            raise RuntimeError("realtime tick history is not initialized")
+        offset = append_private_record(self._tick_history, value)
+        self._tick_history_offsets.append(offset)
+
+    def _load_full_tick_locked(self, index: int) -> RealtimeTickResult:
+        if self._tick_history is None:
+            raise RuntimeError("realtime tick history is unavailable")
+        offset, expected_size = self._tick_history_offsets[index]
+        value = read_private_record(
+            self._tick_history, offset, expected_size
+        )
+        if not isinstance(value, RealtimeTickResult):
+            raise RuntimeError("realtime tick history has an invalid record")
+        return value
 
     @property
     def current_tick(self) -> int:
@@ -1463,12 +1777,31 @@ class RealtimeAgentSession:
                     "realtime_tick_processing", "cannot close during a tick"
                 )
             match = self._match
+            if self._execution_tracker is not None and self._latest:
+                latest = self._latest["red"]
+                self._execution_tracker.end_active(
+                    frame_index=latest.frame_index,
+                    sim_time_ms=latest.sim_time_ms,
+                    reason_code="TRACKING_CLOSED_WITHOUT_TERMINAL_EXECUTION_FACT",
+                )
+            services = tuple(self._services.values()) + tuple(
+                self._advisory_services.values()
+            )
             self._match = None
             self._services.clear()
             self._advisory_services.clear()
+            self._latest.clear()
             self._controller_views.clear()
+            self._tactical_overlay_cache.clear()
+            self._recent_ticks.clear()
+            self._ticks.clear()
+            self._tick_history_offsets.clear()
+            if self._tick_history is not None:
+                self._tick_history.close()
+                self._tick_history = None
             self._closed = True
             self._lifecycle = RealtimeLifecycleState.CLOSED
+        _close_product_services(services)
         if match is not None:
             match.close()
 
@@ -1617,6 +1950,60 @@ class RealtimeAgentSession:
             sequence, side, False, None, CommandStatus.REJECTED_AT_SUBMIT, code,
         )
 
+    def _track_command_locked(
+        self, event: SeatCommandEvent,
+    ) -> tuple[str, ...]:
+        tracker = self._require_execution_tracker_locked()
+        view = self._latest[event.seat]
+        handles = tracker.submit(
+            event.seat,
+            event.decision,
+            decision_window_index=(
+                event.accepted_tick
+                if event.target_tick is None else event.target_tick
+            ),
+            frame_index=view.frame_index,
+            sim_time_ms=view.sim_time_ms,
+            command_status=event.status.value,
+            command_sequence=event.command_sequence,
+        )
+        self._command_execution_handles[event.command_sequence] = handles
+        return handles
+
+    def _sync_execution_command_locked(self, sequence: int) -> None:
+        tracker = self._execution_tracker
+        event = self._events.get(sequence)
+        if tracker is None or event is None:
+            return
+        view = self._latest.get(event.seat)
+        tracker.set_command_status(
+            self._command_execution_handles.get(sequence, ()),
+            event.status.value,
+            reason_code=event.error_code,
+            frame_index=(
+                event.applied_frame_index
+                if event.applied_frame_index is not None
+                else None if view is None else view.frame_index
+            ),
+            sim_time_ms=None if view is None else view.sim_time_ms,
+        )
+        self._prune_command_execution_handles_locked()
+
+    def _prune_command_execution_handles_locked(self) -> None:
+        tracker = self._execution_tracker
+        if tracker is None:
+            return
+        for sequence, handles in tuple(self._command_execution_handles.items()):
+            if not handles or not any(tracker.retains(handle) for handle in handles):
+                self._command_execution_handles.pop(sequence, None)
+
+    def _require_execution_tracker_locked(self) -> OperationExecutionTracker:
+        if self._execution_tracker is None:
+            raise RealtimeAgentSessionError(
+                "realtime_not_reset", "call reset before execution queries",
+            )
+        return self._execution_tracker
+
     def _allocate_sequence_locked(self) -> int:
         value = self._next_command_sequence
         self._next_command_sequence += 1
@@ -1653,6 +2040,7 @@ class RealtimeAgentSession:
                 self._events[sequence] = replace(
                     event, status=status, error_code=code
                 )
+                self._sync_execution_command_locked(sequence)
 
     def _cancel_pending_locked(
         self, reason: RealtimeCancellationReason
@@ -1666,6 +2054,7 @@ class RealtimeAgentSession:
                     status=status,
                     error_code=code,
                 )
+                self._sync_execution_command_locked(sequence)
         self._pending.clear()
 
     def _submission_closed_code_locked(self) -> str:
@@ -1681,6 +2070,54 @@ class RealtimeAgentSession:
         if self._thread is not None and self._thread.is_alive():
             return "realtime_loop"
         return "shutdown"
+
+    def _capture_background_failure_locked(
+        self, exc: BaseException,
+    ) -> str | None:
+        """Save and format only the first background failure.
+
+        This is called before tick cleanup clears ``_processing_phase``.  The
+        diagnostic deliberately contains no state, observations, actions,
+        RNG values, or traceback locals.
+        """
+
+        if self._background_error is not None:
+            return None
+        self._background_error = exc
+        exception_type = f"{type(exc).__module__}.{type(exc).__qualname__}"
+        phase = self._processing_phase or "realtime_loop"
+        header = (
+            "[wargame-realtime-background-failure] "
+            f"exception_type={exception_type} "
+            f"tick={self._current_tick} "
+            f"lifecycle={self._lifecycle.value} "
+            f"phase={phase}\n"
+        )
+        try:
+            original_traceback = "".join(
+                traceback.TracebackException.from_exception(
+                    exc, capture_locals=False
+                ).format()
+            )
+        except BaseException as formatting_error:
+            original_traceback = (
+                f"{exception_type}: traceback formatting failed "
+                f"({type(formatting_error).__name__})\n"
+            )
+        diagnostic = header + original_traceback
+        self._background_failure_diagnostic = diagnostic
+        return diagnostic
+
+    def _raise_if_failed_publication_locked(self) -> None:
+        if self._lifecycle is not RealtimeLifecycleState.FAILED and not self._failed:
+            return
+        error = RealtimeAgentSessionError(
+            "realtime_session_failed_reset_required",
+            "failed session cannot publish; reset is required",
+        )
+        if self._background_error is None:
+            raise error
+        raise error from self._background_error
 
     def _resolve_binding_locked(
         self, binding: RealtimeSeatBinding,
@@ -1759,6 +2196,18 @@ class RealtimeAgentSession:
                 "realtime_session_not_accepting",
                 f"lifecycle={self._lifecycle.value}",
             )
+
+
+def _emit_background_failure(diagnostic: str) -> None:
+    """Best-effort local evidence emission that cannot replace the failure."""
+
+    try:
+        sys.stderr.write(diagnostic)
+        sys.stderr.flush()
+    except BaseException:
+        # stderr itself may be closed or resource constrained.  The original
+        # exception remains available through background_error and chaining.
+        pass
 
 
 def _friendly_actor_ids(observation: Mapping[str, Any]) -> tuple[int, ...]:
@@ -1868,6 +2317,18 @@ def _remaining_timeout(
     if timeout_seconds is None:
         return None
     return max(0.0, timeout_seconds - (monotonic() - started))
+
+
+def _close_product_services(
+    services: Sequence[ProductOperationService],
+) -> None:
+    for service in services:
+        try:
+            service.close()
+        except Exception:
+            # Session/match close still owns authoritative resources.  A
+            # best-effort temporary-history close must not mask that outcome.
+            pass
 
 
 def _side(value: object) -> str:

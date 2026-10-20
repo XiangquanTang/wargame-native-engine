@@ -215,7 +215,7 @@ class OperatorState:
 
     @property
     def moving(self) -> bool:
-        return self.segment_to_hex is not None
+        return self.alive and self.segment_to_hex is not None
 
     @property
     def concealed(self) -> bool:

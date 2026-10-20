@@ -121,16 +121,24 @@ class NativeScenario:
     @property
     def scenario_hash(self) -> str:
         record = self._to_dict_without_map()
-        encoded_items = []
+        digest = hashlib.sha256()
+        digest.update(b"{")
+        first = True
         for key in sorted((*record, "map")):
+            if first:
+                first = False
+            else:
+                digest.update(b",")
+            _update_utf8(digest, canonical_json(key))
+            digest.update(b":")
             encoded_value = (
                 self._canonical_map_json
                 if key == "map"
                 else canonical_json(record[key])
             )
-            encoded_items.append(f"{canonical_json(key)}:{encoded_value}")
-        canonical = "{" + ",".join(encoded_items) + "}"
-        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+            _update_utf8(digest, encoded_value)
+        digest.update(b"}")
+        return digest.hexdigest()
 
     def to_dict(self) -> dict[str, Any]:
         remainder = self._to_dict_without_map()
@@ -178,6 +186,13 @@ class NativeScenario:
                  for side in self.side_order}
         return WorldState(0, self.initial_stage, operators, sides, objectives,
                           False, None, None, False)
+
+
+def _update_utf8(digest: Any, value: str, *, chunk_chars: int = 64 * 1024) -> None:
+    """Hash one canonical fragment without making a full UTF-8 byte copy."""
+
+    for offset in range(0, len(value), chunk_chars):
+        digest.update(value[offset:offset + chunk_chars].encode("utf-8"))
 
 
 def load_scenario(path: str | Path) -> NativeScenario:

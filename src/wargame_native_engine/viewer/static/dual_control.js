@@ -16,6 +16,7 @@ let isPlanning = false;
 let isExecuting = false;
 let isRefreshing = false;
 let lastError = null;
+let lastStateReadError = null;
 let lastNotice = null;
 let lastFrameIndex = null;
 let lastRequestId = null;
@@ -28,6 +29,7 @@ let weaponEnvelopeEnabled = false;
 let overlayRequestEpoch = 0;
 const tacticalOverlayCache = new Map();
 let mapRenderer = null;
+let staticMapContext = null;
 const capabilityUI = window.HumanCapabilityUI;
 const pageNonce = globalThis.crypto?.randomUUID?.()
   || `${Date.now()}-${Math.floor(performance.now())}`;
@@ -39,6 +41,7 @@ const CAPABILITY_LABELS = {
   INDIRECT_FIRE: "间接火力",
   BOARD: "搭载",
   UNLOAD: "下车",
+  CAPTURE: "夺控",
   ENTER_CONCEALMENT: "进入隐蔽",
   STOP_MOVE: "停止",
   WEAPON_UNFOLD: "武器展开",
@@ -234,6 +237,7 @@ function renderMap() {
 function statusText() {
   if (isPlanning) return ["正在规划", "服务端正在逐单位验证并生成预览。"];
   if (isExecuting) return ["正在提交", "正在安全提交本方操作，请勿重复点击。"];
+  if (lastStateReadError) return ["页面状态读取失败", lastStateReadError];
   if (lastError) return ["操作失败", lastError];
   if (lastNotice) return ["命令已入队", lastNotice];
   const state = current?.product_status?.product_state || "WAITING_SELECTION";
@@ -581,6 +585,82 @@ function render({ redrawMap = true } = {}) {
   renderStatus();
 }
 
+function cachedStaticMap(state) {
+  if (!state || !staticMapContext) return null;
+  if (state.session_id !== staticMapContext.sessionId
+      || state.side !== staticMapContext.side) return null;
+  return staticMapContext.map;
+}
+
+function isStaticMap(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasStaticMapIdentity(state) {
+  return typeof state?.session_id === "string" && state.session_id.length > 0
+    && typeof state?.side === "string" && state.side.length > 0;
+}
+
+function clearStaticMapContext() {
+  staticMapContext = null;
+}
+
+function installStaticMap(state) {
+  if (!state?.scene) {
+    throw new Error("页面状态响应缺少场景数据");
+  }
+  const cachedMap = cachedStaticMap(state);
+  if (cachedMap) {
+    state.scene.map = cachedMap;
+    return true;
+  }
+  if (!isStaticMap(state.scene.map)) return false;
+  if (!hasStaticMapIdentity(state)) {
+    throw new Error("页面状态响应缺少会话或阵营标识");
+  }
+
+  try {
+    const renderer = mapRenderer || new window.ReplayMapRenderer.MapRenderer(
+      $("battlefield"),
+      {
+        onUnitSelected: handleUnitSelection,
+        onHexHovered: renderHexInfo,
+        onHexSelected: handleHexSelection,
+      },
+    );
+    mapRenderer = renderer;
+    renderer.setMap(state.scene.map);
+    staticMapContext = {
+      sessionId: state.session_id,
+      side: state.side,
+      map: state.scene.map,
+    };
+    return true;
+  } catch (error) {
+    clearStaticMapContext();
+    throw error;
+  }
+}
+
+async function loadDisplayState() {
+  const includeMap = !cachedStaticMap(current);
+  let next = await requestJson(
+    `/api/product/bootstrap?token=${encodeURIComponent(token)}`
+      + `&include_map=${includeMap ? "1" : "0"}`,
+  );
+  if (installStaticMap(next)) return next;
+
+  if (staticMapContext && !cachedStaticMap(next)) clearStaticMapContext();
+  next = await requestJson(
+    `/api/product/bootstrap?token=${encodeURIComponent(token)}&include_map=1`,
+  );
+  if (!installStaticMap(next)) {
+    clearStaticMapContext();
+    throw new Error("当前会话的静态地图缺失（完整地图重取失败）");
+  }
+  return next;
+}
+
 function clearOperation({ clearSelection = false } = {}) {
   selectedCapability = null;
   selectedWeaponIds.clear();
@@ -618,6 +698,7 @@ async function loadCapabilities({ expectedEpoch = interactionEpoch } = {}) {
       direct_fire: { units: [] },
       guided_fire: { options: [] },
       indirect_fire: { options: [] },
+      capture: { options: [] },
     };
     render();
     return;
@@ -799,6 +880,33 @@ async function handleHexSelection(value) {
     });
     return;
   }
+  if (activeTool === "CAPTURE") {
+    const coord = Number(value.position_id);
+    const matches = capabilityUI.captureOptions(capabilities, selectedIds())
+      .filter((option) => Number(option.coord) === coord);
+    const objectiveIds = Array.from(new Set(
+      matches.map((option) => Number(option.objective_id)),
+    )).sort((left, right) => left - right);
+    if (!objectiveIds.length) return;
+    let objectiveId = objectiveIds[0];
+    if (objectiveIds.length > 1) {
+      const chosen = window.prompt(
+        `此格有多个夺控点，请输入目标 ID：${objectiveIds.join(", ")}`,
+        String(objectiveIds[0]),
+      );
+      if (chosen === null) return;
+      const normalizedChoice = chosen.trim();
+      if (!/^-?\d+$/.test(normalizedChoice)) return;
+      objectiveId = Number(normalizedChoice);
+      if (!Number.isSafeInteger(objectiveId)
+          || !objectiveIds.includes(objectiveId)) return;
+    }
+    targetUnitId = objectiveId;
+    targetHex = coord;
+    advanceInteractionEpoch();
+    await previewOperation("CAPTURE", { target_id: objectiveId });
+    return;
+  }
 }
 
 async function selectDirectFireWeapon(unitId, weaponId) {
@@ -913,6 +1021,17 @@ async function activateCapability(capabilityType) {
         ? "请选择服务器标记的同格载具。"
         : "请选择服务器标记的搭载人员。";
     }
+  } else if (kind === "CAPTURE") {
+    const options = capabilityUI.captureOptions(capabilities, selectedIds());
+    const objectiveIds = Array.from(new Set(
+      options.map((value) => Number(value.objective_id)),
+    )).sort((left, right) => left - right);
+    if (objectiveIds.length === 1) {
+      targetUnitId = objectiveIds[0];
+      await previewOperation("CAPTURE", { target_id: targetUnitId });
+    } else {
+      $("tool-instruction").textContent = "请在地图上明确选择夺控旗帜所在格。";
+    }
   } else if (kind === "WAIT" && !selectedUnitIds.size) {
     if (!window.confirm("确认本方本轮不下达新操作？")) {
       clearOperation();
@@ -1016,32 +1135,24 @@ async function refresh() {
   isRefreshing = true;
   try {
     let next;
-    if (current) {
+    if (current && cachedStaticMap(current)) {
       const productStatus = await requestJson(
         `/api/product/status?token=${encodeURIComponent(token)}`,
       );
       if (productStatus.frame_index === lastFrameIndex) {
         current.product_status = productStatus;
+        lastStateReadError = null;
         render({ redrawMap: false });
         $("error-banner").hidden = true;
         return;
       }
     }
-    next = await requestJson(
-      `/api/product/bootstrap?token=${encodeURIComponent(token)}`,
-    );
+    next = await loadDisplayState();
     const frameChanged = lastFrameIndex !== null
       && next.product_status.frame_index !== lastFrameIndex;
     lastFrameIndex = next.product_status.frame_index;
     current = next;
-    if (!mapRenderer) {
-      mapRenderer = new window.ReplayMapRenderer.MapRenderer($("battlefield"), {
-        onUnitSelected: handleUnitSelection,
-        onHexHovered: renderHexInfo,
-        onHexSelected: handleHexSelection,
-      });
-      mapRenderer.setMap(current.scene.map);
-    }
+    lastStateReadError = null;
     const retained = selectedIds().filter((unitId) => (
       isFriendlySelectable(unitById(unitId))
     ));
@@ -1061,7 +1172,7 @@ async function refresh() {
     }
     $("error-banner").hidden = true;
   } catch (error) {
-    lastError = error.message;
+    lastStateReadError = error.message;
     $("error-banner").hidden = false;
     $("error-banner").textContent = `页面状态读取失败：${error.message}`;
     renderStatus();

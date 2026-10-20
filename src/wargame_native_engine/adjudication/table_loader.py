@@ -11,7 +11,7 @@ from wargame_native_engine.io.serialization import file_sha256, json_clone
 
 
 FINAL_SCHEMA_VERSION = "native-adjudication-tables/1.2"
-FINAL_REVISION = "1.2.1-final"
+FINAL_REVISION = "1.2.2-final"
 
 
 class UnresolvedTableCellError(ValueError):

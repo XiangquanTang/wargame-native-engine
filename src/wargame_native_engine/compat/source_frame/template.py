@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 
 from wargame_native_engine.compat.source_frame.importer import SourceFrameImporter
 from wargame_native_engine.compat.source_frame.mapping import source_identity_codes
@@ -78,6 +78,45 @@ def source_frame_template_for_scenario(scenario: NativeScenario) -> SourceFrame:
                 json_clone(ammunition) if isinstance(ammunition, Mapping) else {}
             )
         units.append(unit)
+    source_cities = scenario.metadata.get("source_cities", [])
+    city_templates = (
+        [json_clone(value) for value in source_cities]
+        if isinstance(source_cities, Sequence)
+        and not isinstance(source_cities, (str, bytes))
+        and all(isinstance(value, Mapping) for value in source_cities)
+        else []
+    )
+    cities = []
+    for objective in sorted(
+        scenario.objectives, key=lambda value: value.objective_id
+    ):
+        column, row = int(objective.x), int(objective.y)
+        if objective.x != column or objective.y != row:
+            continue
+        coord = row * 100 + column
+        matches = [
+            value for value in city_templates if value.get("coord") == coord
+        ]
+        city = json_clone(matches[0]) if len(matches) == 1 else {
+            "coord": coord,
+            "name": f"objective-{objective.objective_id}",
+            "type": "native_objective",
+            "value": objective.value,
+        }
+        city["flag"] = (
+            0 if objective.controlling_side == "red"
+            else 1 if objective.controlling_side == "blue" else -1
+        )
+        extra = city.setdefault("extra", {})
+        if not isinstance(extra, dict):
+            extra = {}
+            city["extra"] = extra
+        native = extra.setdefault("native", {})
+        if not isinstance(native, dict):
+            native = {}
+            extra["native"] = native
+        native["objective_id"] = objective.objective_id
+        cities.append(city)
     document = {
         "operators": units,
         "passengers": [],
@@ -89,7 +128,7 @@ def source_frame_template_for_scenario(scenario: NativeScenario) -> SourceFrame:
             "stage": 2,
         },
         "jm_points": [],
-        "cities": [],
+        "cities": cities,
         "scores": {},
         "landmarks": {},
         "terrain_id": scenario.map.map_id,

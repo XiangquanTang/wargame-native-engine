@@ -7,10 +7,12 @@ or decides action legality.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field, fields
 import json
 import math
 import re
+from types import MappingProxyType
 from typing import Iterable, Sequence
 
 from wargame_native_engine.core.action import (
@@ -83,6 +85,7 @@ _ACTION_FAMILY = {
     ActionType.STOP_MOVE: DecisionCapabilityFamily.STOP_MOVE,
     ActionType.BOARD: DecisionCapabilityFamily.BOARD,
     ActionType.UNLOAD: DecisionCapabilityFamily.UNLOAD,
+    ActionType.CAPTURE: DecisionCapabilityFamily.CAPTURE,
     ActionType.ENTER_CONCEALMENT: DecisionCapabilityFamily.ENTER_CONCEALMENT,
     ActionType.WEAPON_LOCK: DecisionCapabilityFamily.WEAPON_LOCK,
     ActionType.WEAPON_UNFOLD: DecisionCapabilityFamily.WEAPON_UNFOLD,
@@ -315,6 +318,294 @@ class ActionCatalogSnapshot:
             "entries": [item.to_dict() for item in self.entries],
             "catalog_hash": self.catalog_hash,
         }
+
+
+_QUERY_ANY = object()
+
+
+@dataclass(frozen=True, slots=True)
+class ActionCatalogIndex:
+    """Immutable, order-preserving queries over one frozen action catalog."""
+
+    catalog: ActionCatalogSnapshot
+    _parameters: tuple[Mapping[str, object], ...] = field(
+        init=False, repr=False, compare=False,
+    )
+    _by_actor: Mapping[int | None, tuple[int, ...]] = field(
+        init=False, repr=False, compare=False,
+    )
+    _by_family: Mapping[DecisionCapabilityFamily, tuple[int, ...]] = field(
+        init=False, repr=False, compare=False,
+    )
+    _by_action_type: Mapping[str, tuple[int, ...]] = field(
+        init=False, repr=False, compare=False,
+    )
+    _by_target: Mapping[int | None, tuple[int, ...]] = field(
+        init=False, repr=False, compare=False,
+    )
+
+    def __post_init__(self) -> None:
+        if type(self.catalog) is not ActionCatalogSnapshot:
+            raise TypeError("catalog must be an exact ActionCatalogSnapshot")
+        parameters: list[Mapping[str, object]] = []
+        actors: dict[int | None, list[int]] = {}
+        families: dict[DecisionCapabilityFamily, list[int]] = {}
+        action_types: dict[str, list[int]] = {}
+        targets: dict[int | None, list[int]] = {}
+        for position, entry in enumerate(self.catalog.entries):
+            decoded = json.loads(entry.canonical_parameters_json)
+            parameters.append(_freeze_json_mapping(decoded))
+            actors.setdefault(entry.actor_reference, []).append(position)
+            families.setdefault(entry.capability_family, []).append(position)
+            action_types.setdefault(entry.action_type, []).append(position)
+            targets.setdefault(entry.target_reference, []).append(position)
+        object.__setattr__(self, "_parameters", tuple(parameters))
+        object.__setattr__(self, "_by_actor", _freeze_position_index(actors))
+        object.__setattr__(self, "_by_family", _freeze_position_index(families))
+        object.__setattr__(
+            self, "_by_action_type", _freeze_position_index(action_types),
+        )
+        object.__setattr__(self, "_by_target", _freeze_position_index(targets))
+
+    def query(
+        self,
+        *,
+        actor_reference: int | None | object = _QUERY_ANY,
+        capability_family: DecisionCapabilityFamily | None = None,
+        action_type: str | None = None,
+        target_reference: int | None | object = _QUERY_ANY,
+        target_position: tuple[float, float] | None | object = _QUERY_ANY,
+        parameters: Mapping[str, object] | None = None,
+    ) -> tuple[ActionCatalogEntry, ...]:
+        """Return matching entries in their original catalog order.
+
+        ``parameters`` is an explicit subset match. Omitting actor or target
+        means any value, while passing ``None`` selects catalog-wide actions
+        that intentionally have no actor or target.
+        """
+
+        candidate_sets: list[tuple[int, ...]] = []
+        if actor_reference is not _QUERY_ANY:
+            _optional_reference(actor_reference, "actor_reference")
+            candidate_sets.append(self._by_actor.get(actor_reference, ()))
+        if capability_family is not None:
+            if not isinstance(capability_family, DecisionCapabilityFamily):
+                raise TypeError("capability_family must be DecisionCapabilityFamily")
+            candidate_sets.append(self._by_family.get(capability_family, ()))
+        if action_type is not None:
+            _token(action_type, "action_type")
+            candidate_sets.append(self._by_action_type.get(action_type, ()))
+        if target_reference is not _QUERY_ANY:
+            _optional_reference(target_reference, "target_reference")
+            candidate_sets.append(self._by_target.get(target_reference, ()))
+        if target_position is not _QUERY_ANY:
+            _optional_target_position(target_position)
+        expected_parameters = (
+            None if parameters is None else _normalized_query_parameters(parameters)
+        )
+        positions = (
+            range(len(self.catalog.entries))
+            if not candidate_sets
+            else min(candidate_sets, key=len)
+        )
+        result: list[ActionCatalogEntry] = []
+        for position in positions:
+            entry = self.catalog.entries[position]
+            if (
+                actor_reference is not _QUERY_ANY
+                and entry.actor_reference != actor_reference
+            ):
+                continue
+            if (
+                capability_family is not None
+                and entry.capability_family is not capability_family
+            ):
+                continue
+            if action_type is not None and entry.action_type != action_type:
+                continue
+            if (
+                target_reference is not _QUERY_ANY
+                and entry.target_reference != target_reference
+            ):
+                continue
+            if (
+                target_position is not _QUERY_ANY
+                and entry.target_position != target_position
+            ):
+                continue
+            if expected_parameters is not None and not _mapping_contains(
+                self._parameters[position], expected_parameters,
+            ):
+                continue
+            result.append(entry)
+        return tuple(result)
+
+
+@dataclass(frozen=True, slots=True)
+class ActionCatalogRecordAdapter:
+    """Bind typed catalog entries to detached legacy records without loss."""
+
+    index: ActionCatalogIndex | None
+    _record_json: tuple[str, ...] = field(repr=False)
+    _legacy_descriptors: tuple[
+        tuple[
+            int | None,
+            DecisionCapabilityFamily | None,
+            str,
+            int | None,
+            tuple[float, float] | None,
+            Mapping[str, object],
+        ] | None,
+        ...,
+    ] = field(repr=False, compare=False)
+    _position_by_action_id: Mapping[str, int] = field(
+        repr=False, compare=False,
+    )
+
+    def __post_init__(self) -> None:
+        if self.index is not None and type(self.index) is not ActionCatalogIndex:
+            raise TypeError("index must be an exact ActionCatalogIndex or None")
+        object.__setattr__(self, "_record_json", tuple(self._record_json))
+        descriptors = tuple(self._legacy_descriptors)
+        for value in descriptors:
+            if value is not None and not isinstance(value[5], MappingProxyType):
+                raise TypeError("legacy descriptor parameters must be read-only")
+        object.__setattr__(self, "_legacy_descriptors", descriptors)
+        object.__setattr__(
+            self,
+            "_position_by_action_id",
+            MappingProxyType(dict(self._position_by_action_id)),
+        )
+
+    @classmethod
+    def from_records(
+        cls,
+        catalog: ActionCatalogSnapshot | None,
+        legacy_records: Sequence[Mapping[str, object]],
+    ) -> ActionCatalogRecordAdapter:
+        if isinstance(legacy_records, (str, bytes)) or not isinstance(
+            legacy_records, Sequence,
+        ):
+            raise TypeError("legacy_records must be a sequence")
+        raw_records = tuple(legacy_records)
+        if any(not isinstance(value, Mapping) for value in raw_records):
+            raise TypeError("legacy_records must contain mappings")
+        record_json = tuple(canonical_json(value) for value in raw_records)
+        if catalog is None:
+            return cls(
+                None,
+                record_json,
+                tuple(_legacy_descriptor(value) for value in raw_records),
+                MappingProxyType({}),
+            )
+        index = ActionCatalogIndex(catalog)
+        if len(raw_records) != catalog.action_count:
+            raise DecisionProjectionContractError(
+                "legacy action/catalog count mismatch"
+            )
+        for position, (raw, entry) in enumerate(
+            zip(raw_records, catalog.entries)
+        ):
+            if raw.get("action_id") != entry.action_id:
+                raise DecisionProjectionContractError(
+                    f"legacy action identity mismatch at index {position}"
+                )
+            action = raw.get("action")
+            if not isinstance(action, Mapping):
+                raise DecisionProjectionContractError(
+                    f"legacy action record missing at index {position}"
+                )
+            if canonical_hash(action) != entry.operation_hash:
+                raise DecisionProjectionContractError(
+                    f"legacy operation mismatch at index {position}"
+                )
+        return cls(
+            index,
+            record_json,
+            (),
+            MappingProxyType({
+                entry.action_id: position
+                for position, entry in enumerate(catalog.entries)
+            }),
+        )
+
+    def query_records(
+        self,
+        *,
+        actor_reference: int | None | object = _QUERY_ANY,
+        capability_family: DecisionCapabilityFamily | None = None,
+        action_type: str | None = None,
+        target_reference: int | None | object = _QUERY_ANY,
+        target_position: tuple[float, float] | None | object = _QUERY_ANY,
+        parameters: Mapping[str, object] | None = None,
+    ) -> tuple[Mapping[str, object], ...]:
+        if self.index is not None:
+            entries = self.index.query(
+                actor_reference=actor_reference,
+                capability_family=capability_family,
+                action_type=action_type,
+                target_reference=target_reference,
+                target_position=target_position,
+                parameters=parameters,
+            )
+            positions = tuple(
+                self._position_by_action_id[entry.action_id] for entry in entries
+            )
+        else:
+            positions = self._legacy_positions(
+                actor_reference=actor_reference,
+                capability_family=capability_family,
+                action_type=action_type,
+                target_reference=target_reference,
+                target_position=target_position,
+                parameters=parameters,
+            )
+        return tuple(_decode_record(self._record_json[value]) for value in positions)
+
+    def _legacy_positions(
+        self,
+        *,
+        actor_reference: int | None | object,
+        capability_family: DecisionCapabilityFamily | None,
+        action_type: str | None,
+        target_reference: int | None | object,
+        target_position: tuple[float, float] | None | object,
+        parameters: Mapping[str, object] | None,
+    ) -> tuple[int, ...]:
+        if actor_reference is not _QUERY_ANY:
+            _optional_reference(actor_reference, "actor_reference")
+        if capability_family is not None and not isinstance(
+            capability_family, DecisionCapabilityFamily,
+        ):
+            raise TypeError("capability_family must be DecisionCapabilityFamily")
+        if action_type is not None:
+            _token(action_type, "action_type")
+        if target_reference is not _QUERY_ANY:
+            _optional_reference(target_reference, "target_reference")
+        if target_position is not _QUERY_ANY:
+            _optional_target_position(target_position)
+        expected = (
+            None if parameters is None else _normalized_query_parameters(parameters)
+        )
+        result = []
+        for position, descriptor in enumerate(self._legacy_descriptors):
+            if descriptor is None:
+                continue
+            actor, family, kind, target, position_value, supplied = descriptor
+            if actor_reference is not _QUERY_ANY and actor != actor_reference:
+                continue
+            if capability_family is not None and family is not capability_family:
+                continue
+            if action_type is not None and kind != action_type:
+                continue
+            if target_reference is not _QUERY_ANY and target != target_reference:
+                continue
+            if target_position is not _QUERY_ANY and position_value != target_position:
+                continue
+            if expected is not None and not _mapping_contains(supplied, expected):
+                continue
+            result.append(position)
+        return tuple(result)
 
 
 def capability_family_for_action(
@@ -867,6 +1158,130 @@ def _validate_engine_action_schema() -> None:
         )
 
 
+def _freeze_position_index(values: Mapping[object, list[int]]) -> Mapping:
+    return MappingProxyType({key: tuple(items) for key, items in values.items()})
+
+
+def _freeze_json_mapping(value: object) -> Mapping[str, object]:
+    if not isinstance(value, Mapping):
+        raise TypeError("action parameters must be a mapping")
+    return MappingProxyType({
+        str(key): _freeze_json_value(item) for key, item in value.items()
+    })
+
+
+def _freeze_json_value(value: object) -> object:
+    if isinstance(value, Mapping):
+        return _freeze_json_mapping(value)
+    if isinstance(value, list):
+        return tuple(_freeze_json_value(item) for item in value)
+    return value
+
+
+def _normalized_query_parameters(
+    value: Mapping[str, object],
+) -> Mapping[str, object]:
+    if not isinstance(value, Mapping):
+        raise TypeError("parameters must be a mapping")
+    decoded = json.loads(canonical_json(value))
+    return _freeze_json_mapping(decoded)
+
+
+def _mapping_contains(
+    supplied: Mapping[str, object], expected: Mapping[str, object],
+) -> bool:
+    return all(
+        key in supplied and supplied[key] == value
+        for key, value in expected.items()
+    )
+
+
+def _optional_reference(value: object, name: str) -> None:
+    if value is not None:
+        _nonnegative_int(value, name)
+
+
+def _optional_target_position(value: object) -> None:
+    if value is None:
+        return
+    if not isinstance(value, tuple) or len(value) != 2:
+        raise TypeError("target_position must be a two-item tuple or None")
+    for item in value:
+        if (
+            isinstance(item, bool)
+            or not isinstance(item, (int, float))
+            or not math.isfinite(float(item))
+        ):
+            raise TypeError("target_position must contain finite numbers")
+
+
+def _legacy_descriptor(
+    value: Mapping[str, object],
+) -> tuple[
+    int | None,
+    DecisionCapabilityFamily | None,
+    str,
+    int | None,
+    tuple[float, float] | None,
+    Mapping[str, object],
+] | None:
+    action = value.get("action")
+    if not isinstance(action, Mapping):
+        return None
+    actor = action.get("actor_id")
+    actor_reference = actor if type(actor) is int and actor >= 0 else None
+    kind_value = action.get("action_type", "UNKNOWN")
+    kind = str(kind_value).upper()
+    target = action.get("target_id")
+    target_reference = target if type(target) is int and target >= 0 else None
+    raw_position = action.get("target_position")
+    target_position = (
+        (float(raw_position[0]), float(raw_position[1]))
+        if isinstance(raw_position, (list, tuple))
+        and len(raw_position) == 2
+        and all(
+            isinstance(item, (int, float)) and not isinstance(item, bool)
+            for item in raw_position
+        )
+        else None
+    )
+    raw_parameters = action.get("parameters")
+    parameters = (
+        _normalized_query_parameters(raw_parameters)
+        if isinstance(raw_parameters, Mapping)
+        else MappingProxyType({})
+    )
+    family = _legacy_family(kind, parameters)
+    return (
+        actor_reference,
+        family,
+        kind,
+        target_reference,
+        target_position,
+        parameters,
+    )
+
+
+def _legacy_family(
+    action_type: str, parameters: Mapping[str, object],
+) -> DecisionCapabilityFamily | None:
+    try:
+        typed_action = ActionType(action_type)
+    except ValueError:
+        return None
+    if typed_action is ActionType.FIRE:
+        mode = parameters.get("fire_mode")
+        return _FIRE_MODE_FAMILY.get(str(mode).upper()) if mode is not None else None
+    return _ACTION_FAMILY.get(typed_action)
+
+
+def _decode_record(value: str) -> Mapping[str, object]:
+    decoded = json.loads(value)
+    if not isinstance(decoded, dict):  # pragma: no cover - constructor proved it
+        raise RuntimeError("legacy action record unexpectedly changed shape")
+    return decoded
+
+
 def _sorted_references(values: Iterable[int]) -> tuple[int, ...]:
     result = tuple(values)
     for value in result:
@@ -909,6 +1324,8 @@ def _sha256(value: object, name: str) -> str:
 
 __all__ = [
     "ActionCatalogEntry",
+    "ActionCatalogIndex",
+    "ActionCatalogRecordAdapter",
     "ActionCatalogSnapshot",
     "ExplicitCapabilityEvidence",
     "board_capability_evidence",

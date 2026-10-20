@@ -5,7 +5,14 @@ from __future__ import annotations
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field
+import tempfile
 from threading import RLock
+from typing import BinaryIO
+
+from wargame_native_engine._framed_history import (
+    append_compact_private_record as append_private_record,
+    read_compact_private_record as read_private_record,
+)
 
 from wargame_native_engine.core.action import (
     ACTION_PRIORITY,
@@ -53,9 +60,12 @@ class _GatewaySession:
     window: DecisionWindow
     audit: ControlAuditLog
     last_advance: SimulationAdvance | None = None
-    requests: dict[str, tuple[tuple[object, ...], CommandResult]] = field(
+    requests: dict[str, tuple[tuple[object, ...], tuple[int, int, int]]] = field(
         default_factory=dict
     )
+    request_history: BinaryIO = field(default_factory=lambda: tempfile.TemporaryFile(
+        mode="w+b", prefix="wargame-gateway-idempotency."))
+    history_failure: BaseException | None = None
     lock: RLock = field(default_factory=RLock)
     proposals: ActionProposalRegistry | None = None
 
@@ -127,11 +137,15 @@ class CommandGateway:
         audit = ControlAuditLog(descriptor.session_id)
         _record_window_open(audit, window)
         with self._lock:
-            gateway_session = _GatewaySession(
-                {"red": red, "blue": blue},
-                window,
-                audit,
-            )
+            try:
+                gateway_session = _GatewaySession(
+                    {"red": red, "blue": blue},
+                    window,
+                    audit,
+                )
+            except BaseException:
+                self.manager.close_session(descriptor.session_id)
+                raise
             gateway_session.proposals = ActionProposalRegistry(
                 descriptor.session_id, window.decision_window_index
             )
@@ -524,6 +538,8 @@ class CommandGateway:
             signature = (
                 str(controller_id), expected_window, action_ids,
             )
+            if gateway_session.history_failure is not None:
+                raise gateway_session.history_failure
             cached = gateway_session.requests.get(request)
             if cached is not None:
                 if cached[0] != signature:
@@ -559,7 +575,7 @@ class CommandGateway:
                     timeout=False,
                     retry=True,
                 )
-                return deepcopy(cached[1])
+                return _load_request_result(gateway_session, cached[1])
 
             window = gateway_session.window
             if window.decision_window_index != expected_window:
@@ -633,7 +649,12 @@ class CommandGateway:
                 view=self._controller_view(session_id, side, active_window),
                 decision_window=self._window_view(active_window, side),
             )
-            gateway_session.requests[request] = (signature, deepcopy(result))
+            try:
+                offset = append_private_record(gateway_session.request_history, result)
+            except BaseException as exc:
+                gateway_session.history_failure = exc
+                raise
+            gateway_session.requests[request] = (signature, offset)
             return deepcopy(result)
 
     def publish_session(
@@ -681,20 +702,27 @@ class CommandGateway:
             )
 
     def close_session(self, session_id: str) -> None:
-        gateway_session = self._gateway_session(session_id)
+        gateway_session = self._gateway_session(session_id, allow_history_failure=True)
         with gateway_session.lock:
-            self.manager.close_session(session_id)
+            try:
+                self.manager.close_session(session_id)
+            finally:
+                gateway_session.request_history.close()
+                gateway_session.requests.clear()
         with self._lock:
             self._sessions.pop(session_id, None)
 
-    def _gateway_session(self, session_id: str) -> _GatewaySession:
+    def _gateway_session(self, session_id: str, *, allow_history_failure=False) -> _GatewaySession:
         with self._lock:
             try:
-                return self._sessions[str(session_id)]
+                value = self._sessions[str(session_id)]
             except KeyError as exc:
                 raise CommandGatewayError(
                     "session_not_found", f"unknown session {session_id!r}"
                 ) from exc
+            if value.history_failure is not None and not allow_history_failure:
+                raise value.history_failure
+            return value
 
     def window(
         self, session_id: str, controller_id: str,
@@ -746,7 +774,7 @@ class CommandGateway:
                 raise CommandGatewayError(
                     "request_not_owned", "request belongs to another controller"
                 )
-            return deepcopy(cached[1])
+            return _load_request_result(gateway_session, cached[1])
 
     def control_audit(
         self, session_id: str, controller_id: str,
@@ -1008,6 +1036,19 @@ def _bound_side(session: _GatewaySession, controller_id: str) -> str:
             f"controller {controller_id!r} is not bound to this session",
         )
     return matches[0]
+
+
+def _load_request_result(session: _GatewaySession, offset: tuple[int, int, int]) -> CommandResult:
+    if session.history_failure is not None:
+        raise session.history_failure
+    try:
+        value = read_private_record(session.request_history, *offset)
+        if not isinstance(value, CommandResult):
+            raise RuntimeError("gateway idempotency history has an invalid record")
+        return value  # fresh unpickle; never a shared cached response
+    except BaseException as exc:
+        session.history_failure = exc
+        raise
 
 
 def _seconds_to_milliseconds(value: int | float) -> int:

@@ -244,12 +244,23 @@ class GameSession:
 
     def snapshot(self) -> Mapping[str, object]:
         self._require_active()
-        return self.backend.snapshot()
+        snapshot = self.backend.snapshot()
+        contract = getattr(self, "source_frame_compatibility_version", None)
+        if contract is not None:
+            snapshot = dict(snapshot)
+            snapshot["source_frame_compatibility_version"] = contract
+        return snapshot
 
     def restore(self, snapshot: Mapping[str, object]) -> WorldState:
         if self._closed:
             raise RuntimeError("session_closed")
+        from wargame_native_engine.compat.source_frame.contract import (
+            SOURCE_CONTRACT_KEY, LEGACY_SOURCE_CONTRACT, require_source_contract,
+        )
+        contract = require_source_contract(snapshot.get(SOURCE_CONTRACT_KEY, LEGACY_SOURCE_CONTRACT))
         result = self.backend.restore(snapshot)
+        if SOURCE_CONTRACT_KEY in snapshot or hasattr(self, SOURCE_CONTRACT_KEY):
+            self.source_frame_compatibility_version = contract
         self.seed = int(snapshot["seed"])
         identity = {
             "scenario_hash": self.scenario.scenario_hash,

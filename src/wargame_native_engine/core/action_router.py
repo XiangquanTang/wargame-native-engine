@@ -30,6 +30,7 @@ class ActionRouter:
     supported_types = frozenset({
         ActionType.MOVE, ActionType.SHOOT, ActionType.FIRE,
         ActionType.STOP_MOVE, ActionType.BOARD, ActionType.UNLOAD,
+        ActionType.CAPTURE,
         ActionType.ENTER_CONCEALMENT,
         ActionType.CHANGE_STATE, ActionType.WEAPON_LOCK,
         ActionType.WEAPON_UNFOLD, ActionType.WAIT,

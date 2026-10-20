@@ -12,6 +12,7 @@ from typing import Any, Mapping, Sequence
 
 from wargame_native_engine.agents.realtime import (
     CommandStatus,
+    RealtimeTickRecord,
     RealtimeTickResult,
     SeatCommandEvent,
 )
@@ -19,7 +20,7 @@ from wargame_native_engine.compat.source_frame.serialization import (
     canonical_source_json,
 )
 from wargame_native_engine.io.importers.source_replay_archive import (
-    SourceReplayArchiveImporter,
+    SourceReplayArchiveReader,
 )
 from wargame_native_engine.io.replay import replay_source_archive
 from wargame_native_engine.io.serialization import file_sha256
@@ -89,10 +90,14 @@ def seat_commands_to_jsonl(values: Sequence[SeatCommandEvent]) -> str:
     )
 
 
-def realtime_ticks_to_jsonl(values: Sequence[RealtimeTickResult]) -> str:
+RealtimeTickEvidence = RealtimeTickRecord | RealtimeTickResult
+
+
+def realtime_ticks_to_jsonl(values: Sequence[RealtimeTickEvidence]) -> str:
     records = tuple(values)
-    if not all(isinstance(value, RealtimeTickResult) for value in records):
-        raise TypeError("values must contain only RealtimeTickResult records")
+    if not all(isinstance(value, (RealtimeTickRecord, RealtimeTickResult))
+               for value in records):
+        raise TypeError("values must contain only realtime tick records")
     return "".join(
         canonical_source_json(value.to_record()) + "\n" for value in records
     )
@@ -106,7 +111,7 @@ def publish_realtime_episode(
     episode_id: str,
     tick_interval_ms: int,
     command_events: Sequence[SeatCommandEvent],
-    tick_results: Sequence[RealtimeTickResult],
+    tick_results: Sequence[RealtimeTickEvidence],
     truncated: bool,
     overwrite: bool = False,
 ) -> RealtimeEpisodePublication:
@@ -124,7 +129,8 @@ def publish_realtime_episode(
     ticks = tuple(tick_results)
     if not all(isinstance(value, SeatCommandEvent) for value in events):
         raise TypeError("command_events contains an invalid record")
-    if not all(isinstance(value, RealtimeTickResult) for value in ticks):
+    if not all(isinstance(value, (RealtimeTickRecord, RealtimeTickResult))
+               for value in ticks):
         raise TypeError("tick_results contains an invalid record")
     target = Path(output_dir)
     if os.path.lexists(target) and not overwrite:
@@ -149,7 +155,7 @@ def publish_realtime_episode(
         tick_path = staging_episode / REALTIME_TICKS_NAME
         _write_bytes(tick_path, realtime_ticks_to_jsonl(ticks).encode("utf-8"))
         phase = "replay_verification"
-        archive = SourceReplayArchiveImporter().import_path(facts.replay_path)
+        archive = SourceReplayArchiveReader(facts.replay_path)
         replay = replay_source_archive(
             match.bundle.scenario,
             facts.replay_path,
@@ -167,7 +173,7 @@ def publish_realtime_episode(
             ticks,
             events=events,
             tick_interval_ms=tick_interval_ms,
-            fact_frame_count=len(archive.frames),
+            fact_frame_count=archive.frame_count,
             step_count=int(archive.manifest["step_count"]),
         )
         _verify_exact_jsonl(command_path, seat_commands_to_jsonl(events))
@@ -193,7 +199,7 @@ def publish_realtime_episode(
             "seed": archive.manifest.get("episode_seed"),
             "tick_interval_ms": tick_interval_ms,
             "tick_count": len(ticks),
-            "fact_frame_count": len(archive.frames),
+            "fact_frame_count": archive.frame_count,
             "step_count": int(archive.manifest["step_count"]),
             **counts,
             "terminal": terminal,
@@ -229,7 +235,7 @@ def publish_realtime_episode(
             namespace,
             episode,
             len(ticks),
-            len(archive.frames),
+            archive.frame_count,
             counts["accepted_command_count"],
             counts["applied_command_count"],
             counts["superseded_command_count"],
@@ -271,7 +277,7 @@ def _verify_commands(
 
 
 def _verify_ticks(
-    values: Sequence[RealtimeTickResult],
+    values: Sequence[RealtimeTickEvidence],
     *,
     events: Sequence[SeatCommandEvent],
     tick_interval_ms: int,

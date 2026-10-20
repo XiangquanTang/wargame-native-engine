@@ -42,7 +42,7 @@
       "no_interpolation": true,
       "human_confirmed_revision": true
     },
-    "revision": "1.2.1-final",
+    "revision": "1.2.2-final",
     "source_text": {
       "name": "推演规则_完整纯文本_Codex版.md",
       "sha256": "77002ef3ac64dcd44d3dd87a785b0f476b35ccae13532300cd23a95b9754a12e",
@@ -80,7 +80,7 @@
         "Every roll and lookup must be recorded in replay evidence."
       ]
     },
-    "content_sha256": "2d0d03fa7ac5f1072b550378c20347b3e35e088a1348b459ae05967c0bab11d6"
+    "content_sha256": "2757e97906d6896b1a5f3e5c06fa39c40db4693fb49573e37778acad513c0f4f"
   },
   "runtime_rules": {
     "direct_fire": {
@@ -2502,13 +2502,13 @@
         "11": [
           "SCATTER",
           "SCATTER",
-          "SCATTER",
+          "SCATTER_1",
           "SCATTER_2"
         ],
         "12": [
           "SCATTER",
-          "SCATTER",
           "SCATTER_1",
+          "SCATTER_2",
           "SCATTER_3"
         ]
       }

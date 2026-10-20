@@ -193,7 +193,7 @@ class SeatOperation:
                 raise ValueError(
                     "INDIRECT_FIRE accepts target_hex only and no guider"
                 )
-        elif operation in {"BOARD", "UNLOAD"}:
+        elif operation in {"BOARD", "UNLOAD", "CAPTURE"}:
             if len(actors) != 1:
                 raise ValueError(f"{operation} requires exactly one actor")
             _exact_nonnegative_int(self.target_id, "target_id")

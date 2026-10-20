@@ -28,7 +28,7 @@ from wargame_native_engine.io.importers.historical_replay import (
     HistoricalReplayImporter,
 )
 from wargame_native_engine.io.importers.source_replay_archive import (
-    SourceReplayArchiveImporter,
+    SourceReplayArchiveReader,
 )
 from wargame_native_engine.io.serialization import json_clone
 
@@ -129,13 +129,36 @@ def analyze_replay_to_jsonl(
         raise FileExistsError(f"analysis output already exists: {output}")
     _validate_output_is_separate(source, output)
 
-    loaded = _load_analysis_inputs(source, source_format)
-    inputs = loaded.inputs
-    if not inputs:
-        raise ValueError("replay contains no analyzable frames")
-
     configured_analyzer = analyzer if analyzer is not None else EightFactorAnalyzer()
-    timeline = configured_analyzer.analyze_green_frames(inputs)
+    detected_format = source_format
+    if source_format == "auto":
+        detected_format = _detect_source_format(source)
+    elif source_format == "historical" and _archive_has_legacy_members(source):
+        detected_format = _detect_source_format(source)
+    if detected_format == "native":
+        frame_count = _write_native_analysis_jsonl(
+            source,
+            output,
+            configured_analyzer,
+            overwrite=overwrite,
+        )
+        return ReplayAnalysisResult(
+            input_path=source,
+            output_path=output,
+            frame_count=frame_count,
+            source_format="native",
+            raw_record_count=frame_count,
+            selected_frame_count=frame_count,
+            collapsed_record_count=0,
+        )
+    else:
+        loaded = _load_analysis_inputs(source, detected_format)
+        if not loaded.inputs:
+            raise ValueError("replay contains no analyzable frames")
+        timeline = configured_analyzer.analyze_green_frames(loaded.inputs)
+        detected_format = loaded.source_format
+        raw_record_count = loaded.raw_record_count
+        selected_frame_count = len(loaded.inputs)
     payload = analysis_frames_to_jsonl(timeline.frame_analyses).encode("utf-8")
     if not payload:
         raise ValueError("replay analysis produced empty JSONL")
@@ -145,10 +168,10 @@ def analyze_replay_to_jsonl(
         input_path=source,
         output_path=output,
         frame_count=len(timeline.frame_analyses),
-        source_format=loaded.source_format,
-        raw_record_count=loaded.raw_record_count,
-        selected_frame_count=len(inputs),
-        collapsed_record_count=loaded.raw_record_count - len(inputs),
+        source_format=detected_format,
+        raw_record_count=raw_record_count,
+        selected_frame_count=selected_frame_count,
+        collapsed_record_count=raw_record_count - selected_frame_count,
     )
 
 
@@ -314,18 +337,10 @@ def _jsonl_first_object(payload: bytes, member_name: str) -> Mapping[str, Any]:
 def _native_analysis_inputs(
     source: Path,
 ) -> tuple[GreenFrameAnalysisInput, ...]:
-    archive = SourceReplayArchiveImporter().import_path(source)
+    archive = SourceReplayArchiveReader(source)
     scenario_hash = archive.manifest.get("scenario_hash")
     if scenario_hash is not None and not isinstance(scenario_hash, str):
         raise ValueError("native replay scenario_hash must be a string or None")
-
-    indexed_frames: list[tuple[int, SourceFrame]] = []
-    for name, frame in zip(archive.frame_names, archive.frames, strict=True):
-        match = _NUMBERED_FRAME_NAME.fullmatch(name)
-        if match is None:
-            raise ValueError(f"invalid Native numbered frame name: {name}")
-        indexed_frames.append((int(match.group(1)), frame))
-    indexed_frames.sort(key=lambda item: item[0])
 
     return tuple(
         GreenFrameAnalysisInput(
@@ -334,8 +349,103 @@ def _native_analysis_inputs(
             frame_hash=frame.source_hash,
             scenario_hash=scenario_hash,
         )
-        for frame_index, frame in indexed_frames
+        for frame_index, _, frame in archive.iter_frames()
     )
+
+
+def _native_frame_analyses(
+    source: Path,
+    analyzer: EightFactorAnalyzer,
+) -> tuple:
+    archive = SourceReplayArchiveReader(source)
+    scenario_hash = archive.manifest.get("scenario_hash")
+    if scenario_hash is not None and not isinstance(scenario_hash, str):
+        raise ValueError("native replay scenario_hash must be a string or None")
+    analyses = []
+    for frame_index, name, frame in archive.iter_frames():
+        if name != f"{frame_index}.json":
+            raise ValueError(f"invalid Native numbered frame name: {name}")
+        analyses.append(analyzer.analyze_green_frame(GreenFrameAnalysisInput(
+            frame_index=frame_index,
+            frame=_source_frame_to_green(frame),
+            frame_hash=frame.source_hash,
+            scenario_hash=scenario_hash,
+        )))
+    if not analyses:
+        raise ValueError("replay contains no analyzable frames")
+    return tuple(analyses)
+
+
+def _write_native_analysis_jsonl(
+    source: Path,
+    output: Path,
+    analyzer: EightFactorAnalyzer,
+    *,
+    overwrite: bool,
+) -> int:
+    """Analyze Native frames one at a time and atomically publish JSONL."""
+
+    archive = SourceReplayArchiveReader(source)
+    scenario_hash = archive.manifest.get("scenario_hash")
+    if scenario_hash is not None and not isinstance(scenario_hash, str):
+        raise ValueError("native replay scenario_hash must be a string or None")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{output.name}.", suffix=".tmp", dir=output.parent,
+    )
+    temporary = Path(temporary_name)
+    count = 0
+    previous_frame_index: int | None = None
+    run_identity = None
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            for frame_index, name, frame in archive.iter_frames():
+                if (
+                    name != f"{frame_index}.json"
+                    or (
+                        previous_frame_index is not None
+                        and frame_index <= previous_frame_index
+                    )
+                ):
+                    raise ValueError(
+                        "Native analysis frame indices must be strictly increasing"
+                    )
+                analysis = analyzer.analyze_green_frame(
+                    GreenFrameAnalysisInput(
+                        frame_index=frame_index,
+                        frame=_source_frame_to_green(frame),
+                        frame_hash=frame.source_hash,
+                        scenario_hash=scenario_hash,
+                    )
+                )
+                identity = (
+                    analysis.provenance.scenario_hash,
+                    analysis.provenance.model_id,
+                    analysis.provenance.model_version,
+                    analysis.provenance.model_hash,
+                )
+                if run_identity is None:
+                    run_identity = identity
+                elif identity != run_identity:
+                    raise ValueError(
+                        "all frame analyses must share scenario and model provenance"
+                    )
+                stream.write(
+                    analysis_frames_to_jsonl((analysis,)).encode("utf-8")
+                )
+                previous_frame_index = frame_index
+                count += 1
+            if count == 0:
+                raise ValueError("replay contains no analyzable frames")
+            stream.flush()
+            os.fsync(stream.fileno())
+        if output.exists() and not overwrite:
+            raise FileExistsError(f"analysis output already exists: {output}")
+        os.replace(temporary, output)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+    return count
 
 
 def _source_frame_to_green(frame: SourceFrame) -> Mapping[str, Any]:

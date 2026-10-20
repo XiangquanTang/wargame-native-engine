@@ -14,15 +14,23 @@ from typing import Any, Mapping, Sequence
 
 from wargame_native_engine.io.serialization import canonical_hash, json_clone
 from wargame_native_engine.training.decision_encoder import (
+    ACTION_CANDIDATE_FEATURES,
+    AMMUNITION_POOL_FEATURES,
     CAPABILITY_FEATURES,
     DECISION_OBSERVATION_ENCODER_SCHEMA_VERSION,
+    DECISION_OBSERVATION_ENCODER_V2_SCHEMA_VERSION,
+    INVENTORY_UNIT_FEATURES,
     OBJECTIVE_FEATURES,
     OBSERVED_ENEMY_FEATURES,
     OWN_OPERATOR_FEATURES,
     SNAPSHOT_FEATURES,
     DecisionEncoderConfig,
+    DecisionEncoderV2Config,
     DecisionObservationEncoder,
+    DecisionObservationEncoderV2,
     EncodedDecisionObservation,
+    EncodedDecisionObservationV2,
+    WEAPON_INVENTORY_FEATURES,
 )
 from wargame_native_engine.training.learner_backend import require_pytorch
 from wargame_native_engine.rules.operator_lifecycle import (
@@ -35,6 +43,11 @@ LEARNER_OBSERVATION_PREPROCESSOR_SCHEMA_VERSION = (
 )
 LEARNER_OBSERVATION_PREPROCESSOR_ID = "native-decision-fixed-scaling"
 LEARNER_OBSERVATION_PREPROCESSOR_VERSION = "1.0.0"
+LEARNER_OBSERVATION_PREPROCESSOR_V2_SCHEMA_VERSION = (
+    "native-ppo-observation-preprocessor/2.0"
+)
+LEARNER_OBSERVATION_PREPROCESSOR_V2_ID = "native-decision-weapon-aware-fixed-scaling"
+LEARNER_OBSERVATION_PREPROCESSOR_V2_VERSION = "2.0.0"
 
 
 class LearnerPreprocessorContractError(ValueError):
@@ -171,26 +184,47 @@ class LearnerObservationPreprocessorSpec:
     semantic_hash: str
 
     def __post_init__(self) -> None:
-        if self.schema_version != LEARNER_OBSERVATION_PREPROCESSOR_SCHEMA_VERSION:
+        identity = (
+            self.schema_version, self.preprocessor_id, self.preprocessor_version
+        )
+        if identity not in {
+            (
+                LEARNER_OBSERVATION_PREPROCESSOR_SCHEMA_VERSION,
+                LEARNER_OBSERVATION_PREPROCESSOR_ID,
+                LEARNER_OBSERVATION_PREPROCESSOR_VERSION,
+            ),
+            (
+                LEARNER_OBSERVATION_PREPROCESSOR_V2_SCHEMA_VERSION,
+                LEARNER_OBSERVATION_PREPROCESSOR_V2_ID,
+                LEARNER_OBSERVATION_PREPROCESSOR_V2_VERSION,
+            ),
+        }:
             raise LearnerPreprocessorContractError(
                 "unsupported learner observation preprocessor schema"
-            )
-        if self.preprocessor_id != LEARNER_OBSERVATION_PREPROCESSOR_ID or (
-            self.preprocessor_version != LEARNER_OBSERVATION_PREPROCESSOR_VERSION
-        ):
-            raise LearnerPreprocessorContractError(
-                "unsupported learner observation preprocessor identity"
             )
         if self.strategy != "DETERMINISTIC_FIXED_SCALING":
             raise LearnerPreprocessorContractError(
                 "preprocessor v1 requires deterministic fixed scaling"
             )
-        if self.input_encoder_schema != DECISION_OBSERVATION_ENCODER_SCHEMA_VERSION:
+        expected_encoder_schema = (
+            DECISION_OBSERVATION_ENCODER_SCHEMA_VERSION
+            if identity[0] == LEARNER_OBSERVATION_PREPROCESSOR_SCHEMA_VERSION
+            else DECISION_OBSERVATION_ENCODER_V2_SCHEMA_VERSION
+        )
+        if self.input_encoder_schema != expected_encoder_schema:
             raise LearnerPreprocessorContractError("input encoder schema mismatch")
         _sha256(self.input_encoder_hash, "input encoder hash")
-        if self.input_shape != (8302,) or self.output_shape != self.input_shape:
+        if (
+            len(self.input_shape) != 1
+            or self.input_shape[0] <= 0
+            or self.output_shape != self.input_shape
+            or (
+                identity[0] == LEARNER_OBSERVATION_PREPROCESSOR_SCHEMA_VERSION
+                and self.input_shape != (8302,)
+            )
+        ):
             raise LearnerPreprocessorContractError(
-                "preprocessor v1 requires unchanged shape (8302,)"
+                "preprocessor requires an unchanged supported flat shape"
             )
         if self.input_dtype != "float64" or self.output_dtype != "float32":
             raise LearnerPreprocessorContractError(
@@ -277,7 +311,7 @@ class ProcessedLearnerObservation:
                 )
         _sha256(self.input_encoder_hash, "processed input encoder hash")
         _sha256(self.preprocessor_hash, "processed preprocessor hash")
-        if self.shape != (8302,) or self.dtype != "float32":
+        if len(self.shape) != 1 or self.shape[0] <= 0 or self.dtype != "float32":
             raise LearnerPreprocessorContractError(
                 "processed observation shape/dtype mismatch"
             )
@@ -328,10 +362,12 @@ class LearnerObservationPreprocessor:
             raise TypeError("spec must be LearnerObservationPreprocessorSpec")
 
     def preprocess(
-        self, value: EncodedDecisionObservation,
+        self, value: EncodedDecisionObservation | EncodedDecisionObservationV2,
     ) -> ProcessedLearnerObservation:
-        if not isinstance(value, EncodedDecisionObservation):
-            raise TypeError("value must be EncodedDecisionObservation")
+        if not isinstance(value, (
+            EncodedDecisionObservation, EncodedDecisionObservationV2,
+        )):
+            raise TypeError("value must be a supported Decision observation")
         values = self.preprocess_values(
             value.tensor,
             encoder_schema=value.encoder_schema_version,
@@ -387,19 +423,34 @@ def build_learner_observation_preprocessor_spec(
     document = _validate_source_config(value)
     input_encoder = _mapping(document["input_encoder"], "input_encoder")
     output = _mapping(document["output"], "output")
-    config = DecisionEncoderConfig(
-        max_own_operators=_positive_int(
+    common_capacities = {
+        "max_own_operators": _positive_int(
             input_encoder["max_own_operators"], "max_own_operators"
         ),
-        max_observed_enemies=_positive_int(
+        "max_observed_enemies": _positive_int(
             input_encoder["max_observed_enemies"], "max_observed_enemies"
         ),
-        max_objectives=_positive_int(
+        "max_objectives": _positive_int(
             input_encoder["max_objectives"], "max_objectives"
         ),
-        max_actions=_positive_int(input_encoder["max_actions"], "max_actions"),
-    )
-    expected_encoder = DecisionObservationEncoder(config)
+        "max_actions": _positive_int(input_encoder["max_actions"], "max_actions"),
+    }
+    if input_encoder["schema_version"] == DECISION_OBSERVATION_ENCODER_SCHEMA_VERSION:
+        config: DecisionEncoderConfig | DecisionEncoderV2Config = DecisionEncoderConfig(
+            **common_capacities
+        )
+        expected_encoder = DecisionObservationEncoder(config)
+    else:
+        config = DecisionEncoderV2Config(
+            **common_capacities,
+            max_weapon_entries=_positive_int(
+                input_encoder["max_weapon_entries"], "max_weapon_entries"
+            ),
+            max_ammunition_pools=_positive_int(
+                input_encoder["max_ammunition_pools"], "max_ammunition_pools"
+            ),
+        )
+        expected_encoder = DecisionObservationEncoderV2(config)
     expected_shape = expected_encoder.observation_space.flat_shape
     if input_encoder["contract_hash"] != expected_encoder.contract_hash:
         raise LearnerPreprocessorContractError(
@@ -450,8 +501,33 @@ def load_learner_observation_preprocessor_spec(
     return build_learner_observation_preprocessor_spec(value)
 
 
+def load_learner_observation_preprocessor_spec_for_identity(
+    preprocessor_id: str, preprocessor_version: str,
+) -> LearnerObservationPreprocessorSpec:
+    """Resolve only the two explicit checked-in preprocessing authorities."""
+
+    if (preprocessor_id, preprocessor_version) == (
+        LEARNER_OBSERVATION_PREPROCESSOR_ID,
+        LEARNER_OBSERVATION_PREPROCESSOR_VERSION,
+    ):
+        return load_learner_observation_preprocessor_spec()
+    if (preprocessor_id, preprocessor_version) == (
+        LEARNER_OBSERVATION_PREPROCESSOR_V2_ID,
+        LEARNER_OBSERVATION_PREPROCESSOR_V2_VERSION,
+    ):
+        source = (
+            Path(__file__).resolve().parents[3]
+            / "config/training/native_ppo_observation_preprocessor_v2.json"
+        )
+        return load_learner_observation_preprocessor_spec(source)
+    raise LearnerPreprocessorContractError(
+        "unsupported learner preprocessor identity"
+    )
+
+
 def _feature_transforms(
-    document: Mapping[str, object], config: DecisionEncoderConfig,
+    document: Mapping[str, object],
+    config: DecisionEncoderConfig | DecisionEncoderV2Config,
 ) -> tuple[FeatureTransformRecord, ...]:
     constants = _mapping(document["scaling_constants"], "scaling_constants")
     authorities = _mapping(document["source_authorities"], "source_authorities")
@@ -514,6 +590,26 @@ def _feature_transforms(
             expected_input_max=1.0,
         ))
         cursor += count
+    if isinstance(config, DecisionEncoderV2Config):
+        add_group("inventory_unit", INVENTORY_UNIT_FEATURES, config.max_own_operators)
+        add_group("weapon_inventory", WEAPON_INVENTORY_FEATURES, config.max_weapon_entries)
+        add_group("ammunition_pool", AMMUNITION_POOL_FEATURES, config.max_ammunition_pools)
+        add_group("action_candidate", ACTION_CANDIDATE_FEATURES, config.max_actions)
+        for group, count in (
+            ("inventory_unit_mask", config.max_own_operators),
+            ("weapon_inventory_mask", config.max_weapon_entries),
+            ("ammunition_pool_mask", config.max_ammunition_pools),
+            ("action_candidate_mask", config.max_actions),
+        ):
+            records.append(FeatureTransformRecord(
+                group=group, feature_name="present", start=cursor,
+                end_exclusive=cursor + count, stride=1, count=count,
+                transform_type=FeatureTransformType.IDENTITY,
+                scale=1.0, offset=0.0,
+                source_authority="DECISION_ENCODER_ENTITY_MASK_CONTRACT",
+                expected_input_min=0.0, expected_input_max=1.0,
+            ))
+            cursor += count
     return tuple(sorted(records, key=lambda item: (
         item.start, item.stride, item.feature_name
     )))
@@ -522,7 +618,7 @@ def _feature_transforms(
 def _transform_for_feature(
     group: str,
     name: str,
-    config: DecisionEncoderConfig,
+    config: DecisionEncoderConfig | DecisionEncoderV2Config,
     ms: float,
     progress: float,
     limited: float,
@@ -604,11 +700,20 @@ def _validate_source_config(value: Mapping[str, object]) -> dict[str, object]:
             "preprocessor config fields are missing or unknown"
         )
     document = json_clone(value)
-    if document["schema_version"] != LEARNER_OBSERVATION_PREPROCESSOR_SCHEMA_VERSION:
+    schema = document["schema_version"]
+    if schema not in {
+        LEARNER_OBSERVATION_PREPROCESSOR_SCHEMA_VERSION,
+        LEARNER_OBSERVATION_PREPROCESSOR_V2_SCHEMA_VERSION,
+    }:
         raise LearnerPreprocessorContractError("unsupported preprocessor schema")
-    if document["preprocessor_id"] != LEARNER_OBSERVATION_PREPROCESSOR_ID or (
-        document["preprocessor_version"] != LEARNER_OBSERVATION_PREPROCESSOR_VERSION
-    ):
+    expected_identity = (
+        (LEARNER_OBSERVATION_PREPROCESSOR_ID,
+         LEARNER_OBSERVATION_PREPROCESSOR_VERSION)
+        if schema == LEARNER_OBSERVATION_PREPROCESSOR_SCHEMA_VERSION
+        else (LEARNER_OBSERVATION_PREPROCESSOR_V2_ID,
+              LEARNER_OBSERVATION_PREPROCESSOR_V2_VERSION)
+    )
+    if (document["preprocessor_id"], document["preprocessor_version"]) != expected_identity:
         raise LearnerPreprocessorContractError("unsupported preprocessor identity")
     if document["strategy"] != "DETERMINISTIC_FIXED_SCALING":
         raise LearnerPreprocessorContractError("unsupported scaling strategy")
@@ -616,17 +721,27 @@ def _validate_source_config(value: Mapping[str, object]) -> dict[str, object]:
         document["running_state"] != "NONE"
     ):
         raise LearnerPreprocessorContractError(
-            "preprocessor v1 forbids clipping, batch statistics and running state"
+            "preprocessor forbids clipping, batch statistics and running state"
         )
     input_encoder = _mapping(document["input_encoder"], "input_encoder")
-    if set(input_encoder) != {
+    expected_input_fields = {
         "schema_version", "contract_hash", "shape", "dtype",
         "max_objectives", "max_own_operators", "max_observed_enemies",
         "max_actions",
-    }:
+    }
+    if schema == LEARNER_OBSERVATION_PREPROCESSOR_V2_SCHEMA_VERSION:
+        expected_input_fields |= {"max_weapon_entries", "max_ammunition_pools"}
+    if set(input_encoder) != expected_input_fields:
         raise LearnerPreprocessorContractError(
             "input_encoder fields are missing or unknown"
         )
+    expected_encoder_schema = (
+        DECISION_OBSERVATION_ENCODER_SCHEMA_VERSION
+        if schema == LEARNER_OBSERVATION_PREPROCESSOR_SCHEMA_VERSION
+        else DECISION_OBSERVATION_ENCODER_V2_SCHEMA_VERSION
+    )
+    if input_encoder["schema_version"] != expected_encoder_schema:
+        raise LearnerPreprocessorContractError("preprocessor encoder schema mismatch")
     output = _mapping(document["output"], "output")
     if set(output) != {"shape", "dtype", "default_device"}:
         raise LearnerPreprocessorContractError(
@@ -673,7 +788,7 @@ def _validate_source_config(value: Mapping[str, object]) -> dict[str, object]:
     }
     if dict(policies) != expected_policies:
         raise LearnerPreprocessorContractError(
-            "preprocessor v1 policy semantics mismatch"
+            "preprocessor policy semantics mismatch"
         )
     if dict(constants) != {
         "milliseconds_per_second": 1000.0,
@@ -681,13 +796,13 @@ def _validate_source_config(value: Mapping[str, object]) -> dict[str, object]:
         "limited_lifecycle_maximum_ms": 1200000.0,
     }:
         raise LearnerPreprocessorContractError(
-            "preprocessor v1 scaling constants mismatch"
+            "preprocessor scaling constants mismatch"
         )
     if authorities.get("unit_conversion") != "SI_MILLISECONDS_TO_SECONDS_EXACT" or (
         authorities.get("progress_contract") != "NATIVE_PROGRESS_MILLIONTHS/1.0"
     ):
         raise LearnerPreprocessorContractError(
-            "preprocessor v1 unit/progress authority mismatch"
+            "preprocessor unit/progress authority mismatch"
         )
     lifecycle_hash = authorities.get("operator_lifecycle_authority_hash")
     _sha256(lifecycle_hash, "operator lifecycle authority hash")
@@ -802,6 +917,9 @@ __all__ = [
     "LEARNER_OBSERVATION_PREPROCESSOR_ID",
     "LEARNER_OBSERVATION_PREPROCESSOR_SCHEMA_VERSION",
     "LEARNER_OBSERVATION_PREPROCESSOR_VERSION",
+    "LEARNER_OBSERVATION_PREPROCESSOR_V2_ID",
+    "LEARNER_OBSERVATION_PREPROCESSOR_V2_SCHEMA_VERSION",
+    "LEARNER_OBSERVATION_PREPROCESSOR_V2_VERSION",
     "FeatureTransformRecord",
     "FeatureTransformType",
     "LearnerObservationPreprocessor",
@@ -810,4 +928,5 @@ __all__ = [
     "ProcessedLearnerObservation",
     "build_learner_observation_preprocessor_spec",
     "load_learner_observation_preprocessor_spec",
+    "load_learner_observation_preprocessor_spec_for_identity",
 ]

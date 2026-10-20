@@ -18,12 +18,18 @@ from wargame_native_engine.io.serialization import (
 from wargame_native_engine.rules.config import Ruleset, load_ruleset
 from wargame_native_engine.rules.indirect_fire import (
     load_indirect_fire_replay_identity,
+    load_legacy_indirect_fire_replay_identity,
 )
 from wargame_native_engine.rules.operator_lifecycle import (
     load_operator_lifecycle_authority,
 )
 from wargame_native_engine.rules.loitering_munition import (
     load_loitering_munition_attack_authority,
+)
+from wargame_native_engine.rules.objective_capture import (
+    ObjectiveCapturePolicy,
+    load_objective_capture_policy,
+    resolve_objective_capture_policy_identity,
 )
 from wargame_native_engine.rules.boarding import (
     load_boarding_type_assignment_authority,
@@ -38,6 +44,7 @@ if TYPE_CHECKING:
 
 
 REPLAY_SCHEMA_VERSION = "native-replay/2.0"
+_NO_CAPTURE_INITIAL_IDENTITY = object()
 
 
 class UnsupportedReplaySemanticsError(ValueError):
@@ -125,6 +132,11 @@ class ReplayWriter:
         self._write_json("manifest.json", self.manifest)
 
     def record_initial_state(self, snapshot: Mapping[str, Any]) -> None:
+        capture_policy = snapshot.get("objective_capture_policy")
+        if isinstance(capture_policy, Mapping):
+            self.manifest["objective_capture_policy"] = json_clone(
+                capture_policy
+            )
         boarding_assignment = snapshot.get(
             "boarding_type_assignment_authority"
         )
@@ -296,6 +308,12 @@ def replay_actions(scenario: NativeScenario, root: str | Path, *,
         strict=strict,
         kind="replay",
     )
+    capture_policy = _check_objective_capture_semantics(
+        manifest,
+        bundle["initial_state"].get("objective_capture_policy"),
+        strict=strict,
+        kind="replay",
+    )
     mismatches: list[str] = []
     expected = {
         "scenario_hash": scenario.scenario_hash,
@@ -324,10 +342,16 @@ def replay_actions(scenario: NativeScenario, root: str | Path, *,
             manifest, strict=strict, kind="replay"
         )
     engine = NativeEngine(scenario,
+                          mounted_position_policy=_mounted_position_policy(bundle["initial_state"]),
                           max_ticks=int(manifest["max_ticks"]),
                           ruleset=active_ruleset,
                           enable_boarding_type_assignments=(
                               boarding_type_assignments
+                          ),
+                          objective_capture_policy=(
+                              "legacy-unversioned"
+                              if capture_policy is None
+                              else capture_policy.identity_record()
                           ))
     engine.reset(int(manifest["seed"]))
     if strict and canonical_hash(engine.snapshot()) != canonical_hash(
@@ -421,10 +445,12 @@ def replay_source_archive(scenario: NativeScenario, source: str | Path, *,
                           ) -> ReplayVerification:
     """Strictly replay Native steps embedded beside numbered GREEN frames."""
     from wargame_native_engine.io.importers.source_replay_archive import (
-        SourceReplayArchiveImporter,
+        SourceReplayArchiveReader,
     )
-    archive = SourceReplayArchiveImporter().import_path(source)
+    archive = SourceReplayArchiveReader(source)
     manifest = archive.manifest
+    from wargame_native_engine.compat.source_frame.contract import source_contract_from_manifest
+    source_contract = source_contract_from_manifest(manifest)
     _check_adjudication_semantics(
         manifest, strict=strict, kind="source replay")
     _check_operator_lifecycle_semantics(
@@ -449,6 +475,11 @@ def replay_source_archive(scenario: NativeScenario, source: str | Path, *,
             for step in archive.steps
             for action in step.get("ordered_actions", [])
         ),
+        strict=strict,
+        kind="source replay",
+    )
+    capture_policy = _check_objective_capture_semantics(
+        manifest,
         strict=strict,
         kind="source replay",
     )
@@ -493,6 +524,8 @@ def replay_source_archive(scenario: NativeScenario, source: str | Path, *,
         SourceCompatibleEnvironment,
     )
 
+    frame_iterator = archive.iter_frames()
+    _, _, initial_frame = next(frame_iterator)
     environment = SourceCompatibleEnvironment(
         GameSession(NativeEngineBackend(
             scenario,
@@ -501,8 +534,16 @@ def replay_source_archive(scenario: NativeScenario, source: str | Path, *,
             ruleset=active_ruleset,
             map_runtime_data=map_runtime_data,
             enable_boarding_type_assignments=boarding_type_assignments,
+            mounted_position_policy=_mounted_position_policy(manifest),
+            objective_capture_policy=(
+                "legacy-unversioned"
+                if capture_policy is None
+                else capture_policy.identity_record()
+            ),
         )),
-        template=archive.frames[0],
+        template=initial_frame,
+        engine_version=manifest.get("engine_version", ENGINE_VERSION),
+        source_contract=source_contract,
     )
     bundle = environment.setup_views(_exact_int(
         manifest.get("episode_seed"), "episode_seed", minimum=0
@@ -511,7 +552,7 @@ def replay_source_archive(scenario: NativeScenario, source: str | Path, *,
         if environment.initial_state_hash != manifest.get("initial_state_hash"):
             environment.session.close()
             raise ValueError("source replay initial state hash mismatch")
-        _verify_green_frame_hash(bundle.green, archive.frames[0].source_hash, 0)
+        _verify_green_frame_hash(bundle.green, initial_frame.source_hash, 0)
 
     for offset, record in enumerate(archive.steps, start=1):
         if environment.session.is_terminal():
@@ -533,6 +574,16 @@ def replay_source_archive(scenario: NativeScenario, source: str | Path, *,
             environment.session.close()
             raise RuntimeError("strict replay did not produce a step record")
         if strict:
+            try:
+                frame_index, _, expected_frame = next(frame_iterator)
+            except StopIteration as exc:
+                environment.session.close()
+                raise ValueError("source replay frame sequence is truncated") from exc
+            if frame_index != offset:
+                environment.session.close()
+                raise ValueError(
+                    f"source replay frame index mismatch at step {offset}"
+                )
             comparable_keys = [
                 "tick_before", "tick_after", "delta_time_ms",
                 "ordered_actions", "action_sequences",
@@ -547,8 +598,17 @@ def replay_source_archive(scenario: NativeScenario, source: str | Path, *,
                         f"source replay {key} mismatch at step {offset}"
                     )
             _verify_green_frame_hash(
-                bundle.green, archive.frames[offset].source_hash, offset
+                bundle.green, expected_frame.source_hash, offset
             )
+
+    if strict:
+        try:
+            next(frame_iterator)
+        except StopIteration:
+            pass
+        else:
+            environment.session.close()
+            raise ValueError("source replay frame sequence has a suffix")
 
     actual = environment.session.result()
     expected_hash = str(manifest["final_state_hash"])
@@ -604,6 +664,62 @@ def _check_adjudication_semantics(
         raise UnsupportedReplaySemanticsError(message)
     warnings.warn(message + "; continuing in non-strict mode", RuntimeWarning,
                   stacklevel=3)
+
+
+def _check_objective_capture_semantics(
+    manifest: Mapping[str, Any],
+    initial_identity: object = _NO_CAPTURE_INITIAL_IDENTITY,
+    *,
+    strict: bool,
+    kind: str,
+) -> ObjectiveCapturePolicy | None:
+    """Validate and select a frozen capture implementation.
+
+    A missing identity is the historical unversioned v1 contract.  A present
+    identity must exactly match a supported policy's canonical identity; a
+    self-consistent but unknown manifest is never executable.
+    """
+
+    actual = manifest.get("objective_capture_policy")
+    actual_policy = _resolve_replay_capture_policy(actual, kind=kind)
+    if initial_identity is _NO_CAPTURE_INITIAL_IDENTITY:
+        return actual_policy
+
+    initial_policy = _resolve_replay_capture_policy(
+        initial_identity, kind=kind
+    )
+    if actual == initial_identity:
+        return initial_policy
+    message = (
+        f"unsupported {kind} objective capture policy: "
+        "manifest/initial snapshot identity mismatch"
+    )
+    if strict:
+        raise UnsupportedReplaySemanticsError(message)
+    warnings.warn(
+        message + "; using initial snapshot policy in non-strict mode",
+        RuntimeWarning,
+        stacklevel=3,
+    )
+    return initial_policy
+
+
+def _resolve_replay_capture_policy(
+    identity: object,
+    *,
+    kind: str,
+) -> ObjectiveCapturePolicy | None:
+    if identity is None:
+        # Validate that the frozen legacy implementation is installed even
+        # though old archives intentionally carry no capture identity field.
+        load_objective_capture_policy("1")
+        return None
+    try:
+        return resolve_objective_capture_policy_identity(identity)
+    except ValueError as exc:
+        raise UnsupportedReplaySemanticsError(
+            f"unsupported {kind} objective capture policy: {exc}"
+        ) from exc
 
 
 def _operator_lifecycle_replay_identity() -> dict[str, str]:
@@ -771,12 +887,18 @@ def _check_indirect_fire_semantics(
     if not any(_is_indirect_fire_action(value) for value in actions):
         return
     expected = load_indirect_fire_replay_identity()
+    legacy = load_legacy_indirect_fire_replay_identity()
+    if all(manifest.get(key) == value for key, value in expected.items()):
+        return
+    if (
+        manifest.get("indirect_fire_boundary_semantics_version") is None
+        and all(manifest.get(key) == value for key, value in legacy.items())
+    ):
+        return
     mismatches = tuple(
         key for key, value in expected.items()
         if manifest.get(key) != value
     )
-    if not mismatches:
-        return
     message = (
         f"unsupported {kind} indirect-fire authority: "
         + ", ".join(mismatches)
@@ -908,3 +1030,10 @@ def _classic_action_records(result: StepResult) -> list[Mapping[str, Any]]:
             "delta_time_ms": result.delta_time_ms,
         })
     return records
+
+
+def _mounted_position_policy(record):
+    policy = record.get("mounted_position_policy")
+    if policy not in {None, "native-mounted-position-sync/1.0"}:
+        raise ValueError("unknown mounted position policy")
+    return policy

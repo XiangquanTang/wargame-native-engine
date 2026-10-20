@@ -1,0 +1,21 @@
+{
+  "schema_version": "native-spatial-candidate-provider-config/1.0",
+  "provider_id": "native-bounded-static-map-spatial-candidates",
+  "provider_version": "2.0.0",
+  "cell_set_rule": "PUBLIC_LOCAL_OBJECTIVE_VISIBLE_GRID_SHORTLIST",
+  "cell_sort_order": "HEX_ID_ASC",
+  "semantic_deduplication": "ENGINE_ACTION_ID",
+  "movement_modes": [
+    "NORMAL"
+  ],
+  "max_map_cells": 432,
+  "max_planning_requests": 128,
+  "final_action_capacity": 256,
+  "shortlist_quotas": [
+    8,
+    3,
+    2,
+    2
+  ],
+  "config_hash": "dde05fe2444ccb497cabec1d9f2576d213c8bf920ad431be27a2f67c17f8ab35"
+}

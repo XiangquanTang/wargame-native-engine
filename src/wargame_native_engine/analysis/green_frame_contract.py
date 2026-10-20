@@ -9,6 +9,9 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from wargame_native_engine.compat.source_frame.contract import (
+    CURRENT_SOURCE_CONTRACT, SOURCE_CONTRACT_KEY,
+)
 from wargame_native_engine.analysis.advantage import calculate_green_advantage
 from wargame_native_engine.analysis.demo_compat_factors import (
     ammo_factor,
@@ -126,7 +129,10 @@ def build_green_frame_analysis(
     all_warnings: list[str] = []
 
     for unit in units:
-        evidence = extract_unit_factor_evidence(unit)
+        evidence = extract_unit_factor_evidence(
+            unit, null_is_missing=(frame.get("extra", {}).get("native", {}).get(
+                SOURCE_CONTRACT_KEY) == CURRENT_SOURCE_CONTRACT),
+        )
         factor_values = _build_factor_values(evidence, unit)
         obs_count = sum(
             1 for ev in evidence if ev.status is FactorStatus.OBSERVED

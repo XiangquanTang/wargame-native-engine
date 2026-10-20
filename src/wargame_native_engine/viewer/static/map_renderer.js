@@ -754,9 +754,26 @@
         const center = this._screen(hexToPixel(
           Math.floor(city.coord / 100), city.coord % 100, this.map.hex_size,
         ));
-        context.beginPath(); context.arc(center.x, center.y, 6, 0, Math.PI * 2);
-        context.fillStyle = city.flag === 0 ? "#df3d45" : city.flag === 1 ? "#357edb" : "#d7c66b";
-        context.fill(); context.strokeStyle = "#fff3ad"; context.lineWidth = 1.5; context.stroke();
+        const color = city.flag === 0 ? "#df3d45"
+          : city.flag === 1 ? "#357edb" : "#d7c66b";
+        context.save();
+        context.beginPath();
+        context.moveTo(center.x - 4, center.y + 8);
+        context.lineTo(center.x - 4, center.y - 14);
+        context.strokeStyle = "#f3ead0";
+        context.lineWidth = 2;
+        context.stroke();
+        context.beginPath();
+        context.moveTo(center.x - 3, center.y - 13);
+        context.lineTo(center.x + 10, center.y - 9);
+        context.lineTo(center.x - 3, center.y - 4);
+        context.closePath();
+        context.fillStyle = color;
+        context.fill();
+        context.strokeStyle = "#fff3ad";
+        context.lineWidth = 1.2;
+        context.stroke();
+        context.restore();
       }
     }
 

@@ -1,11 +1,26 @@
 {
-  "schema_version": "native-indirect-fire-observation-policy/1.0",
+  "schema_version": "native-indirect-fire-observation-policy/1.1",
   "policy_id": "native-indirect-fire-observation-policy",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "authority_status": "EXECUTABLE_AUTHORITY_READY",
-  "impact_observation_policy": "UNOBSERVED",
+  "impact_observation_policy": "DYNAMIC_AT_IMPACT",
   "requires_observer": false,
-  "correction_level_policy": "FIXED_UNOBSERVED",
-  "dispersion_table_id": "indirect_fire.unobserved_dispersion",
-  "authority_basis": "NATIVE_SIMPLIFIED_V1_UNOBSERVED"
+  "correction_level_policy": "OBSERVED_GRID_AND_TARGET",
+  "correction_levels": [
+    "UNOBSERVED",
+    "GRID_CORRECTED",
+    "TARGET_CORRECTED"
+  ],
+  "dispersion_table_ids": {
+    "UNOBSERVED": "indirect_fire.unobserved_dispersion",
+    "GRID_CORRECTED": "indirect_fire.grid_corrected_dispersion",
+    "TARGET_CORRECTED": "indirect_fire.target_corrected_dispersion"
+  },
+  "observer_eligibility": [
+    "CANONICAL_DRONE",
+    "GROUND_PERSONNEL",
+    "GROUND_VEHICLE"
+  ],
+  "observation_interface": "NativeEngine._indirect_fire_observation_at_impact/v1",
+  "authority_basis": "NATIVE_SIMPLIFIED_KNOWLEDGE_7.2_AND_FULL_RULES_9.2"
 }

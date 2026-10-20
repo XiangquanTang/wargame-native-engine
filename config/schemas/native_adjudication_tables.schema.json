@@ -9,7 +9,7 @@
       "required": ["schema_version", "revision", "release_status", "table_set_id", "content_sha256", "transcription"],
       "properties": {
         "schema_version": {"const": "native-adjudication-tables/1.2"},
-        "revision": {"const": "1.2.1-final"},
+        "revision": {"const": "1.2.2-final"},
         "release_status": {"const": "FINAL_FOR_CODEX_IMPLEMENTATION"},
         "content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "transcription": {

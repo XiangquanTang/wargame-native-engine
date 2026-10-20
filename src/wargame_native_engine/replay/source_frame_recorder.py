@@ -5,10 +5,15 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import tempfile
 from typing import Any, Mapping, Sequence
 from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
+from wargame_native_engine.compat.source_frame.contract import (
+    LEGACY_SOURCE_CONTRACT, SOURCE_CONTRACT_KEY, source_contract_from_manifest,
+    validate_frame_contract,
+)
 from wargame_native_engine.analysis.analyzer import (
     EightFactorAnalyzer,
     GreenFrameAnalysisInput,
@@ -17,6 +22,7 @@ from wargame_native_engine.analysis.jsonl import analysis_frames_to_jsonl
 from wargame_native_engine.compat.source_frame.serialization import (
     canonical_green_frame_payload,
     canonical_source_json,
+    canonical_validated_green_frame_payload,
 )
 from wargame_native_engine.io.serialization import canonical_hash, file_sha256, json_clone
 from wargame_native_engine.rules.indirect_fire import (
@@ -26,6 +32,10 @@ from wargame_native_engine.version import ADJUDICATION_SEMANTICS_VERSION
 
 
 ANALYSIS_SIDECAR_NAME = "frame_analysis.native.jsonl"
+
+
+class SourceRecorderAppendRollbackError(RuntimeError):
+    """A JSONL append failed and its committed prefix could not be secured."""
 
 
 class SourceFrameRecorder:
@@ -38,6 +48,7 @@ class SourceFrameRecorder:
         self.root = Path(root)
         self._started = False
         self._finalized = False
+        self._failed = False
         self._frame_hashes: list[str] = []
         self._metadata: dict[str, Any] = {}
         self._initial_state_hash: str | None = None
@@ -49,6 +60,7 @@ class SourceFrameRecorder:
         if self.root.exists() and any(self.root.iterdir()):
             raise FileExistsError(f"refusing to overwrite recorder output: {self.root}")
         normalized_metadata = json_clone(metadata)
+        source_contract_from_manifest(normalized_metadata)
         declared_semantics = normalized_metadata.get(
             "adjudication_semantics_version")
         if (declared_semantics is not None
@@ -85,6 +97,22 @@ class SourceFrameRecorder:
             ):
                 if name in native:
                     self._metadata[name] = json_clone(native[name])
+            capture_policy = native.get("objective_capture_policy")
+            if isinstance(capture_policy, Mapping):
+                self._metadata["objective_capture_policy"] = json_clone(
+                    capture_policy
+                )
+        declared = native.get(SOURCE_CONTRACT_KEY) if isinstance(native, Mapping) else None
+        contract = source_contract_from_manifest({
+            SOURCE_CONTRACT_KEY: declared or LEGACY_SOURCE_CONTRACT,
+        })
+        if any(name in self._metadata for name in (SOURCE_CONTRACT_KEY, "frame_contract")):
+            if source_contract_from_manifest(self._metadata) != contract:
+                raise ValueError("recorder Source projection contract mismatch")
+        validate_frame_contract(green_frame, contract)
+        self.frame_contract = contract
+        if contract != LEGACY_SOURCE_CONTRACT:
+            self._metadata[SOURCE_CONTRACT_KEY] = contract
         self._initial_state_hash = str(initial_state_hash)
         self._record_frame(green_frame)
 
@@ -113,8 +141,17 @@ class SourceFrameRecorder:
             )
         ):
             self._metadata.update(load_indirect_fire_replay_identity())
-        self._record_frame(green_frame)
-        self._append_jsonl(self.root / "steps.jsonl", record)
+        frame_path = self._record_frame(green_frame)
+        try:
+            self._append_jsonl(self.root / "steps.jsonl", record)
+        except BaseException as exc:
+            # The step and its GREEN frame form one recorder commit.  A failed
+            # append must not leave a future finalize with a dangling frame.
+            frame_path.unlink(missing_ok=True)
+            self._frame_hashes.pop()
+            if isinstance(exc, SourceRecorderAppendRollbackError):
+                self._failed = True
+            raise
 
     def finalize(self, outcome: Mapping[str, Any], *,
                  final_state_hash: str) -> Mapping[str, Any]:
@@ -123,6 +160,8 @@ class SourceFrameRecorder:
             raise RuntimeError("recorder_has_no_frames")
         if self._finalized:
             raise RuntimeError("recorder_already_finalized")
+        if self._failed:
+            raise RuntimeError("recorder_failed_reset_required")
         result = json_clone(outcome)
         step_count = len(self._frame_hashes) - 1
         if len(_read_jsonl(self.root / "steps.jsonl")) != step_count:
@@ -175,22 +214,16 @@ class SourceFrameRecorder:
             target,
             authoritative_member_paths,
         )
-        member_paths = authoritative_member_paths
-        member_paths.sort(key=lambda path: _member_sort_key(path.name))
-        members = [(path.name, path.read_bytes()) for path in member_paths]
+        member_paths = sorted(
+            authoritative_member_paths,
+            key=lambda path: _member_sort_key(path.name),
+        )
 
+        sidecar_payload: bytes | None = None
         if analysis_analyzer is not None:
             sidecar_payload = _build_analysis_sidecar(
-                members,
+                member_paths,
                 analysis_analyzer,
-            )
-            first_fact_sidecar = next(
-                index for index, (name, _) in enumerate(members)
-                if not _is_numbered_frame(name)
-            )
-            members.insert(
-                first_fact_sidecar,
-                (ANALYSIS_SIDECAR_NAME, sidecar_payload),
             )
 
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -200,32 +233,46 @@ class SourceFrameRecorder:
         try:
             with ZipFile(temporary, "w", compression=ZIP_DEFLATED,
                          compresslevel=9) as archive:
-                for name, payload in members:
-                    info = ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+                sidecar_written = False
+                for path in member_paths:
+                    if (
+                        sidecar_payload is not None
+                        and not sidecar_written
+                        and not _is_numbered_frame(path.name)
+                    ):
+                        _write_zip_payload(
+                            archive, ANALYSIS_SIDECAR_NAME, sidecar_payload
+                        )
+                        sidecar_written = True
+                    info = ZipInfo(path.name, date_time=(1980, 1, 1, 0, 0, 0))
                     info.compress_type = ZIP_DEFLATED
                     info.external_attr = 0o100644 << 16
-                    archive.writestr(info, payload, compresslevel=9)
+                    with path.open("rb") as source, archive.open(
+                        info, "w"
+                    ) as destination:
+                        shutil.copyfileobj(source, destination, length=1024 * 1024)
             os.replace(temporary, target)
         finally:
             if os.path.exists(temporary):
                 os.unlink(temporary)
         return target
 
-    def _record_frame(self, frame: Mapping[str, Any]) -> None:
-        value = json_clone(frame)
-        perspective = value.get("extra", {}).get("native", {}).get("perspective")
-        if perspective != "GREEN":
-            raise ValueError("recorder accepts GREEN frames only")
+    def _record_frame(self, frame: Mapping[str, Any]) -> Path:
+        validate_frame_contract(frame, self.frame_contract)
         index = len(self._frame_hashes)
-        payload = canonical_green_frame_payload(value)
-        self._atomic_write(self.root / f"{index}.json", payload)
+        payload = canonical_validated_green_frame_payload(frame)
+        path = self.root / f"{index}.json"
+        self._atomic_write(path, payload)
         self._frame_hashes.append(hashlib.sha256(payload).hexdigest())
+        return path
 
     def _require_active(self) -> None:
         if not self._started:
             raise RuntimeError("recorder_not_started")
         if self._finalized:
             raise RuntimeError("recorder_already_finalized")
+        if self._failed:
+            raise RuntimeError("recorder_failed_reset_required")
 
     @staticmethod
     def _atomic_write(path: Path, payload: bytes) -> None:
@@ -243,9 +290,37 @@ class SourceFrameRecorder:
 
     @classmethod
     def _append_jsonl(cls, path: Path, value: Mapping[str, Any]) -> None:
-        existing = path.read_bytes() if path.exists() else b""
-        cls._atomic_write(path, existing + (_canonical_json(value) + "\n").encode(
-            "utf-8"))
+        payload = (_canonical_json(value) + "\n").encode("utf-8")
+        with path.open("r+b" if path.exists() else "w+b") as stream:
+            stream.seek(0, os.SEEK_END)
+            committed_size = stream.tell()
+            try:
+                _write_all(stream, payload)
+                stream.flush()
+                os.fsync(stream.fileno())
+            except BaseException as append_error:
+                try:
+                    stream.seek(committed_size)
+                    stream.truncate()
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                except BaseException as rollback_error:
+                    raise SourceRecorderAppendRollbackError(
+                        "Source recorder append rollback was not durable"
+                    ) from rollback_error
+                raise append_error
+
+
+def _write_all(stream, payload: bytes) -> None:
+    """Complete an append even when the underlying writer short-writes."""
+
+    view = memoryview(payload)
+    written = 0
+    while written < len(view):
+        count = stream.write(view[written:])
+        if count is None or count <= 0:
+            raise OSError("Source recorder append made no progress")
+        written += count
 
 
 def _canonical_json(value: Any) -> str:
@@ -299,33 +374,33 @@ def _validate_archive_output_does_not_alias_facts(
 
 
 def _build_analysis_sidecar(
-    members: list[tuple[str, bytes]],
+    member_paths: Sequence[Path],
     analyzer: EightFactorAnalyzer,
 ) -> bytes:
     """Build and validate the derived sidecar before any ZIP is created."""
 
     numbered = [
-        (int(name[:-5]), name, payload)
-        for name, payload in members
-        if _is_numbered_frame(name)
+        (int(path.name[:-5]), path)
+        for path in member_paths
+        if _is_numbered_frame(path.name)
     ]
     if not numbered:
         raise ValueError("analysis sidecar requires numbered frames")
 
-    actual_names = [name for _, name, _ in numbered]
+    actual_names = [path.name for _, path in numbered]
     expected_names = [f"{index}.json" for index in range(len(numbered))]
     if actual_names != expected_names:
         raise ValueError(
             "analysis sidecar numbered frames must be continuous from 0"
         )
 
-    manifest_payloads = [
-        payload for name, payload in members
-        if name == "replay_manifest.native.jsonl"
+    manifest_paths = [
+        path for path in member_paths
+        if path.name == "replay_manifest.native.jsonl"
     ]
-    if len(manifest_payloads) != 1:
+    if len(manifest_paths) != 1:
         raise ValueError("analysis sidecar requires one finalized manifest")
-    manifest_records = _read_jsonl_payload(manifest_payloads[0])
+    manifest_records = _read_jsonl_payload(manifest_paths[0].read_bytes())
     if len(manifest_records) != 1:
         raise ValueError(
             "analysis sidecar requires one finalized manifest record"
@@ -336,29 +411,34 @@ def _build_analysis_sidecar(
     if type(frame_count) is not int or frame_count != len(numbered):
         raise ValueError("analysis sidecar manifest frame_count mismatch")
 
-    frame_hashes = [
-        hashlib.sha256(payload).hexdigest()
-        for _, _, payload in numbered
-    ]
-    if manifest.get("frame_hashes") != frame_hashes:
+    expected_hashes = manifest.get("frame_hashes")
+    if not isinstance(expected_hashes, list) or len(expected_hashes) != frame_count:
         raise ValueError("analysis sidecar numbered frame hash mismatch")
 
-    inputs: list[GreenFrameAnalysisInput] = []
+    frame_analyses = []
     scenario_hash = manifest.get("scenario_hash")
-    for frame_index, name, payload in numbered:
+    for frame_index, path in numbered:
+        payload = path.read_bytes()
+        frame_hash = hashlib.sha256(payload).hexdigest()
+        if expected_hashes[frame_index] != frame_hash:
+            raise ValueError("analysis sidecar numbered frame hash mismatch")
         value = json.loads(payload.decode("utf-8"))
         if not isinstance(value, Mapping):
             raise ValueError(
-                f"analysis sidecar frame {name} root must be an object"
+                f"analysis sidecar frame {path.name} root must be an object"
             )
-        inputs.append(GreenFrameAnalysisInput(
+        frame_analyses.append(analyzer.analyze_green_frame(
+            GreenFrameAnalysisInput(
             frame_index=frame_index,
             frame=value,
-            frame_hash=frame_hashes[frame_index],
+            frame_hash=frame_hash,
             scenario_hash=scenario_hash,
+            )
         ))
 
-    timeline = analyzer.analyze_green_frames(tuple(inputs))
+    from wargame_native_engine.analysis.timeline import build_analysis_timeline
+
+    timeline = build_analysis_timeline(tuple(frame_analyses))
     if timeline.frame_indices != tuple(range(frame_count)):
         raise ValueError("analysis sidecar timeline frame index mismatch")
     text = analysis_frames_to_jsonl(timeline.frame_analyses)
@@ -370,6 +450,13 @@ def _build_analysis_sidecar(
     if len(text.splitlines()) != frame_count:
         raise ValueError("analysis sidecar JSONL frame_count mismatch")
     return payload
+
+
+def _write_zip_payload(archive: ZipFile, name: str, payload: bytes) -> None:
+    info = ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+    info.compress_type = ZIP_DEFLATED
+    info.external_attr = 0o100644 << 16
+    archive.writestr(info, payload, compresslevel=9)
 
 
 def _read_jsonl_payload(payload: bytes) -> list[Mapping[str, Any]]:

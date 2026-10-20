@@ -12,6 +12,7 @@ from enum import Enum
 from typing import Any, Mapping
 
 from wargame_native_engine.compat.source_frame.models import ArmorClass, UnitDomain
+from wargame_native_engine.core.indirect_fire import FireMissionObservationEvidence
 from wargame_native_engine.core.rng import NativeRNG
 from wargame_native_engine.rules.indirect_fire import (
     ArtilleryClass,
@@ -135,6 +136,8 @@ class IndirectFirePlanValidationResult:
 class IndirectFireObservationPolicy(str, Enum):
     UNRESOLVED = "UNRESOLVED"
     UNOBSERVED = "UNOBSERVED"
+    GRID_CORRECTED = "GRID_CORRECTED"
+    TARGET_CORRECTED = "TARGET_CORRECTED"
 
 
 @dataclass(frozen=True, slots=True)
@@ -211,6 +214,7 @@ class IndirectFireScatterResult:
 class IndirectFireResolutionEvidence:
     observation_policy: IndirectFireObservationPolicy
     spotter_evidence: str
+    observation_evidence: FireMissionObservationEvidence
     affected_hex_policy: str
     operator_order: str
     pre_state_hash: str
@@ -219,6 +223,17 @@ class IndirectFireResolutionEvidence:
     def __post_init__(self) -> None:
         if not isinstance(self.observation_policy, IndirectFireObservationPolicy):
             raise TypeError("observation_policy must be IndirectFireObservationPolicy")
+        if not isinstance(
+            self.observation_evidence, FireMissionObservationEvidence
+        ):
+            raise TypeError(
+                "observation_evidence must be FireMissionObservationEvidence"
+            )
+        if (
+            self.observation_evidence.correction_level
+            != self.observation_policy.value
+        ):
+            raise ValueError("observation evidence level mismatch")
         for name in ("spotter_evidence", "affected_hex_policy", "operator_order"):
             _require_nonempty(getattr(self, name), name)
         if self.affected_hex_policy != "IMPACT_HEX_ONLY":
@@ -287,6 +302,42 @@ class IndirectFireResolution:
             raise TypeError("rng_transition must be IndirectFireRngTransition")
         if not isinstance(self.scatter_result, IndirectFireScatterResult):
             raise TypeError("scatter_result must be IndirectFireScatterResult")
+        if not isinstance(
+            self.resolution_evidence,
+            IndirectFireResolutionEvidence,
+        ):
+            raise TypeError(
+                "resolution_evidence must be IndirectFireResolutionEvidence"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class IndirectFireMissResolution:
+    """A fully sampled scatter result whose path leaves the map topology."""
+
+    mission_id: str
+    shooter_id: int
+    weapon_id: int
+    planned_hex: int
+    outcome: str
+    execution_policy_id: str
+    execution_policy_hash: str
+    scatter_result: IndirectFireScatterResult
+    rng_transition: IndirectFireRngTransition
+    resolution_evidence: IndirectFireResolutionEvidence
+
+    def __post_init__(self) -> None:
+        _require_nonempty(self.mission_id, "mission_id")
+        _require_nonempty(self.execution_policy_id, "execution_policy_id")
+        _require_sha256(self.execution_policy_hash, "execution_policy_hash")
+        for name in ("shooter_id", "weapon_id", "planned_hex"):
+            _require_nonnegative_exact_int(getattr(self, name), name)
+        if self.outcome != "SCATTER_OUT_OF_MAP":
+            raise ValueError("unsupported indirect-fire miss outcome")
+        if not isinstance(self.scatter_result, IndirectFireScatterResult):
+            raise TypeError("scatter_result must be IndirectFireScatterResult")
+        if not isinstance(self.rng_transition, IndirectFireRngTransition):
+            raise TypeError("rng_transition must be IndirectFireRngTransition")
         if not isinstance(
             self.resolution_evidence,
             IndirectFireResolutionEvidence,
@@ -535,6 +586,7 @@ class IndirectFireImpactValidationResult:
     request: IndirectFireImpactRequest | None = None
     resolution: IndirectFireResolution | None = None
     effect_bundle: IndirectFireEffectBundle | None = None
+    miss_resolution: IndirectFireMissResolution | None = None
 
     def __post_init__(self) -> None:
         if type(self.valid) is not bool:
@@ -548,9 +600,26 @@ class IndirectFireImpactValidationResult:
             raise ValueError("blockers must be sorted unique non-empty strings")
         values = (self.request, self.resolution, self.effect_bundle)
         if self.valid:
-            if self.blockers or any(value is None for value in values):
-                raise ValueError("valid impact result requires all contracts")
-        elif any(value is not None for value in values) or not self.blockers:
+            normal = (
+                all(value is not None for value in values)
+                and self.miss_resolution is None
+            )
+            miss = (
+                all(value is None for value in values)
+                and isinstance(
+                    self.miss_resolution,
+                    IndirectFireMissResolution,
+                )
+            )
+            if self.blockers or normal is miss:
+                raise ValueError(
+                    "valid impact result requires one resolution contract"
+                )
+        elif (
+            any(value is not None for value in values)
+            or self.miss_resolution is not None
+            or not self.blockers
+        ):
             raise ValueError("invalid impact result requires blockers only")
 
 
@@ -1175,6 +1244,7 @@ __all__ = [
     "IndirectFireEffectStatus",
     "IndirectFireImpactRequest",
     "IndirectFireImpactValidationResult",
+    "IndirectFireMissResolution",
     "IndirectFireObservationPolicy",
     "IndirectFirePlanRequest",
     "IndirectFirePlanValidationEvidence",

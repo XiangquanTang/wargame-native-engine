@@ -9,9 +9,14 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass
+import tempfile
 from threading import RLock
 from typing import Any, Mapping, Sequence
 
+from wargame_native_engine._framed_history import (
+    append_private_record,
+    read_private_record,
+)
 from wargame_native_engine.agents.seat import SeatDecision
 from wargame_native_engine.gateway.models import (
     CommandGatewayError,
@@ -20,6 +25,10 @@ from wargame_native_engine.gateway.models import (
     DecisionWindowView,
 )
 from wargame_native_engine.io.serialization import canonical_hash, json_clone
+from wargame_native_engine.operations.commands import (
+    _FrozenActionRecords,
+    frozen_action_records,
+)
 from wargame_native_engine.operations.controller import SideController
 from wargame_native_engine.projection.decision_semantic import (
     CapabilityAvailabilityStatus,
@@ -34,6 +43,7 @@ PRODUCT_OPERATION_TYPES = (
     "INDIRECT_FIRE",
     "BOARD",
     "UNLOAD",
+    "CAPTURE",
     "ENTER_CONCEALMENT",
     "STOP_MOVE",
     "WEAPON_UNFOLD",
@@ -231,15 +241,20 @@ class ProductOperationService:
         self._previews: dict[str, _StoredPreview] = {}
         self._preview_requests: dict[str, tuple[tuple[object, ...], str]] = {}
         self._execute_requests: dict[
-            str, tuple[str, ProductExecutionResult]
+            str, tuple[str, tuple[int, int]]
         ] = {}
         self._decision_previews: dict[str, _StoredDecisionPreview] = {}
         self._decision_preview_requests: dict[
             str, tuple[tuple[object, ...], str]
         ] = {}
         self._decision_execute_requests: dict[
-            str, tuple[str, SeatDecisionExecutionResult]
+            str, tuple[str, tuple[int, int]]
         ] = {}
+        self._execution_history = tempfile.TemporaryFile(
+            mode="w+b", prefix="wargame-product-idempotency."
+        )
+        self._first_history_failure: BaseException | None = None
+        self._closed = False
         self._active_window: int | None = None
         self._lock = RLock()
 
@@ -313,6 +328,7 @@ class ProductOperationService:
             value.operator_reference: value
             for value in decision.capabilities.operators
         }
+        action_records = frozen_action_records(active_view)
         operations = {
             kind: {"applicable_count": 0, "unavailable": []}
             for kind in PRODUCT_OPERATION_TYPES
@@ -322,7 +338,11 @@ class ProductOperationService:
         guided_targets: set[int] = set()
         for unit_id in actors:
             try:
-                menu = self.controller.get_unit_commands(unit_id, view=active_view)
+                menu = self.controller.get_unit_commands(
+                    unit_id,
+                    view=active_view,
+                    action_records=action_records,
+                )
             except CommandGatewayError as exc:
                 for value in operations.values():
                     value["unavailable"].append({
@@ -341,7 +361,9 @@ class ProductOperationService:
                 "state": menu.unit.get("state"),
             })
             for kind, value in operations.items():
-                candidates = _operation_candidates(menu, kind)
+                candidates = _operation_candidates(
+                    action_records, unit_id, kind,
+                )
                 family = _product_capability_family(kind)
                 status = (
                     None
@@ -441,7 +463,7 @@ class ProductOperationService:
             raise CommandGatewayError(
                 "target_required", "SHOOT requires an exact visible target id"
             )
-        if operation in {"BOARD", "UNLOAD"} and type(target_id) is not int:
+        if operation in {"BOARD", "UNLOAD", "CAPTURE"} and type(target_id) is not int:
             raise CommandGatewayError(
                 "target_required",
                 f"{operation} requires an exact server-issued target id",
@@ -497,7 +519,8 @@ class ProductOperationService:
                     "weapon_choice_actor_mismatch",
                     "weapon choices must belong to selected actors",
                 )
-        window = self.controller.window()
+        window, active_view = self.controller.state()
+        action_records = frozen_action_records(active_view)
         if window.submitted:
             raise CommandGatewayError(
                 "side_already_submitted", "this side is already waiting"
@@ -541,6 +564,8 @@ class ProductOperationService:
                     result, action_id = self._preview_unit(
                         unit_id,
                         operation,
+                        view=active_view,
+                        action_records=action_records,
                         request_id=request,
                         destination_hex=destination_hex,
                         target_hex=target_hex,
@@ -732,6 +757,7 @@ class ProductOperationService:
         request = _nonempty(request_id, "request_id")
         token = _nonempty(preview_token, "preview_token")
         with self._lock:
+            self._require_open()
             cached = self._decision_execute_requests.get(request)
             if cached is not None:
                 if cached[0] != token:
@@ -739,7 +765,9 @@ class ProductOperationService:
                         "request_id_conflict",
                         "decision execute request_id was reused with another preview",
                     )
-                return deepcopy(cached[1])
+                return deepcopy(self._load_execution_result(
+                    cached[1], SeatDecisionExecutionResult,
+                ))
             try:
                 stored = self._decision_previews[token]
             except KeyError as exc:
@@ -785,10 +813,48 @@ class ProductOperationService:
             result = _decision_product_result(preview, request, command)
             stored.executed_request_id = request
             stored.execution_result = result
-            self._decision_execute_requests[request] = (token, result)
+            offset = self._store_execution_result(result)
+            self._decision_execute_requests[request] = (token, offset)
             for component in stored.component_tokens:
                 self._previews.pop(component, None)
             return deepcopy(result)
+
+    def _decision_action_correlations(
+        self, preview_token: str,
+    ) -> tuple[Mapping[str, object], ...]:
+        """Return trusted-boundary preflight-to-action identities.
+
+        This private adapter hook does not submit or advance.  Public preview
+        records intentionally continue to omit the underlying action IDs.
+        """
+
+        token = _nonempty(preview_token, "preview_token")
+        with self._lock:
+            try:
+                stored = self._decision_previews[token]
+            except KeyError as exc:
+                raise CommandGatewayError(
+                    "decision_preview_not_found",
+                    "seat decision preview is unavailable or expired",
+                ) from exc
+            result: list[Mapping[str, object]] = []
+            for operation_index, component in enumerate(stored.component_tokens):
+                operation = self._previews[component]
+                action_iterator = iter(operation.action_ids)
+                for unit in operation.preview.per_unit_results:
+                    action_id = (
+                        next(action_iterator)
+                        if unit.accepted_for_preview else None
+                    )
+                    result.append({
+                        "operation_index": operation_index,
+                        "actor_id": unit.unit_id,
+                        "operation_type": operation.preview.operation_type,
+                        "accepted_for_preview": unit.accepted_for_preview,
+                        "action_id": action_id,
+                        "reject_code": unit.reject_code,
+                    })
+            return tuple(json_clone(result))
 
     def _replace_overlapping_previews(
         self, preview: GroupOperationPreview,
@@ -831,6 +897,7 @@ class ProductOperationService:
                 "invalid_partial_confirmation", "confirm_partial must be bool"
             )
         with self._lock:
+            self._require_open()
             cached_request = self._execute_requests.get(request)
             if cached_request is not None:
                 if cached_request[0] != token:
@@ -838,7 +905,9 @@ class ProductOperationService:
                         "request_id_conflict",
                         "execute request_id was reused with another preview",
                     )
-                return deepcopy(cached_request[1])
+                return deepcopy(self._load_execution_result(
+                    cached_request[1], ProductExecutionResult,
+                ))
             try:
                 stored = self._previews[token]
             except KeyError as exc:
@@ -885,14 +954,77 @@ class ProductOperationService:
             result = _product_result(preview, request, command)
             stored.executed_request_id = request
             stored.execution_result = result
-            self._execute_requests[request] = (token, result)
+            offset = self._store_execution_result(result)
+            self._execute_requests[request] = (token, offset)
             return deepcopy(result)
+
+    def idempotency_stats(self) -> Mapping[str, int]:
+        """Return aggregate owner counts without materializing responses."""
+
+        with self._lock:
+            self._require_open()
+            position = self._execution_history.seek(0, 2)
+            return {
+                "operation_entries": len(self._execute_requests),
+                "decision_entries": len(self._decision_execute_requests),
+                "history_bytes": position,
+                "live_operation_previews": len(self._previews),
+                "live_decision_previews": len(self._decision_previews),
+            }
+
+    def close(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._execution_history.close()
+            self._execute_requests.clear()
+            self._decision_execute_requests.clear()
+            self._previews.clear()
+            self._preview_requests.clear()
+            self._decision_previews.clear()
+            self._decision_preview_requests.clear()
+            self._first_history_failure = None
+            self._closed = True
+
+    def _store_execution_result(
+        self, value: ProductExecutionResult | SeatDecisionExecutionResult,
+    ) -> tuple[int, int]:
+        self._require_open()
+        try:
+            return append_private_record(self._execution_history, value)
+        except BaseException as exc:
+            if self._first_history_failure is None:
+                self._first_history_failure = exc
+            raise self._first_history_failure
+
+    def _load_execution_result(self, offset: tuple[int, int], expected_type):
+        self._require_open()
+        try:
+            value = read_private_record(self._execution_history, *offset)
+        except BaseException as exc:
+            if self._first_history_failure is None:
+                self._first_history_failure = exc
+            raise self._first_history_failure
+        if not isinstance(value, expected_type):
+            exc = RuntimeError("product idempotency history has an invalid record")
+            if self._first_history_failure is None:
+                self._first_history_failure = exc
+            raise self._first_history_failure
+        return value
+
+    def _require_open(self) -> None:
+        if self._closed:
+            raise RuntimeError("product_operation_service_closed")
+        if self._first_history_failure is not None:
+            raise self._first_history_failure
 
     def _preview_unit(
         self,
         unit_id: int,
         operation: str,
         *,
+        view: ControllerView,
+        action_records: _FrozenActionRecords,
         request_id: str,
         destination_hex: int | None,
         target_hex: int | None,
@@ -905,7 +1037,11 @@ class ProductOperationService:
         guided_weapon_id: int | None,
     ) -> tuple[UnitOperationPreview, str | None]:
         try:
-            menu = self.controller.get_unit_commands(unit_id)
+            menu = self.controller.get_unit_commands(
+                unit_id,
+                view=view,
+                action_records=action_records,
+            )
         except CommandGatewayError as exc:
             return _rejected(unit_id, str(unit_id), exc.code, exc.message), None
         name = _display_name(menu.unit, unit_id)
@@ -997,8 +1133,8 @@ class ProductOperationService:
                 },),
             ), proposal.action_id
 
-        candidates = _operation_candidates(menu, operation)
-        if operation in {"BOARD", "UNLOAD"}:
+        candidates = _operation_candidates(action_records, unit_id, operation)
+        if operation in {"BOARD", "UNLOAD", "CAPTURE"}:
             candidates = tuple(
                 item
                 for item in candidates
@@ -1048,6 +1184,7 @@ class ProductOperationService:
         ), str(chosen["action_id"])
 
     def _sync_window(self, index: int) -> None:
+        self._require_open()
         if self._active_window is None:
             self._active_window = index
             return
@@ -1215,6 +1352,8 @@ def _operation_summary(operation: str, item: Mapping[str, Any]) -> str:
         return f"人员{action.get('actor_id')}搭载载具{action.get('target_id')}"
     if operation == "UNLOAD":
         return f"载具{action.get('actor_id')}卸载人员{action.get('target_id')}"
+    if operation == "CAPTURE":
+        return f"单位{action.get('actor_id')}夺控目标{action.get('target_id')}"
     if operation == "ENTER_CONCEALMENT":
         return f"单位{action.get('actor_id')}进入隐蔽姿态"
     return {
@@ -1354,19 +1493,21 @@ def _capability_unavailable(
     return "operation_unavailable", _unavailable_message(operation)
 
 
-def _operation_candidates(menu: Any, operation: str) -> tuple[Mapping[str, Any], ...]:
+def _operation_candidates(
+    action_records: _FrozenActionRecords,
+    actor_id: int,
+    operation: str,
+) -> tuple[Mapping[str, Any], ...]:
     """Return only Engine-issued candidates for one Product operation."""
 
     key = "FIRE" if operation == "GUIDED_FIRE" else operation
-    values = tuple(menu.available.get(key, ()))
-    if operation != "GUIDED_FIRE":
-        return values
-    return tuple(
-        item for item in values
-        if isinstance(item, Mapping)
-        and isinstance(item.get("action"), Mapping)
-        and isinstance(item["action"].get("parameters"), Mapping)
-        and item["action"]["parameters"].get("fire_mode") == "GUIDED"
+    return action_records.query_records(
+        actor_reference=actor_id,
+        action_type=key,
+        parameters=(
+            {"fire_mode": "GUIDED"}
+            if operation == "GUIDED_FIRE" else None
+        ),
     )
 
 

@@ -1,10 +1,10 @@
 {
   "schema_version": "native-adjudication-table-set-reference/1.0",
   "table_set_id": "native-source-adjudication-final",
-  "table_set_version": "1.2.1-final",
+  "table_set_version": "1.2.2-final",
   "final_table_document": "native_adjudication_tables_final.json",
-  "final_table_file_sha256": "8d29864abdb8ac6d5043bff0c7a0761a0f99492a4933823d71a972b8172ff32e",
-  "final_table_content_sha256": "2d0d03fa7ac5f1072b550378c20347b3e35e088a1348b459ae05967c0bab11d6",
+  "final_table_file_sha256": "357faf60aa9a6117061420820961631cf87e30c14ba88e2e2480e4ec37bc53f0",
+  "final_table_content_sha256": "2757e97906d6896b1a5f3e5c06fa39c40db4693fb49573e37778acad513c0f4f",
   "fallback_policy": "REJECT",
   "interpolation": false,
   "source_guide": "../../../docs/rules/Native兵棋裁决知识库_Final.md"

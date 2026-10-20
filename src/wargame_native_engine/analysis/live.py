@@ -5,8 +5,16 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass
 import hashlib
+import os
+from pathlib import Path
+import tempfile
 from typing import Any, Mapping, Sequence
 
+from wargame_native_engine._framed_history import (
+    append_private_record,
+    clear_private_history,
+    read_private_record,
+)
 from wargame_native_engine.analysis.analyzer import (
     EightFactorAnalyzer,
     GreenFrameAnalysisInput,
@@ -51,7 +59,7 @@ class LiveAnalysisUpdate:
     done: bool | None
     green_frame: Mapping[str, Any]
     frame_analysis: FrameAnalysis
-    timeline: AnalysisTimeline
+    timeline: AnalysisTimeline | None
 
 
 class LiveAnalyzedSession:
@@ -62,12 +70,26 @@ class LiveAnalyzedSession:
         environment: SourceCompatibleEnvironment,
         *,
         analyzer: EightFactorAnalyzer | None = None,
+        retain_update_timeline: bool = True,
+        retain_frame_analyses: bool = True,
     ) -> None:
         if not isinstance(environment, SourceCompatibleEnvironment):
             raise TypeError("environment must be a SourceCompatibleEnvironment")
         self.environment = environment
         self.analyzer = analyzer if analyzer is not None else EightFactorAnalyzer()
+        self._retain_update_timeline = bool(retain_update_timeline)
+        self._retain_frame_analyses = bool(retain_frame_analyses)
         self._frame_analyses: list[FrameAnalysis] = []
+        self._analysis_history = (
+            None
+            if self._retain_frame_analyses
+            else tempfile.TemporaryFile(
+                mode="w+b", prefix="wargame-live-analysis."
+            )
+        )
+        self._analysis_offsets: list[tuple[int, int]] = []
+        self._frame_count = 0
+        self._analysis_identity = None
         self._timeline = build_analysis_timeline(())
         self._setup = False
         self._desynchronized = False
@@ -76,10 +98,15 @@ class LiveAnalyzedSession:
         """Reset the underlying environment and analyze its initial GREEN frame."""
 
         bundle = self.environment.setup_views(seed)
-        self._frame_analyses.clear()
         self._setup = True
         self._desynchronized = False
         try:
+            self._frame_analyses.clear()
+            self._analysis_offsets.clear()
+            self._frame_count = 0
+            self._analysis_identity = None
+            if self._analysis_history is not None:
+                clear_private_history(self._analysis_history)
             self._timeline = build_analysis_timeline(())
             committed = self._analyze_and_commit(bundle)
         except BaseException:
@@ -134,9 +161,14 @@ class LiveAnalyzedSession:
         if not self._setup:
             raise RuntimeError("live_analysis_not_setup")
         self._require_synchronized()
-        bundle, done = self.environment.step_views(
-            actions, delta_time_ms=delta_time_ms
-        )
+        try:
+            bundle, done = self.environment.step_views(
+                actions, delta_time_ms=delta_time_ms
+            )
+        except BaseException:
+            if self.environment.desynchronized:
+                self._desynchronized = True
+            raise
         try:
             committed = self._analyze_and_commit(bundle)
         except BaseException:
@@ -154,32 +186,83 @@ class LiveAnalyzedSession:
     @property
     def current_timeline(self) -> AnalysisTimeline:
         self._require_synchronized()
+        if not self._retain_update_timeline:
+            return build_analysis_timeline(self.frame_analyses)
         return deepcopy(self._timeline)
 
     @property
     def frame_analyses(self) -> tuple[FrameAnalysis, ...]:
         self._require_synchronized()
-        return deepcopy(tuple(self._frame_analyses))
+        if self._retain_frame_analyses:
+            return deepcopy(tuple(self._frame_analyses))
+        return tuple(
+            self._load_frame_analysis(index)
+            for index in range(self._frame_count)
+        )
+
+    def frame_analysis_at(self, frame_index: int) -> FrameAnalysis:
+        """Return one detached analysis without copying the complete history."""
+
+        self._require_synchronized()
+        if type(frame_index) is not int or not 0 <= frame_index < self._frame_count:
+            raise IndexError("analysis frame index out of range")
+        value = (
+            self._frame_analyses[frame_index]
+            if self._retain_frame_analyses
+            else self._load_frame_analysis(frame_index)
+        )
+        if value.provenance.frame_index != frame_index:
+            raise RuntimeError("analysis frame sequence is not contiguous")
+        return deepcopy(value)
 
     def analysis_jsonl(self) -> str:
         """Return the current episode's canonical analysis JSONL snapshot."""
 
         self._require_synchronized()
-        return analysis_frames_to_jsonl(tuple(self._frame_analyses))
+        return analysis_frames_to_jsonl(self.frame_analyses)
+
+    def write_analysis_jsonl(self, path: str | Path) -> Path:
+        """Stream canonical committed analyses to a new sidecar file."""
+
+        self._require_synchronized()
+        target = Path(path)
+        with target.open("xb") as stream:
+            for index in range(self._frame_count):
+                frame = self.frame_analysis_at(index)
+                stream.write(analysis_frames_to_jsonl((frame,)).encode("utf-8"))
+            stream.flush()
+            os.fsync(stream.fileno())
+        return target
+
+    def close(self) -> None:
+        if self._analysis_history is not None:
+            self._analysis_history.close()
+            self._analysis_history = None
+        self._analysis_offsets.clear()
+        self._frame_analyses.clear()
+        self._frame_count = 0
+
+    @property
+    def desynchronized(self) -> bool:
+        """Constant-cost synchronization state; never materializes history."""
+
+        return self._desynchronized or self.environment.desynchronized
 
     def _require_synchronized(self) -> None:
-        if self._desynchronized:
+        if self.desynchronized:
             raise LiveAnalysisDesynchronizedError()
 
     def _analyze_and_commit(
         self,
         bundle: ObservationBundle,
-    ) -> tuple[int, Mapping[str, Any], FrameAnalysis, AnalysisTimeline]:
+    ) -> tuple[
+        int, Mapping[str, Any], FrameAnalysis, AnalysisTimeline | None,
+    ]:
         green = json_clone(bundle.green)
         perspective = green.get("extra", {}).get("native", {}).get("perspective")
         if perspective != "GREEN":
             raise ValueError("live analysis accepts GREEN frames only")
-        frame_index = len(self._frame_analyses)
+        frame_index = self._frame_count
         payload = canonical_green_frame_payload(green)
         frame_analysis = self.analyzer.analyze_green_frame(
             GreenFrameAnalysisInput(
@@ -189,12 +272,45 @@ class LiveAnalyzedSession:
                 scenario_hash=self.environment.session.scenario.scenario_hash,
             )
         )
-        timeline = build_analysis_timeline(
-            (*self._frame_analyses, frame_analysis)
+        identity = (
+            frame_analysis.provenance.scenario_hash,
+            frame_analysis.provenance.model_id,
+            frame_analysis.provenance.model_version,
+            frame_analysis.provenance.model_hash,
         )
-        self._frame_analyses.append(frame_analysis)
-        self._timeline = timeline
+        if self._analysis_identity is None:
+            self._analysis_identity = identity
+        elif identity != self._analysis_identity:
+            raise ValueError("live analysis provenance changed within an episode")
+        build_analysis_timeline((frame_analysis,))
+        timeline = (
+            build_analysis_timeline((*self.frame_analyses, frame_analysis))
+            if self._retain_update_timeline
+            else None
+        )
+        if self._retain_frame_analyses:
+            self._frame_analyses.append(frame_analysis)
+        else:
+            self._store_frame_analysis(frame_analysis)
+        self._frame_count += 1
+        if timeline is not None:
+            self._timeline = timeline
         return frame_index, green, frame_analysis, timeline
+
+    def _store_frame_analysis(self, value: FrameAnalysis) -> None:
+        if self._analysis_history is None:
+            raise RuntimeError("live analysis history is unavailable")
+        offset = append_private_record(self._analysis_history, value)
+        self._analysis_offsets.append(offset)
+
+    def _load_frame_analysis(self, frame_index: int) -> FrameAnalysis:
+        if self._analysis_history is None:
+            raise RuntimeError("live analysis history is unavailable")
+        offset, size = self._analysis_offsets[frame_index]
+        value = read_private_record(self._analysis_history, offset, size)
+        if not isinstance(value, FrameAnalysis):
+            raise RuntimeError("live analysis history has an invalid record")
+        return value
 
     def _build_update(
         self,
@@ -205,7 +321,7 @@ class LiveAnalyzedSession:
             int,
             Mapping[str, Any],
             FrameAnalysis,
-            AnalysisTimeline,
+            AnalysisTimeline | None,
         ],
     ) -> LiveAnalysisUpdate:
         frame_index, green, frame_analysis, timeline = committed
@@ -221,5 +337,5 @@ class LiveAnalyzedSession:
             done=done,
             green_frame=json_clone(green),
             frame_analysis=deepcopy(frame_analysis),
-            timeline=deepcopy(timeline),
+            timeline=None if timeline is None else deepcopy(timeline),
         )

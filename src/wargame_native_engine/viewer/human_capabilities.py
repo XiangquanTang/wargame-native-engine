@@ -12,6 +12,10 @@ from copy import deepcopy
 from typing import Any
 
 from wargame_native_engine.gateway.models import ControllerView
+from wargame_native_engine.operations.commands import (
+    _FrozenActionRecords,
+    frozen_action_records,
+)
 from wargame_native_engine.viewer.operator_registry import (
     OperatorRegistry,
     WeaponDescriptor,
@@ -28,6 +32,7 @@ _CAPABILITY_ORDER = (
     ("INDIRECT_FIRE", "INDIRECT_FIRE"),
     ("BOARD", "BOARD"),
     ("UNLOAD", "UNLOAD"),
+    ("CAPTURE", "CAPTURE"),
     ("ENTER_CONCEALMENT", "ENTER_CONCEALMENT"),
     ("STOP_MOVE", "STOP_MOVE"),
     ("WEAPON_UNFOLD", "WEAPON_UNFOLD"),
@@ -83,6 +88,7 @@ def build_human_capabilities(
     visible_enemy_ids = _visible_enemy_ids(view)
     source_units = _source_units(view, controlled)
     inventories = _own_weapon_inventories(view, controlled)
+    action_records = frozen_action_records(view)
     operations = summary.get("operations")
     if not isinstance(operations, Mapping):
         raise ValueError("capability summary operations must be an object")
@@ -92,7 +98,7 @@ def build_human_capabilities(
         if actor_id not in controlled:
             continue
         weapon_targets = _legal_direct_fire_targets(
-            view, actor_id, visible_enemy_ids,
+            action_records, actor_id, visible_enemy_ids,
         )
         source_unit = source_units.get(actor_id, {})
         identity = registry.resolve_viewer_unit(source_unit)
@@ -137,6 +143,7 @@ def build_human_capabilities(
         })
 
     guided_fire_options = _legal_guided_fire_options(
+        action_records,
         view,
         controlled,
         friendlies,
@@ -147,7 +154,12 @@ def build_human_capabilities(
     indirect_fire_options = _legal_indirect_fire_options(
         summary, controlled, source_units, profiles, registry,
     )
-    boarding_options = _legal_boarding_options(view, controlled)
+    boarding_options = _legal_boarding_options(action_records, controlled)
+    capture_options = _legal_capture_options(
+        action_records,
+        controlled,
+        view.observation.get("objectives"),
+    )
 
     capabilities = []
     for capability_type, operation_type in _CAPABILITY_ORDER:
@@ -196,6 +208,10 @@ def build_human_capabilities(
             if not matching:
                 continue
             metadata["option_count"] = len(matching)
+        elif capability_type == "CAPTURE":
+            if not capture_options:
+                continue
+            metadata["option_count"] = len(capture_options)
         capabilities.append({
             "capability_type": capability_type,
             "operation_type": operation_type,
@@ -266,41 +282,95 @@ def build_human_capabilities(
             "semantics": "current_frozen_engine_boarding_actions",
             "options": boarding_options,
         },
+        "capture": {
+            "semantics": "current_frozen_engine_capture_actions",
+            "options": capture_options,
+        },
     })
     return result
 
 
+def _legal_capture_options(
+    action_records: _FrozenActionRecords,
+    controlled: set[int],
+    objectives: object,
+) -> list[dict[str, object]]:
+    objective_index: dict[int, Mapping[str, Any]] = {}
+    if isinstance(objectives, Sequence) and not isinstance(
+        objectives, (str, bytes)
+    ):
+        for value in objectives:
+            if not isinstance(value, Mapping):
+                continue
+            objective_id = value.get("objective_id")
+            if type(objective_id) is int:
+                objective_index[objective_id] = value
+    result: list[dict[str, object]] = []
+    for actor_id in controlled:
+        for value in action_records.query_records(
+            actor_reference=actor_id,
+            action_type="CAPTURE",
+        ):
+            action = value.get("action")
+            if not isinstance(action, Mapping):
+                continue
+            objective_id = action.get("target_id")
+            objective = objective_index.get(objective_id)
+            if type(objective_id) is not int or objective is None:
+                continue
+            x, y = objective.get("x"), objective.get("y")
+            if (
+                isinstance(x, bool)
+                or not isinstance(x, (int, float))
+                or isinstance(y, bool)
+                or not isinstance(y, (int, float))
+                or float(x) != int(x)
+                or float(y) != int(y)
+            ):
+                continue
+            result.append({
+                "actor_id": actor_id,
+                "objective_id": objective_id,
+                "coord": int(y) * 100 + int(x),
+                "controlling_side": objective.get("controlling_side"),
+                "value": objective.get("value"),
+            })
+    return sorted(
+        result,
+        key=lambda value: (
+            int(value["actor_id"]), int(value["objective_id"])
+        ),
+    )
+
+
 def _legal_boarding_options(
-    view: ControllerView,
+    action_records: _FrozenActionRecords,
     controlled: set[int],
 ) -> list[dict[str, object]]:
     """Project only explicit Engine-issued BOARD/UNLOAD action tuples."""
 
     result: list[dict[str, object]] = []
-    for value in view.valid_actions:
-        if not isinstance(value, Mapping):
-            continue
-        action = value.get("action")
-        if not isinstance(action, Mapping):
-            continue
-        operation = str(action.get("action_type", "")).upper()
-        actor_id = action.get("actor_id")
-        target_id = action.get("target_id")
-        parameters = action.get("parameters")
-        if (
-            operation not in {"BOARD", "UNLOAD"}
-            or type(actor_id) is not int
-            or actor_id not in controlled
-            or type(target_id) is not int
-            or not isinstance(parameters, Mapping)
-        ):
-            continue
-        result.append({
-            "operation_type": operation,
-            "actor_id": actor_id,
-            "target_id": target_id,
-            "profile_id": parameters.get("profile_id"),
-        })
+    for actor_id in controlled:
+        for operation in ("BOARD", "UNLOAD"):
+            for value in action_records.query_records(
+                actor_reference=actor_id,
+                action_type=operation,
+            ):
+                action = value.get("action")
+                if not isinstance(action, Mapping):
+                    continue
+                target_id = action.get("target_id")
+                parameters = action.get("parameters")
+                if type(target_id) is not int or not isinstance(
+                    parameters, Mapping,
+                ):
+                    continue
+                result.append({
+                    "operation_type": operation,
+                    "actor_id": actor_id,
+                    "target_id": target_id,
+                    "profile_id": parameters.get("profile_id"),
+                })
     return sorted(
         result,
         key=lambda value: (
@@ -435,18 +505,17 @@ def _own_weapon_inventories(
 
 
 def _legal_direct_fire_targets(
-    view: ControllerView,
+    action_records: _FrozenActionRecords,
     actor_id: int,
     visible_enemy_ids: set[int],
 ) -> dict[int, set[int]]:
     result: dict[int, set[int]] = {}
-    for value in view.valid_actions:
-        if not isinstance(value, Mapping):
-            continue
+    for value in action_records.query_records(
+        actor_reference=actor_id,
+        action_type="SHOOT",
+    ):
         action = value.get("action")
         if not isinstance(action, Mapping):
-            continue
-        if action.get("actor_id") != actor_id or action.get("action_type") != "SHOOT":
             continue
         target_id = action.get("target_id")
         parameters = action.get("parameters")
@@ -550,6 +619,7 @@ def _weapon_record(
 
 
 def _legal_guided_fire_options(
+    action_records: _FrozenActionRecords,
     view: ControllerView,
     controlled: set[int],
     friendlies: Mapping[int, Mapping[str, Any]],
@@ -561,63 +631,59 @@ def _legal_guided_fire_options(
 
     source_units = _source_units(view, set(friendlies))
     values: list[dict[str, object]] = []
-    for raw in view.valid_actions:
-        if not isinstance(raw, Mapping):
-            continue
-        action = raw.get("action")
-        if not isinstance(action, Mapping):
-            continue
-        parameters = action.get("parameters")
-        if not isinstance(parameters, Mapping):
-            continue
-        if action.get("action_type") != "FIRE" or parameters.get("fire_mode") != "GUIDED":
-            continue
-        guider_id = action.get("actor_id")
-        shooter_id = parameters.get("shooter_id")
-        weapon_id = parameters.get("weapon_id")
-        target_id = action.get("target_id")
-        if type(guider_id) is not int:
-            raise ValueError("GUIDED FIRE valid action lacks an exact guider")
-        if guider_id not in controlled:
-            continue
-        if (
-            parameters.get("guider_id") != guider_id
-            or type(shooter_id) is not int
-            or shooter_id not in friendlies
-            or type(weapon_id) is not int
-            or weapon_id < 0
-            or type(target_id) is not int
-            or target_id not in visible_enemy_ids
+    for guider_id in controlled:
+        for raw in action_records.query_records(
+            actor_reference=guider_id,
+            action_type="FIRE",
+            parameters={"fire_mode": "GUIDED"},
         ):
-            raise ValueError("GUIDED FIRE valid action violates side projection")
-        descriptor = registry.weapon_profiles.get(weapon_id)
-        profile = profiles.get(str(weapon_id), profiles.get(weapon_id, {}))
-        profile = profile if isinstance(profile, Mapping) else {}
-        values.append({
-            "capability": "GUIDED_FIRE",
-            "guider_id": guider_id,
-            "guider_display_name": _source_display_name(
-                source_units[guider_id], guider_id, registry,
-            ),
-            "shooter_id": shooter_id,
-            "shooter_display_name": _source_display_name(
-                source_units[shooter_id], shooter_id, registry,
-            ),
-            "weapon_id": weapon_id,
-            "weapon_display_name": (
-                descriptor.name
-                if descriptor is not None and descriptor.name != "UNKNOWN"
-                else f"武器 {weapon_id}"
-            ),
-            "maximum_range": profile.get(
-                "maximum_range",
-                None if descriptor is None else descriptor.maximum_range,
-            ),
-            "target_id": target_id,
-            # The executable FIRE action currently does not expose profile ID.
-            # Preserve that boundary instead of inferring it from subtype/name.
-            "profile_id": parameters.get("guidance_profile_id"),
-        })
+            action = raw.get("action")
+            if not isinstance(action, Mapping):
+                continue
+            parameters = action.get("parameters")
+            if not isinstance(parameters, Mapping):
+                continue
+            shooter_id = parameters.get("shooter_id")
+            weapon_id = parameters.get("weapon_id")
+            target_id = action.get("target_id")
+            if (
+                parameters.get("guider_id") != guider_id
+                or type(shooter_id) is not int
+                or shooter_id not in friendlies
+                or type(weapon_id) is not int
+                or weapon_id < 0
+                or type(target_id) is not int
+                or target_id not in visible_enemy_ids
+            ):
+                raise ValueError("GUIDED FIRE valid action violates side projection")
+            descriptor = registry.weapon_profiles.get(weapon_id)
+            profile = profiles.get(str(weapon_id), profiles.get(weapon_id, {}))
+            profile = profile if isinstance(profile, Mapping) else {}
+            values.append({
+                "capability": "GUIDED_FIRE",
+                "guider_id": guider_id,
+                "guider_display_name": _source_display_name(
+                    source_units[guider_id], guider_id, registry,
+                ),
+                "shooter_id": shooter_id,
+                "shooter_display_name": _source_display_name(
+                    source_units[shooter_id], shooter_id, registry,
+                ),
+                "weapon_id": weapon_id,
+                "weapon_display_name": (
+                    descriptor.name
+                    if descriptor is not None and descriptor.name != "UNKNOWN"
+                    else f"武器 {weapon_id}"
+                ),
+                "maximum_range": profile.get(
+                    "maximum_range",
+                    None if descriptor is None else descriptor.maximum_range,
+                ),
+                "target_id": target_id,
+                # The executable FIRE action currently does not expose profile ID.
+                # Preserve that boundary instead of inferring it from subtype/name.
+                "profile_id": parameters.get("guidance_profile_id"),
+            })
     return sorted(values, key=lambda value: (
         int(value["shooter_id"]),
         int(value["guider_id"]),

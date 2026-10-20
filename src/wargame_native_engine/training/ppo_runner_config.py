@@ -33,6 +33,7 @@ class PPORunnerConfigError(ValueError):
 class PPORewardMode(str, Enum):
     BASE_ONLY = "BASE_ONLY"
     COMPOSITE_EIGHT_FACTOR = "COMPOSITE_EIGHT_FACTOR"
+    TASK_OBJECTIVE_CAPTURE = "TASK_OBJECTIVE_CAPTURE"
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,7 +88,10 @@ class PPORunnerConfig:
             raise PPORunnerConfigError("unsupported PPO runner config schema")
         if (self.runner_id, self.runner_version) != (PPO_RUNNER_ID, PPO_RUNNER_VERSION):
             raise PPORunnerConfigError("unsupported PPO runner identity")
-        if self.purpose not in {"BASELINE_V1", "TEST_SMOKE"}:
+        if self.purpose not in {
+            "BASELINE_V1", "WEAPON_AWARE_V2", "TEST_SMOKE",
+            "OBJECTIVE_CAPTURE_PILOT",
+        }:
             raise PPORunnerConfigError("runner purpose is invalid")
         if self.mode != "TRAINED_SIDE_VS_FIXED_OPPONENT":
             raise PPORunnerConfigError("runner v1 requires fixed-opponent mode")
@@ -213,12 +217,19 @@ def build_ppo_runner_config(
 
 
 @lru_cache(maxsize=8)
-def load_ppo_runner_config(path: str | Path | None = None) -> PPORunnerConfig:
+def load_ppo_runner_config(
+    path: str | Path | None = None,
+    *,
+    ppo: PPOAlgorithmConfig | None = None,
+    seed: TrainingSeedConfig | None = None,
+) -> PPORunnerConfig:
     source = Path(path) if path is not None else (
         Path(__file__).resolve().parents[3]
         / "config/training/native_ppo_runner_v1.json"
     )
-    return build_ppo_runner_config(json.loads(source.read_text(encoding="utf-8")))
+    return build_ppo_runner_config(
+        json.loads(source.read_text(encoding="utf-8")), ppo=ppo, seed=seed
+    )
 
 
 def _mapping(value: object, name: str) -> Mapping[str, object]:

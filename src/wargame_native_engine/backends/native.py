@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
 from pathlib import Path
 
 from wargame_native_engine.core.action import EngineAction, ValidAction
@@ -20,6 +20,7 @@ from wargame_native_engine.projection.operator_lifecycle import (
 
 if TYPE_CHECKING:
     from wargame_native_engine.data.map_runtime import MapRuntimeData
+    from wargame_native_engine.movement.route_planner import PathPlanner
 
 
 class NativeEngineBackend:
@@ -31,16 +32,29 @@ class NativeEngineBackend:
                  max_ticks: int | None = None,
                  ruleset: Ruleset | str | Path | None = None,
                  map_runtime_data: "MapRuntimeData | None" = None,
-                 enable_boarding_type_assignments: bool = True) -> None:
+                 path_planner: "PathPlanner | None" = None,
+                 enable_boarding_type_assignments: bool = True,
+                 mounted_position_policy: str | None = None,
+                 objective_capture_policy: str | Mapping[str, Any] | None = None
+                 ) -> None:
         self.scenario = scenario
         self.engine = NativeEngine(scenario, max_ticks=max_ticks,
                                    ruleset=ruleset,
                                    map_runtime_data=map_runtime_data,
+                                   path_planner=path_planner,
+                                   mounted_position_policy=mounted_position_policy,
                                    enable_boarding_type_assignments=(
                                        enable_boarding_type_assignments
+                                   ),
+                                   objective_capture_policy=(
+                                       objective_capture_policy
                                    ))
         self.ruleset = self.engine.ruleset
         self.max_ticks = self.engine.terminal_rules.max_ticks
+
+    @property
+    def mounted_position_policy(self):
+        return self.engine.mounted_position_policy
 
     @property
     def determinism_identity(self) -> Mapping[str, object]:
@@ -52,6 +66,13 @@ class NativeEngineBackend:
             value["boarding_type_assignment_authority"] = (
                 self.engine._boarding_type_assignment_authority  # noqa: SLF001
                 .identity_record()
+            )
+        if (
+            self.engine._source_policy is not None  # noqa: SLF001
+            and self.engine._capture_policy_recorded  # noqa: SLF001
+        ):
+            value["objective_capture_policy"] = (
+                self.engine._capture_policy.identity_record()  # noqa: SLF001
             )
         return value
 

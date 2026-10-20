@@ -20,7 +20,7 @@ from wargame_native_engine.compat.source_frame.serialization import (
 )
 from wargame_native_engine.io.importers.source_replay_archive import (
     SourceReplayArchive,
-    SourceReplayArchiveImporter,
+    SourceReplayArchiveReader,
 )
 from wargame_native_engine.io.replay import replay_source_archive
 from wargame_native_engine.io.serialization import file_sha256, json_clone
@@ -161,7 +161,7 @@ def publish_training_episode(
             staging_episode / DECISION_TRANSITIONS_NAME, values
         )
         phase = "verification"
-        archive = SourceReplayArchiveImporter().import_path(facts.replay_path)
+        archive = SourceReplayArchiveReader(facts.replay_path)
         verification = replay_source_archive(
             match.bundle.scenario,
             facts.replay_path,
@@ -184,7 +184,7 @@ def publish_training_episode(
             and archive.manifest.get("outcome") != outcome
         ):
             raise ValueError("published outcome does not match training result")
-        if len(archive.frames) != facts.frame_count:
+        if archive.frame_count != facts.frame_count:
             raise ValueError("published replay fact frame count mismatch")
         _verify_analysis_alignment(archive, facts.analysis_path)
         _verify_transitions(
@@ -328,23 +328,55 @@ def _verify_offline_analysis(replay_path: Path, analysis_path: Path) -> None:
         analyze_replay_to_jsonl(
             replay_path, offline, analyzer=EightFactorAnalyzer()
         )
-        if offline.read_bytes() != analysis_path.read_bytes():
+        if not _files_equal(offline, analysis_path):
             raise ValueError("online and offline analysis JSONL differ")
 
 
 def _verify_analysis_alignment(
-    archive: SourceReplayArchive,
+    archive: SourceReplayArchive | SourceReplayArchiveReader,
     analysis_path: Path,
 ) -> None:
-    loaded = analysis_sidecar_from_jsonl(analysis_path.read_bytes())
-    frames = loaded.timeline.frame_analyses
-    if len(frames) != len(archive.frames):
+    frame_count = (
+        archive.frame_count
+        if isinstance(archive, SourceReplayArchiveReader)
+        else len(archive.frames)
+    )
+    expected_hashes = (
+        tuple(archive.manifest.get("frame_hashes", ()))
+        if isinstance(archive, SourceReplayArchiveReader)
+        else tuple(fact.source_hash for fact in archive.frames)
+    )
+    count = 0
+    with analysis_path.open("r", encoding="utf-8", newline="") as stream:
+        for index, line in enumerate(stream):
+            if not line.endswith("\n") or not line.strip():
+                raise ValueError("invalid analysis JSONL framing")
+            value = json.loads(line)
+            provenance = value.get("provenance") if isinstance(value, Mapping) else None
+            if not isinstance(provenance, Mapping):
+                raise ValueError("analysis provenance is missing")
+            if index >= len(expected_hashes):
+                raise ValueError("analysis/replay fact frame count mismatch")
+            if provenance.get("frame_index") != index:
+                raise ValueError("analysis frame index mismatch")
+            if provenance.get("frame_hash") != expected_hashes[index]:
+                raise ValueError("analysis fact frame hash mismatch")
+            count += 1
+    if count != frame_count:
         raise ValueError("analysis/replay fact frame count mismatch")
-    for index, (analysis, fact) in enumerate(zip(frames, archive.frames)):
-        if analysis.provenance.frame_index != index:
-            raise ValueError("analysis frame index mismatch")
-        if analysis.provenance.frame_hash != fact.source_hash:
-            raise ValueError("analysis fact frame hash mismatch")
+
+
+def _files_equal(first: Path, second: Path) -> bool:
+    if first.stat().st_size != second.stat().st_size:
+        return False
+    with first.open("rb") as left, second.open("rb") as right:
+        while True:
+            left_chunk = left.read(1024 * 1024)
+            right_chunk = right.read(1024 * 1024)
+            if left_chunk != right_chunk:
+                return False
+            if not left_chunk:
+                return True
 
 
 def _verify_transitions(

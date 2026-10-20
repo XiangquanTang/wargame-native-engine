@@ -18,6 +18,7 @@ class ActionType(str, Enum):
     STOP_MOVE = "STOP_MOVE"
     BOARD = "BOARD"
     UNLOAD = "UNLOAD"
+    CAPTURE = "CAPTURE"
     ENTER_CONCEALMENT = "ENTER_CONCEALMENT"
     WEAPON_LOCK = "WEAPON_LOCK"
     WEAPON_UNFOLD = "WEAPON_UNFOLD"
@@ -96,6 +97,7 @@ ACTION_PRIORITY = {
     ActionType.STOP_MOVE: 1,
     ActionType.BOARD: 2,
     ActionType.UNLOAD: 2,
+    ActionType.CAPTURE: 2,
     ActionType.ENTER_CONCEALMENT: 2,
     ActionType.WEAPON_LOCK: 2,
     ActionType.WEAPON_UNFOLD: 2,

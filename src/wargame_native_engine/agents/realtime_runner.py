@@ -128,7 +128,7 @@ class RealtimeLocalAgentRunner:
             self._offer("red", reset.red)
             self._offer("blue", reset.blue)
             self.session.start_realtime(max_ticks=max_ticks)
-            while len(self.session.tick_results) < max_ticks:
+            while self.session.tick_count < max_ticks:
                 if self.session.terminal or self.session.truncated:
                     break
                 if self.session.background_error is not None:
@@ -136,9 +136,8 @@ class RealtimeLocalAgentRunner:
                         "realtime_background_loop_failed",
                         str(self.session.background_error),
                     )
-                ticks = self.session.tick_results
-                while delivered_ticks < len(ticks):
-                    tick = ticks[delivered_ticks]
+                ticks = self.session.tick_results_since(delivered_ticks)
+                for tick in ticks:
                     delivered_ticks += 1
                     if (
                         delivered_ticks < max_ticks

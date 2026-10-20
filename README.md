@@ -1,486 +1,174 @@
-# wargame_native_engine
-![Public River Valley dual-perspective demo](docs/assets/public-river-valley-demo.png)
+# Wargame Native Engine
+
+用于兵棋推演、浏览器交互和智能体训练的独立 Python 引擎。当前版本为
+**0.4.4**，采用 **Native 简化规则**，不代表官方 SDK 或官方裁决行为。
+
+引擎以固定 Tick 推进，在同一前置状态下处理红蓝双方意图；世界状态由服务端统一维护。
+支持移动、直射与间接火力、上下车、隐蔽、无人机和巡飞弹等动作，具体可用动作取决于
+场景、单位能力和当前状态。支持红蓝受限视角、GREEN 裁判记录、确定性回放及训练接口。
+
+## Map123 双方行动演示
+
+[![Map123 第 500～550 帧双方行动预览](assets/map123-500-550-preview.gif)](assets/map123-500-550.mp4)
+
+[观看 MP4 视频](assets/map123-500-550.mp4) · [静态预览](assets/map123-500-550-poster.png)
+
+片段取自 2026 年 10 月 15 日录制的 Map123 回放，包含第 **500～550 帧**，共 51 帧，
+按 2 倍速呈现，时长 **25.5 秒**。采用 GREEN 裁判全局视角，展示红蓝双方移动以及
+已通过校验的射击事件；被拒绝的请求单独标注，不作为已执行攻击展示。
+这是根据真实回放事实渲染的态势动画，不是浏览器录屏，也不是训练策略效果证明。
+下方启动命令默认使用包内公开河谷场景，Map123 完整运行资产未包含在本精简包中。
+
+## 目录
 
 ```text
-Human Web / Rule Agent
-          |
-          v
-  Realtime Control
-          |
-          v
- Joint Adjudication
-          |
-    +-----+-----+
-    v     v     v
-   RED   BLUE  GREEN
-                |
-                v
-              Replay
+src/wargame_native_engine/   引擎、裁决、控制、训练适配与 Web 界面
+config/                     运行规则、映射、Schema 和训练配置
+docs/rules/                 引擎初始化校验所需的两份规则来源
+scripts/                    Web、回放与训练接入启动入口
+examples/                   公开场景与地图
+assets/                     Map123 展示视频、动图预览和封面
+pyproject.toml              安装配置与依赖
+LICENSE                     MIT 许可证
+README.md                   总体说明、启动方法与训练接口
 ```
 
-`wargame_native_engine` 0.4.0 is an independent, transparent and deterministic
-experiment engine. All adjudication is explicitly **Native simplified rules**;
-it does not import or claim compatibility with an official SDK, authentication
-configuration, binary package, or hidden rules.
+这是面向源码运行的发布目录。请保留上述目录关系，并在仓库根目录执行命令。
+运行配置和地图是引擎所需资料，应与源码一起使用。
+`docs/rules/` 中的两份规则文本是引擎初始化校验所需的来源资料，必须保留。
 
-It is a server-authoritative, fixed-tick simulation engine with:
+## 安装
 
-* same-pre-state RED/BLUE joint adjudication;
-* transactional atomic Tick commit and deterministic `NativeRNG`;
-* long-running movement and state transitions advanced by the Engine;
-* synchronous training and continuous realtime controller modes;
-* detached RED/BLUE observations plus complete referee-only GREEN evidence;
-* Human Web, deterministic Random Agent and project-native training adapters;
-* state recording and deterministic strict rule replay;
-* command/tick/control audit trails and per-frame analysis;
-* read-only Web replay viewing and local dual-side control.
-
-## GitHub source release quick start
-
-This release is intended to run from a cloned source tree; it is not yet a
-PyPI-stable SDK distribution.
+需要 Python 3.10 或更高版本。基础引擎无第三方运行依赖；项目内 PPO 学习器需要
+可选的 PyTorch 依赖。
 
 ```bash
-git clone <repository-url>
-cd wargame_native_engine
+git clone git@github.com:XiangquanTang/wargame-native-engine.git
+cd wargame-native-engine
+python -m venv .venv
+source .venv/bin/activate
 python -m pip install -e .
 ```
 
-Start the recommended first-page interactive demo. It uses a committed,
-project-authored 24x18 river-valley map with 432 configured hexes, 12 units,
-elevation, forests, settlements, soft ground, roads, rivers and three bridge
-objectives:
+Windows 可使用 `.venv\Scripts\activate` 激活环境。以下命令中的 `python` 均指当前虚拟环境。
+
+## 启动浏览器推演
 
 ```bash
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src \
 python -m scripts.run_realtime_dual_control \
-  --scenario-bundle=examples/public_river_valley_scenario.json \
-  --output-dir=/tmp/wargame-river-valley-web \
-  --run-namespace=river-valley-web-000 \
-  --tick-interval-ms=1000 --host=127.0.0.1 --port=8003 --overwrite
+  --scenario-bundle examples/public_river_valley_scenario.json \
+  --output-dir local_data/river-valley-web \
+  --run-namespace river-valley-web-001 \
+  --tick-interval-ms 1000 \
+  --host 127.0.0.1 --port 8003
 ```
 
-Open the printed RED URL as the operator page and the BLUE URL in a second
-tab. Commands are queued without waiting for the other seat while the fixed
-authoritative Tick continues movement. `Ctrl+C` publishes the full Replay and
-audit package. Selecting one friendly unit also enables the Tactical Awareness
-controls: Sensor Coverage is a theoretical unobscured-target observation field,
-Weapon Envelope is the theoretical direct-fire area, and yellow outlines are
-that selected unit's confirmed contacts. These detached overlays never issue
-commands or expose GREEN state. View the published package with the same
-terrain map:
+打开终端输出的 RED 和 BLUE 地址，分别进入红方和蓝方操作页。该公开示例使用
+24×18 六角地图和 12 个单位。选择己方单位后，根据界面显示的当前能力提交操作。
+
+引擎持续推进，指令提交成功不表示动作已经完成。移动、上下车等持续动作由后续 Tick
+推进，调用方应读取后续己方观察与动作状态。运行至少一个 Tick 后，使用 Ctrl+C 停止并发布回放、分析和控制记录。
+输出目录应使用新的路径；只有明确需要覆盖旧结果时才传入 `--overwrite`。
+
+## 查看回放
 
 ```bash
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src \
 python -m scripts.run_replay_viewer \
-  --replay-dir=/tmp/wargame-river-valley-web \
-  --map-config=examples/public_river_valley_map.json \
-  --port=8000
+  --replay-dir local_data/river-valley-web \
+  --map-config examples/public_river_valley_map.json \
+  --scenario-config examples/public_river_valley_scenario.json \
+  --port 8000
 ```
 
-For the smallest one-Tick engine smoke instead, run:
+打开终端给出的地址。回放查看器只读取结果，不参与引擎裁决。
 
-```bash
-PYTHONDONTWRITEBYTECODE=1 python examples/run_source_release.py \
-  --output /tmp/wargame-native-source-example --seed 42
-```
+## 训练接口
 
-The example loads the committed synthetic Source-compatible scenario, obtains
-detached RED and BLUE observations, selects one legal command per side,
-advances one joint authoritative tick, writes a GREEN replay, and verifies it
-by strict rule re-execution. It needs no private map, old SDK, credentials, or
-external service.
+| 接口 | 用途 |
+| --- | --- |
+| `ScenarioMatchFactory.from_path(...)` | 从场景构建对局，声明地图、存储目录和时间间隔 |
+| `NativeMultiSeatEnv` | 外部算法控制红蓝双方，每次联合提交推进一个决策窗口 |
+| `SingleSeatTrainingAdapter` | 在双席位环境外组合一个外部对手，向算法暴露单席位接口 |
+| `NativeTrainingEnv` | 编码后的单席位环境，供项目内学习器接入 |
+| `NativeMaskedPPO` / `NativePPORunner` | 项目内带动作掩码的 PPO、采样、更新、存档和评估 |
 
-Run a deterministic same-tick mutual-fire example through the public product
-operation path:
+这些训练入口最终都调用同一条 `GameSession -> NativeEngine.step` 裁决路径。
+`NativeMultiSeatEnv` 提供双方采样和控制能力；双策略优化或自博弈调度需要调用方实现。
+当前默认 PPO v1 路径使用 CPU 和配置中指定的固定 NoOp 对手。
 
-```bash
-PYTHONDONTWRITEBYTECODE=1 python examples/run_joint_fire.py \
-  --output /tmp/wargame-public-joint-fire --seed 1
-```
-
-Both actors are qualified against the same pre-state and are destroyed in one
-joint Tick. The generated Replay is strictly re-executed before success is
-reported.
-
-## Development workflow
-
-Install the project in editable mode with its development dependencies:
-
-```bash
-python -m pip install -e ".[dev]"
-```
-
-During development, run the smallest relevant test module or test case, for
-example:
-
-```bash
-PYTHONDONTWRITEBYTECODE=1 pytest -p no:cacheprovider \
-  tests/test_joint_tick_semantics.py -q
-```
-
-Before submitting a change, run the complete Python suite and check the diff
-for whitespace errors:
-
-```bash
-PYTHONDONTWRITEBYTECODE=1 pytest -p no:cacheprovider -q
-git diff --check
-```
-
-Keep generated runs under ignored `local_data/` paths or `/tmp`, and review
-`AGENTS.md` plus `CONTRIBUTING.md` before changing adjudication, replay, or
-side-observation behavior. Node.js is optional for Engine development; when it
-is unavailable, the static browser JavaScript contract tests are skipped.
-
-## Demo showcase
-
-### 1. Realtime Human Control
-
-The close-combat public fixture keeps the 24x18 terrain presentation while
-placing six RED and six BLUE units at six-to-eight-hex contact distances. It
-is designed to make MOVE, weapon state, and direct fire easy to demonstrate:
-
-```bash
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src \
-python -m scripts.run_realtime_dual_control \
-  --scenario-bundle=examples/public_close_combat_scenario.json \
-  --output-dir=/tmp/wargame-close-combat-web \
-  --run-namespace=close-combat-web-000 \
-  --tick-interval-ms=1000 --host=127.0.0.1 --port=8003 --overwrite
-```
-
-Open the printed RED and BLUE URLs. `WEAPON_LOCK` is the Native simplified
-rule's stow/secure transition; it does not mean target lock. Use
-`WEAPON_UNFOLD` before SHOOT when a weapon profile requires deployment.
-
-### 2. Tactical Rule Agent Simulation
-
-This deterministic, non-random controller consumes only detached side
-observations and server-issued product capabilities. It prefers legal SHOOT,
-unfolds after contact when needed, and otherwise advances using a server-issued
-MOVE endpoint. Both seats run independently over `RealtimeAgentSession`:
-
-```bash
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src \
-python -m scripts.run_tactical_agent_demo \
-  --scenario-bundle=examples/public_close_combat_scenario.json \
-  --output-dir=/tmp/wargame-tactical-agent-demo \
-  --run-namespace=tactical-agent-demo-000 \
-  --seed=42 --tick-interval-ms=100 --max-ticks=8 --overwrite
-```
-
-The JSON result reports ticks, accepted/applied commands, observed contacts,
-SHOOT operations, and strict Replay verification. This is a transparent rule
-showcase, not an RL or tactical-performance claim.
-
-### 3. Replay Viewer
-
-Open either generated package with the matching committed presentation map:
-
-```bash
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src \
-python -m scripts.run_replay_viewer \
-  --replay-dir=/tmp/wargame-tactical-agent-demo \
-  --map-config=examples/public_close_combat_map.json \
-  --port=8000
-```
-
-Then visit `http://127.0.0.1:8000/`. Replay is authoritative GREEN evidence;
-frame analysis and the Viewer remain non-authoritative derivatives.
-
-Recommended application entry points are `WargameFacade` for product control,
-`NativeMultiSeatEnv` for synchronous deterministic Agent training, and
-`RealtimeAgentSession` for fixed-tick asynchronous command collection.
-`GameSession.step` and `SessionManager.advance_ms` are trusted core boundaries,
-not the first integration tutorial for untrusted clients.
-
-For continuous human control, start the loopback realtime Web adapter:
-
-```bash
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src \
-python -m scripts.run_realtime_dual_control \
-  --scenario-bundle=examples/source_movement_scenario.json \
-  --output-dir=/tmp/wargame-realtime-web \
-  --run-namespace=local-realtime-web-000 \
-  --tick-interval-ms=1000 --host=127.0.0.1 --port=8003 --overwrite
-```
-
-Open the printed RED and BLUE URLs in separate tabs. “下达命令” admits a
-high-level operation for a future authoritative tick and does not lock the
-seat while waiting for its opponent. A missing side contributes an empty
-batch, so time and ongoing MOVE state continue. Multiple disjoint actors
-submitted by one browser within the same target tick are accumulated; a newer
-operation for the same actor replaces that actor's older pending operation.
-Paths, targets and weapons are still planned or selected by the server and are
-revalidated at apply time. `Ctrl+C` stops admission and atomically publishes
-Replay, analysis, command events and tick events under `--output-dir`.
-
-`scripts.run_dual_side_control` remains the synchronous DecisionWindow product
-flow for deliberate two-sided decisions. It intentionally locks a seat after
-that side submits. The two Web modes are explicit and do not change each
-other's orchestration contract.
-
-For a deterministic two-Agent movement/fire smoke, use the same realtime core
-and product operations, then inspect the complete package in the replay viewer:
-
-```bash
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python -m scripts.run_realtime_agent_match \
-  --scenario-bundle=examples/source_movement_scenario.json \
-  --output-dir=/tmp/wargame-random-agents \
-  --run-namespace=random-agents-000 --seed=42 \
-  --tick-interval-ms=100 --max-ticks=5 \
-  --red-agent=random --blue-agent=random --overwrite
-PYTHONDONTWRITEBYTECODE=1 python examples/verify_replay.py \
-  --scenario-bundle=examples/source_movement_scenario.json \
-  --replay=/tmp/wargame-random-agents/replay.zip
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python -m scripts.run_replay_viewer \
-  --replay-dir=/tmp/wargame-random-agents \
-  --map-config=examples/public_source_movement_map.json \
-  --port=8000
-```
-
-`random` selects from detached, side-only capabilities but returns a product
-`SeatOperation`: MOVE endpoints are replanned by the server and SHOOT is
-revalidated at its apply tick. Ongoing MOVE is not resubmitted each tick. The
-map renderer interpolates a friendly unit along its current segment using the
-recorded progress; an opponent route is never disclosed to enable animation.
-Open `http://127.0.0.1:8000/` after the final command. Generated Replay,
-analysis, command, Tick, control-audit and summary files remain under `/tmp`;
-they are not repository assets.
-
-Public example data and provenance are documented in
-`examples/README.md` and `docs/release/PROVENANCE.md`. Map 123 is a bounded
-development validation case and is deliberately not required by this source
-release.
-
-## Engine semantic contract
-
-One authoritative `WorldState` advances as:
-
-```text
-Collect -> Seal -> same-pre-state adjudication -> joint effect resolution
-        -> working-state evolution -> atomic commit
-```
-
-All actions in one sealed batch are qualified against the same tick-start
-state. Direct-fire outcomes are staged, same-target losses are aggregated, and
-the working tick is committed only after action handling, ongoing movement,
-visibility, and termination all succeed. A core-tick exception preserves the
-prior World, NativeRNG state, logical time, and action/event sequences.
-
-Real time is scheduling, not a per-tick chess turn: once MOVE or another
-long-running action begins, the Engine advances its duration and interruption
-state on later ticks without requiring the controller to resend "continue".
-Manual and background clocks call the same simulation transition.
-
-RED and BLUE are detached limited-information projections of the single
-authoritative state. GREEN is the complete referee/recorder projection; it is
-not passed to side Agents. The renderer and analysis paths are observer-only.
-
-Native replay supports both recorded state frames and deterministic strict
-replay. Strict replay re-executes accepted actions through this repository's
-Native simplified adjudication and rejects a mismatched adjudication-semantics
-version before the first step.
-
-## Run with a versioned ruleset
-
-The default JSON ruleset expands its operator, weapon and terrain profiles into
-one canonical ruleset hash. No YAML dependency is required.
-
-```bash
-python -m wargame_native_engine.cli.run_game \
-  --scenario examples/minimal_scenario.json \
-  --ruleset config/rulesets/native_default_v1.json \
-  --red-agent first-valid \
-  --blue-agent first-valid \
-  --seed 42 \
-  --output local_data/runs/minimal_v2
-```
-
-Run the migrated 3v3 fixture with independent Agent seeds:
-
-```bash
-python -m wargame_native_engine.cli.run_game \
-  --scenario examples/migrated_scenario_small.json \
-  --ruleset config/rulesets/native_default_v1.json \
-  --red-agent random-legal \
-  --blue-agent random-legal \
-  --seed 42 \
-  --max-ticks 500 \
-  --output local_data/runs/migrated_small
-```
-
-A max-tick result is `truncated: true`; it is never reported as a natural win.
-
-## Migrate the reduced legacy-shaped fixture
-
-```bash
-python -m wargame_native_engine.cli.import_scenario \
-  --source examples/legacy_scenario_reduced_fixture.json \
-  --source-identifier legacy-field-structure-small/sanitized-reduced-fixture \
-  --ruleset config/rulesets/native_default_v1.json \
-  --output local_data/migrations/migrated_small
-```
-
-The command emits the native scenario plus manifest, field mapping, unmapped
-field list and warnings. It reads legacy JSON as data and never imports the old
-project at runtime.
-
-## Evaluate procedural fairness
-
-```bash
-python -m wargame_native_engine.cli.evaluate_fairness \
-  --scenario examples/migrated_scenario_small.json \
-  --ruleset config/rulesets/native_default_v1.json \
-  --red-agent random-legal \
-  --blue-agent random-legal \
-  --seeds 0:99 \
-  --swap-sides \
-  --mirror \
-  --output local_data/fairness/migrated_small
-```
-
-Inspect `summary.json` for per-variant results, paired winner consistency,
-side-swap outcome reversal, mirror consistency, score/survival/damage
-differences, and replay/state mismatch counts. Overall red/blue win rate alone
-is not treated as proof of fairness.
-
-## Strict replay
+### 外部算法接入示例
 
 ```python
-from wargame_native_engine.io.replay import replay_actions
-from wargame_native_engine.io.scenario import load_scenario
+from pathlib import Path
 
-scenario = load_scenario("examples/minimal_scenario.json")
-verification = replay_actions(
-    scenario,
-    "local_data/runs/minimal_v2",
-    ruleset="config/rulesets/native_default_v1.json",
-    strict=True,
-    seed=42,
+from wargame_native_engine.agents import SeatDecision
+from wargame_native_engine.operations import ScenarioMatchFactory
+from wargame_native_engine.training import NativeMultiSeatEnv
+
+factory = ScenarioMatchFactory.from_path(
+    Path("examples/source_movement_scenario.json"),
+    storage_root=Path("local_data/external-training/storage"),
+    red_controller_id="external-red",
+    blue_controller_id="external-blue",
+    decision_interval_ms=2000,
+    frame_interval_ms=1000,
 )
-assert verification.matches
+env = NativeMultiSeatEnv(
+    factory,
+    run_namespace="external-training-001",
+    max_decision_windows=10,
+)
+try:
+    initial = env.reset(seed=42)
+    for _ in range(10):
+        red_context = env.decision_context("red")
+        blue_context = env.decision_context("blue")
+        # 在此用各自的受限观察调用策略，并生成当前窗口的 SeatDecision。
+        # 空决策表示等待，便于先接通环境；这段示例不执行策略优化。
+        result = env.step(SeatDecision(), SeatDecision())
+        # result.rewards 按红蓝双方区分。
+        if result.terminated or result.truncated:
+            break
+finally:
+    env.close()
 ```
 
-Strict replay checks scenario hash, ruleset ID/version/hash and seed before
-execution. `strict=False` is explicit and emits a warning on mismatch.
+单席位编码环境使用 `reset(seed)`、`current_decision_binding()` 和
+`step_bound_action(action_index, binding)` 完成交互；动作索引只能用于产生它的当前
+观察、动作目录和掩码。过期的目录不能用于后续决策。
 
-See `docs/RULESET_CONFIGURATION.md`, `docs/SCENARIO_MIGRATION.md`,
-`docs/FAIRNESS_VALIDATION.md` and `docs/REPLAY_FORMAT.md`.
+RED、BLUE 只能接收各自的脱离世界状态的受限观察；训练策略不得读取 GREEN 裁判帧、
+对方合法动作、隐藏属性或 RNG。一个训练 step 对应一个决策窗口，可以包含多个引擎 Tick。
+`terminated` 表示引擎终局，`truncated` 表示训练或运行边界截断，两者应分别处理。
 
-## Import and align reduced historical evidence
+### 项目内 PPO 启动入口
 
-Only already parsed, legally obtained data is accepted. The committed example
-is a small sanitized fixture, not an original official replay.
+安装可选学习器依赖：
 
 ```bash
-python -m wargame_native_engine.cli.import_historical_replay \
-  --input examples/historical_replay_reduced_fixture/smoke-state-01 \
-  --output local_data/historical_replays/smoke
-
-python -m wargame_native_engine.cli.align_replay \
-  --historical-replay local_data/historical_replays/smoke/historical_replay.json \
-  --ruleset config/rulesets/native_default_v1.json \
-  --output local_data/alignment/smoke
+python -m pip install -e ".[learner]"
 ```
 
-The importer labels evidence as `ACTION_LEVEL`, `STATE_TRAJECTORY_LEVEL`,
-`EVENT_LEVEL`, or `SUMMARY_ONLY`. Only action-level evidence can drive Native
-adjudication. Unknown Action Echo never becomes an inferred action.
-
-## Calibrate bounded Native parameters
+运行一次有边界的训练、checkpoint 保存和独立进程评估示例：
 
 ```bash
-python -m wargame_native_engine.cli.calibrate_rules \
-  --split config/calibration/replay_split_v1.json \
-  --baseline-ruleset config/rulesets/native_default_v1.json \
-  --parameter-space config/calibration/parameter_space_v1.json \
-  --output local_data/calibration/native_v1
-
-python -m wargame_native_engine.cli.evaluate_calibrated_rules \
-  --split config/calibration/replay_split_v1.json \
-  --ruleset local_data/calibration/native_v1/calibrated_ruleset.json \
-  --partition validation \
-  --output local_data/calibration/native_v1/validation
+python -m scripts.run_training_roundtrip run \
+  --output local_data/ppo-run-001 \
+  --updates 1 --evaluation-episodes 1
 ```
 
-Search uses only the calibration partition. Validation is loaded after a fixed
-candidate is selected. The baseline is never overwritten, and small samples
-produce an explicit evidence limitation rather than an official-equivalence
-claim. See `docs/HISTORICAL_REPLAY_IMPORT.md`, `docs/REPLAY_ALIGNMENT.md`, and
-`docs/RULE_CALIBRATION.md`.
+该入口用于演示训练生命周期，默认总时限为 300 秒，不代表策略已经学会作战。
+训练超参数位于 `config/training/`；正式实验应另行指定训练预算、场景、奖励和评估方案。
+checkpoint 包含配置、场景和状态身份，恢复时必须匹配；评估不更新策略参数。
+可通过 `python -m scripts.run_training_roundtrip --help` 查看子命令。
 
-## Source-frame compatibility and direct fire
+## 运行结果与规则边界
 
-The standard frame is a data compatibility contract, not a hidden rule source:
+回放包可包含 `replay.zip`、`frame_analysis.native.jsonl`、控制审计、实时 Tick 记录和摘要。
+训练结果还可包含决策转移、奖励记录和 checkpoint。运行结果保存在 `local_data/` 下，
+不属于源码发布内容。
 
-```bash
-python -m wargame_native_engine.cli.inspect_source_frame \
-  --input local_data/source_frames/96.json \
-  --output local_data/source_frames/96_report
-```
+固定输入、配置和种子用于复现实验。GREEN 保存完整裁判证据；分析、训练适配器和
+查看器不拥有第二套裁决逻辑。所有战斗结果均应解释为当前配置下的 Native 简化规则结果。
 
-The only executable direct-fire source is
-`config/adjudication/source_tables_v1/native_adjudication_tables_final.json`.
-Its schema, revision, file hash, and canonical content hash are verified before
-lookup. No PDF is read at runtime and no interpolation is available.
-
-```bash
-python -m wargame_native_engine.cli.resolve_direct_fire \
-  --scenario examples/direct_fire_scenario.json \
-  --attacker 101 --target 201 --weapon 9101 --seed 42 \
-  --output local_data/adjudication/direct_fire_smoke
-```
-
-The output is a strict `native-direct-fire-replay/1.0` bundle. Target `202`
-exercises the vehicle and armor-correction path.
-
-```bash
-python -m wargame_native_engine.cli.run_source_compatible_game \
-  --frame local_data/source_frames/96.json \
-  --ruleset config/rulesets/native_default_v1.json \
-  --table-set config/adjudication/source_tables_v1/manifest.json \
-  --max-events 20 \
-  --output local_data/runs/source_frame_smoke
-```
-
-See `docs/SOURCE_FRAME_COMPATIBILITY.md`, `docs/SOURCE_VISIBILITY.md`, and
-`docs/DIRECT_FIRE_ADJUDICATION.md`.
-
-## Source-compatible movement
-
-Phase 4A.2 routes ordered Move, Shoot, StopMove and transition actions through
-the same `GameSession -> NativeEngine.step` call. Integer delta-time advances
-explicit hex-path segments, timers, observation and valid actions. The small
-fixture is `examples/source_movement_scenario.json`; semantics and field units
-are documented in `docs/SOURCE_MOVEMENT.md`.
-
-## RED, BLUE, GREEN and production Source replay
-
-`setup_views()` and `step_views()` return RED and BLUE isolated controller
-frames plus the complete GREEN referee frame. Production recording stores only
-numbered GREEN frames and the shared strict step records.
-
-```bash
-python scripts/run_minimal_source_replay.py \
-  --output local_data/acceptance/source_perspectives_smoke \
-  --seed 42
-```
-
-The smoke moves, changes visibility, resolves direct fire, packages
-`replay.zip`, imports it through the historical-compatible reader, strictly
-replays its steps, and compares final hashes. See
-`docs/SOURCE_PERSPECTIVES.md`, `docs/SOURCE_REPLAY_RECORDER.md`, and
-`docs/MINIMAL_END_TO_END_ACCEPTANCE.md`.
-
-## Documentation and license
-
-Start with `docs/architecture/source_release.md` for public/internal boundaries,
-`docs/architecture/public_api.md` for product control, `examples/README.md` for
-public fixture provenance, and `CONTRIBUTING.md` for release regression gates.
-Replay details are in `docs/REPLAY_FORMAT.md` and
-`docs/SOURCE_REPLAY_RECORDER.md`.
-
-Project source is released under the MIT License in `LICENSE`. Before making a
-public repository, the owner should complete the rule-guide/table redistribution
-confirmation recorded in `docs/release/PROVENANCE.md`.
+许可证见 [LICENSE](LICENSE)。

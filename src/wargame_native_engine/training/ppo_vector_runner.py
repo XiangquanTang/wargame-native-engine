@@ -343,6 +343,12 @@ class NativeSynchronousVectorPPORunner:
             raise TypeError("core must be NativeMaskedPPO")
         self.core = core
         self.preprocessor = preprocessor or LearnerObservationPreprocessor()
+        if self.core.preprocessor_spec.input_encoder_schema != (
+            "native-decision-observation-encoder/1.0"
+        ):
+            raise PPOVectorRunnerError(
+                "vector runner does not support Decision-v2 observations"
+            )
         if self.config.base_runner_config.identity_hash != base_runner_config.content_hash:
             raise PPOVectorRunnerError("vector/base runner config mismatch")
         if self.config.ppo_config.identity_hash != core.config.content_hash or (

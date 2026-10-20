@@ -1,0 +1,45 @@
+{
+  "schema_version": "native-objective-control-task/1.0",
+  "task_id": "public-full-action-objective-1",
+  "task_version": "1.0.0",
+  "controlled_side": "RED",
+  "objective_ref": {
+    "objective_id": 1
+  },
+  "success_predicate": "OBJECTIVE_CONTROLLED_BY_CONFIGURED_SIDE",
+  "start_conditions": {
+    "objective_not_controlled_by_side": true,
+    "capture_action_unavailable": true
+  },
+  "horizons": {
+    "training_decisions": 12,
+    "evaluation_decisions": 12,
+    "boundary": "TIME_LIMIT_BOOTSTRAP"
+  },
+  "goal_hexes": [107, 108],
+  "environment": {
+    "scenario": {
+      "id": "public-full-action-training-acceptance",
+      "hash": "7f6be9980176dfecf2ae135ee90d9b91e91e093b1ea07872f33ce9c8c65ab7de"
+    },
+    "map": {
+      "id": "public-full-action-training-map",
+      "hash": "711fa716f2c3e8e8c55792de992bad0f99a3918cf69d9bd7eb01c378a8a0b561"
+    },
+    "spatial_candidate_provider": {
+      "id": "native-bounded-static-map-spatial-candidates",
+      "version": "1.0.0",
+      "hash": "7191a1db86b471104fd85654a977cceb2162980a3739f766cc276d5ddc5b6bd0"
+    },
+    "encoder": {
+      "schema": "native-decision-observation-encoder/2.0",
+      "hash": "46a7ad89a82842b2ed5a34bf664b2e70be8fea55549961b71fbbbde895953aea"
+    },
+    "delta_time_seconds": 25
+  },
+  "reward_ref": {
+    "policy_id": "native-objective-first-control",
+    "policy_version": "1.0.0",
+    "policy_hash": "a66628101199c0dcac18c5826297c51d13b243a9c5e00c590b92b931aed23679"
+  }
+}

@@ -29,6 +29,7 @@ import shutil
 import struct
 import tempfile
 from threading import RLock
+from types import MappingProxyType
 from typing import Any, BinaryIO, Mapping
 from zipfile import BadZipFile, ZipFile
 
@@ -113,7 +114,13 @@ class MovementCostLookup:
         "payload_sha256",
         "_factors",
         "_modes",
+        "_sealed",
     )
+
+    def __setattr__(self, name: str, value: object) -> None:
+        if getattr(self, "_sealed", False):
+            raise AttributeError("MovementCostLookup is immutable")
+        object.__setattr__(self, name, value)
 
     def __init__(
         self,
@@ -130,8 +137,9 @@ class MovementCostLookup:
         self.columns = int(columns)
         self.source_sha256 = _sha256_text(source_sha256, "movement source sha256")
         self.payload_sha256 = _sha256_text(payload_sha256, "movement payload sha256")
-        self._factors = dict(factors)
+        self._factors = MappingProxyType(dict(factors))
         self._modes = frozenset(key[0] for key in self._factors)
+        self._sealed = True
 
     def factor(self, mode: int, from_hex: int, to_hex: int) -> Fraction | None:
         return self._factors.get((int(mode), int(from_hex), int(to_hex)))

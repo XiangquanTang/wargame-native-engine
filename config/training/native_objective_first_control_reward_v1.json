@@ -1,0 +1,11 @@
+{
+  "schema_version": "native-objective-task-reward-policy/1.0",
+  "policy_id": "native-objective-first-control",
+  "policy_version": "1.0.0",
+  "mode": "TASK_ONLY",
+  "mapping": {
+    "first_success": 1.0,
+    "otherwise": 0.0
+  },
+  "repeat_semantics": "FIRST_SUCCESS_ONCE_PER_EPISODE"
+}

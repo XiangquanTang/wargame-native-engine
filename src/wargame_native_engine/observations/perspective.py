@@ -4,6 +4,9 @@ from dataclasses import dataclass
 from enum import IntEnum
 from typing import Any, Mapping, Sequence
 
+from wargame_native_engine.compat.source_frame.contract import (
+    CURRENT_SOURCE_CONTRACT, SOURCE_CONTRACT_KEY,
+)
 from wargame_native_engine.core.observation import (
     SideObservation,
     side_safe_enemy_observation,
@@ -32,6 +35,7 @@ class PerspectiveContext:
     blue: SideObservation
     session_id: str
     public_metadata: Mapping[str, Any]
+    own_weapon_inventory: tuple[Mapping[str, Any], ...] = ()
 
     def observation(self, perspective: Perspective) -> SideObservation:
         if perspective is Perspective.RED:
@@ -69,7 +73,15 @@ class PerspectiveProjector:
     _NATIVE_EVIDENCE_KEYS = frozenset({
         "native_evidence", "observation_evidence", "source_rule_set",
         "table_cell", "individual_dice", "raw_roll", "roll_index",
-        "episode_seed", "rng", "state_hash", "world_hash",
+        "episode_seed", "rng", "rng_transition", "state_hash", "world_hash",
+        "resolution_evidence", "base_dice", "correction_die", "modified_roll",
+        "result_correction", "table_content_hash", "table_id", "modifiers",
+    })
+    _GREEN_ONLY_INDIRECT_EVENTS = frozenset({
+        "indirect_fire_mission_created",
+        "indirect_fire_mission_cancelled",
+        "indirect_fire_active_started",
+        "indirect_fire_area_triggered",
     })
     _ID_KEYS = frozenset({
         "obj_id", "actor_id", "operator_id", "attacker_id", "att_obj_id",
@@ -141,6 +153,20 @@ class PerspectiveProjector:
                 if source is None:
                     continue
                 projected = self._clean_relations(source, included_ids)
+                if context.public_metadata.get(SOURCE_CONTRACT_KEY) == CURRENT_SOURCE_CONTRACT:
+                    # OWN inventory was detached by the session read model;
+                    # never backfill inventory from GREEN or enemy attributes.
+                    inventory = next((item for item in context.own_weapon_inventory
+                                      if item["operator_id"] == operator_id), None)
+                    status = source.get("extra", {}).get("native", {}).get(
+                        "ammunition_projection", {})
+                    projected.setdefault("extra", {})["native"] = {
+                        "weapon_inventory": json_clone(inventory),
+                        "ammunition_projection": {
+                            key: json_clone(status[key])
+                            for key in ("status", "unmapped_source_slots") if key in status
+                        },
+                    }
             else:
                 projected = self._visible_enemy(visible_by_id[operator_id], perspective)
             if operator_id in friendly_ids and operator_id in passenger_ids:
@@ -162,7 +188,8 @@ class PerspectiveProjector:
                         and str(value.get("side", "")).lower() == side
                         and value.get("accepted", True) is not False],
             "judge_info": self._judge_info(frame.get("judge_info", []),
-                                             friendly_ids, set(visible_by_id)),
+                                             friendly_ids, set(visible_by_id),
+                                             side),
             "role_and_grouping_info": self._owned(
                 frame.get("role_and_grouping_info", {}), side,
                 public_unknown=False),
@@ -293,7 +320,7 @@ class PerspectiveProjector:
         return result
 
     def _judge_info(self, value: Any, friendly_ids: set[int],
-                    visible_enemy_ids: set[int]) -> list[Any]:
+                    visible_enemy_ids: set[int], side: str) -> list[Any]:
         if not isinstance(value, list):
             return []
         allowed = friendly_ids | visible_enemy_ids
@@ -301,6 +328,38 @@ class PerspectiveProjector:
         for record in value:
             if not isinstance(record, Mapping):
                 continue
+            if record.get("event_type") in self._GREEN_ONLY_INDIRECT_EVENTS:
+                continue
+            if (
+                record.get("event_type") == "indirect_fire_resolved"
+                and str(record.get("side", "")).lower() != side
+            ):
+                continue
+            record = json_clone(record)
+            nested_result = record.get("result")
+            events = (
+                nested_result.get("events")
+                if isinstance(nested_result, Mapping)
+                else None
+            )
+            if isinstance(events, list):
+                owned_events = []
+                for event in events:
+                    if not isinstance(event, Mapping):
+                        owned_events.append(event)
+                        continue
+                    event_type = event.get("event_type")
+                    if event_type in self._GREEN_ONLY_INDIRECT_EVENTS:
+                        continue
+                    if (
+                        event_type == "indirect_fire_resolved"
+                        and str(event.get("side", "")).lower() != side
+                    ):
+                        continue
+                    owned_events.append(event)
+                if events and not owned_events:
+                    continue
+                nested_result["events"] = owned_events
             referenced = self._referenced_ids(record)
             if referenced - allowed:
                 continue
@@ -365,8 +424,12 @@ class PerspectiveProjector:
             "session_id": context.session_id,
             **self.policy.to_provenance(),
         }
+        if candidates.get(SOURCE_CONTRACT_KEY) == CURRENT_SOURCE_CONTRACT:
+            allowed = self.policy.side_extra_allowlist | {SOURCE_CONTRACT_KEY}
+        else:
+            allowed = self.policy.side_extra_allowlist
         return {"native": {key: candidates[key]
-                           for key in sorted(self.policy.side_extra_allowlist)
+                           for key in sorted(allowed)
                            if key in candidates}}
 
 

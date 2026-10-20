@@ -18,10 +18,16 @@ __all__ = [
     "MatchHandle",
     "OperationError",
     "GroupOperationPreview",
+    "ExecutionQueryError",
+    "ExecutionStatus",
+    "OperationExecutionAvailability",
+    "OperationExecutionPage",
+    "OperationExecutionRecord",
     "ProductExecutionResult",
     "SeatDecisionExecutionResult",
     "SeatDecisionPreview",
     "ProductOperationService",
+    "ScenarioMatchFactory",
     "SideController",
     "StagedAction",
     "UnitCommandMenu",
@@ -31,6 +37,25 @@ __all__ = [
 
 
 def __getattr__(name: str) -> Any:
+    if name in {
+        "ExecutionQueryError", "ExecutionStatus", "OperationExecutionPage",
+        "OperationExecutionAvailability", "OperationExecutionRecord",
+    }:
+        from wargame_native_engine.operations.execution_lifecycle import (
+            ExecutionQueryError,
+            ExecutionStatus,
+            OperationExecutionAvailability,
+            OperationExecutionPage,
+            OperationExecutionRecord,
+        )
+
+        return {
+            "ExecutionQueryError": ExecutionQueryError,
+            "ExecutionStatus": ExecutionStatus,
+            "OperationExecutionAvailability": OperationExecutionAvailability,
+            "OperationExecutionPage": OperationExecutionPage,
+            "OperationExecutionRecord": OperationExecutionRecord,
+        }[name]
     if name == "UnitCommandMenu":
         from wargame_native_engine.operations.commands import UnitCommandMenu
 
@@ -42,10 +67,18 @@ def __getattr__(name: str) -> Any:
         )
 
         return {"SideController": SideController, "StagedAction": StagedAction}[name]
-    if name in {"MatchHandle", "WargameFacade"}:
-        from wargame_native_engine.operations.facade import MatchHandle, WargameFacade
+    if name in {"MatchHandle", "ScenarioMatchFactory", "WargameFacade"}:
+        from wargame_native_engine.operations.facade import (
+            MatchHandle,
+            ScenarioMatchFactory,
+            WargameFacade,
+        )
 
-        return {"MatchHandle": MatchHandle, "WargameFacade": WargameFacade}[name]
+        return {
+            "MatchHandle": MatchHandle,
+            "ScenarioMatchFactory": ScenarioMatchFactory,
+            "WargameFacade": WargameFacade,
+        }[name]
     if name in {
         "GroupOperationPreview", "ProductExecutionResult",
         "ProductOperationService", "SeatDecisionExecutionResult",

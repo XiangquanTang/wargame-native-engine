@@ -397,6 +397,20 @@ indirect_fire.grid_corrected_dispersion
 indirect_fire.target_corrected_dispersion
 ```
 
+2026-10-01 规则所有者明确裁定“以用户贴出表格的知识库为主”。据此，表
+2.2（格内校射）以下三格覆盖仓库保留的完整原文旧值：
+
+| 2D6 | 距离 | 保留原文旧值 | 用户裁定值 |
+|---:|---|---|---|
+| 11 | 41–60 | `SCATTER` | `SCATTER_1` |
+| 12 | 21–40 | `SCATTER` | `SCATTER_1` |
+| 12 | 41–60 | `SCATTER_1` | `SCATTER_2` |
+
+`docs/rules/推演规则_完整纯文本_Final.md` 作为历史来源保持只读；其上述三个
+旧值已被本次可定位的用户裁定覆盖，不表示原始文本本来就是新值。TASK-024
+已按本节 7.2 在首次落地时动态选择无校射、格内校射或目标校射；三张散布表
+的数值不因此改变。
+
 散布方向在原文中未定义，必须作为独立策略配置，不得假装为原规则。
 
 ### 7.4 战果
@@ -619,6 +633,6 @@ native_convention_flags
 ## 15. 文件校验
 
 - JSON Schema：`native-adjudication-tables/1.2`
-- JSON Revision：`1.2.1-final`
-- JSON SHA-256：`2d0d03fa7ac5f1072b550378c20347b3e35e088a1348b459ae05967c0bab11d6`
+- JSON Revision：`1.2.2-final`
+- JSON SHA-256：`2757e97906d6896b1a5f3e5c06fa39c40db4693fb49573e37778acad513c0f4f`
 - 完整原文 SHA-256：`96ab643eb7451d6507cbf48e6ed806ea447233eb91c8038526130b72feabc9af`

@@ -288,7 +288,11 @@ class RealtimeDualControlRequestHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/product/bootstrap":
                 side, binding = self._seat(_one(query, "token"))
-                self._send_json(HTTPStatus.OK, self._bootstrap(side, binding))
+                include_map = _bootstrap_include_map(query)
+                self._send_json(
+                    HTTPStatus.OK,
+                    self._bootstrap(side, binding, include_map=include_map),
+                )
                 return
             if path == "/api/product/status":
                 side, binding = self._seat(_one(query, "token"))
@@ -466,12 +470,16 @@ class RealtimeDualControlRequestHandler(BaseHTTPRequestHandler):
         return
 
     def _bootstrap(
-        self, side: str, binding: RealtimeSeatBinding,
+        self,
+        side: str,
+        binding: RealtimeSeatBinding,
+        *,
+        include_map: bool = True,
     ) -> dict[str, object]:
         seat_view, controller_view = self.server.realtime_session.controller_snapshot(
             binding
         )
-        scene = self._scene(side, controller_view)
+        scene = self._scene(side, controller_view, include_map=include_map)
         frame = scene.get("frame")
         if not isinstance(frame, Mapping):
             raise RuntimeError("render scene lacks a frame record")
@@ -508,8 +516,27 @@ class RealtimeDualControlRequestHandler(BaseHTTPRequestHandler):
             ),
         }
 
-    def _scene(self, side: str, view: ControllerView) -> dict[str, object]:
+    def _scene(
+        self, side: str, view: ControllerView, *, include_map: bool = True,
+    ) -> dict[str, object]:
         record = controller_view_record(view)
+        if not include_map:
+            return {
+                "mode": f"realtime-{side}",
+                "perspective": side.upper(),
+                "map": None,
+                "frame": record["frame"],
+                "overlays": {
+                    "selected_unit_id": None,
+                    "planned_path": [],
+                    "planned_destination": None,
+                    "proposal_id": None,
+                    "proposal_action_id": None,
+                    "shoot_target_ids": [],
+                    "adjudication_events": [],
+                },
+                "timeline": None,
+            }
         return RenderScene(
             mode=f"realtime-{side}",
             perspective=side.upper(),
@@ -525,7 +552,6 @@ class RealtimeDualControlRequestHandler(BaseHTTPRequestHandler):
                 "adjudication_events": [],
             },
         ).to_record()
-
     def _seat(self, raw_token: object) -> tuple[str, RealtimeSeatBinding]:
         return self.server.binding(raw_token)
 
@@ -593,6 +619,17 @@ class RealtimeDualControlRequestHandler(BaseHTTPRequestHandler):
             # command has been admitted, so this is a normal client disconnect
             # rather than an Engine or action failure.
             return
+
+
+def _bootstrap_include_map(query: Mapping[str, list[str]]) -> bool:
+    values = query.get("include_map")
+    if values is None:
+        return True
+    if values == ["1"]:
+        return True
+    if values == ["0"]:
+        return False
+    raise ValueError("include_map must be exactly 0 or 1")
 
 
 def _confirmed_contacts(

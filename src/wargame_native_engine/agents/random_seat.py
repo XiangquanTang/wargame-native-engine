@@ -24,6 +24,7 @@ _PRODUCT_ACTION_TYPES = frozenset({
     "SHOOT",
     "BOARD",
     "UNLOAD",
+    "CAPTURE",
     "ENTER_CONCEALMENT",
     "WEAPON_LOCK",
     "WEAPON_UNFOLD",
@@ -211,7 +212,7 @@ def _product_operation(
             target_id=target_id,
             weapon_choices=choices,
         )
-    if operation_type in {"BOARD", "UNLOAD"}:
+    if operation_type in {"BOARD", "UNLOAD", "CAPTURE"}:
         target_id = action.get("target_id")
         if type(target_id) is not int:
             return None

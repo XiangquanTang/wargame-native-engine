@@ -7,8 +7,8 @@
   "source": {
     "machine_table": "config/adjudication/source_tables_v1/native_adjudication_tables_final.json",
     "table_set_id": "native-source-adjudication-final",
-    "table_revision": "1.2.1-final",
-    "table_content_sha256": "2d0d03fa7ac5f1072b550378c20347b3e35e088a1348b459ae05967c0bab11d6",
+    "table_revision": "1.2.2-final",
+    "table_content_sha256": "2757e97906d6896b1a5f3e5c06fa39c40db4693fb49573e37778acad513c0f4f",
     "guide": "docs/rules/Native兵棋裁决知识库_Final.md",
     "context": "docs/rules/推演规则_完整纯文本_Final.md"
   },

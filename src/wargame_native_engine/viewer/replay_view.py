@@ -23,7 +23,7 @@ from wargame_native_engine.compat.source_frame.models import (
 from wargame_native_engine.core.action import EngineAction
 from wargame_native_engine.io.importers.source_replay_archive import (
     SourceReplayArchive,
-    SourceReplayArchiveImporter,
+    SourceReplayArchiveReader,
 )
 from wargame_native_engine.io.serialization import json_clone
 from wargame_native_engine.viewer.map_config import (
@@ -170,9 +170,18 @@ def load_replay_view(
         raise ReplayViewerLoadError(f"missing analysis sidecar: {analysis_path}")
 
     try:
-        archive = SourceReplayArchiveImporter(
+        reader = SourceReplayArchiveReader(
+            replay_path,
             frame_importer=_ViewerSourceFrameImporter()
-        ).import_path(replay_path)
+        )
+        archive = SourceReplayArchive(
+            source_hash=reader.source_hash,
+            frames=reader.lazy_frames(),
+            frame_names=reader.frame_names,
+            steps=reader.steps,
+            manifest=reader.manifest,
+            warnings=(),
+        )
     except Exception as exc:
         raise ReplayViewerLoadError(f"failed to load replay archive: {exc}") from exc
     try:

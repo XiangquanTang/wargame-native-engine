@@ -14,7 +14,6 @@ from typing import Any
 
 from wargame_native_engine.analysis import (
     EightFactorAnalyzer,
-    LiveAnalysisDesynchronizedError,
     LiveAnalyzedSession,
 )
 from wargame_native_engine.analysis.models import FrameAnalysis
@@ -37,6 +36,7 @@ from wargame_native_engine.gateway.controller_decision import (
     build_controller_decision_core,
 )
 from wargame_native_engine.io.serialization import canonical_hash, json_clone
+from wargame_native_engine.io.scenario import native_map_identity_hash
 from wargame_native_engine.movement.models import MovementMode, RoutePlan
 from wargame_native_engine.replay import SourceFrameRecorder
 from wargame_native_engine.session.source_environment import (
@@ -69,6 +69,7 @@ class _ManagedSession:
     seed: int
     step_index: int = 0
     failed: str | None = None
+    first_failure: BaseException | None = None
     finalized: bool = False
     controller_view_cache: dict[
         str, tuple[tuple[object, ...], ControllerView]
@@ -79,6 +80,10 @@ class _ManagedSession:
     controller_view_cache_misses: int = 0
     controller_view_cache_bypasses: int = 0
     controller_view_builds: int = 0
+    planning_world_hash_cache: tuple[int, str] | None = None
+    planning_world_hash_cache_hits: int = 0
+    planning_world_hash_cache_misses: int = 0
+    planning_world_hash_computations: int = 0
     lock: RLock = field(default_factory=RLock)
 
 
@@ -91,11 +96,15 @@ class SessionManager:
         *,
         storage_root: str | Path,
         analyzer_factory: AnalyzerFactory | None = None,
+        reuse_planning_world_hash: bool = True,
     ) -> None:
         if not callable(environment_factory):
             raise TypeError("environment_factory must be callable")
         self._environment_factory = environment_factory
         self._analyzer_factory = analyzer_factory or EightFactorAnalyzer
+        if type(reuse_planning_world_hash) is not bool:
+            raise TypeError("reuse_planning_world_hash must be an exact bool")
+        self._reuse_planning_world_hash = reuse_planning_world_hash
         self.storage_root = Path(storage_root)
         self.storage_root.mkdir(parents=True, exist_ok=True)
         self._sessions: dict[str, _ManagedSession] = {}
@@ -121,6 +130,8 @@ class SessionManager:
         live = LiveAnalyzedSession(
             environment,
             analyzer=self._analyzer_factory(),
+            retain_update_timeline=False,
+            retain_frame_analyses=False,
         )
         recorder: SourceFrameRecorder | None = None
         try:
@@ -197,13 +208,10 @@ class SessionManager:
         managed = self._managed(session_id)
         with managed.lock:
             self._require_usable(managed)
-            matches = tuple(
-                value for value in managed.live.frame_analyses
-                if value.provenance.frame_index == frame_index
-            )
-            if len(matches) != 1:
-                raise RuntimeError("committed_frame_analysis_missing")
-            return deepcopy(matches[0])
+            try:
+                return managed.live.frame_analysis_at(frame_index)
+            except IndexError as exc:
+                raise RuntimeError("committed_frame_analysis_missing") from exc
 
     def controller_view(
         self,
@@ -246,6 +254,22 @@ class SessionManager:
                 "entries": len(managed.controller_view_cache),
             }
 
+    def planning_world_hash_cache_stats(
+        self, session_id: str,
+    ) -> dict[str, int | bool]:
+        """Return bounded counters for the per-session planning guard cache."""
+
+        managed = self._managed(session_id)
+        with managed.lock:
+            self._require_usable(managed)
+            return {
+                "enabled": self._reuse_planning_world_hash,
+                "hits": managed.planning_world_hash_cache_hits,
+                "misses": managed.planning_world_hash_cache_misses,
+                "hash_computations": managed.planning_world_hash_computations,
+                "entries": int(managed.planning_world_hash_cache is not None),
+            }
+
     def valid_actions(
         self,
         session_id: str,
@@ -265,6 +289,54 @@ class SessionManager:
             self._require_usable(managed)
             return _managed_sim_time_ms(managed)
 
+    def public_static_map(self, session_id: str) -> Mapping[str, object]:
+        """Return the immutable declared Native hex set and its identity.
+
+        This is static scenario data, not live WorldState.  Coordinate grids
+        without explicit Native hex declarations are intentionally rejected;
+        callers must not guess cells from width/height.
+        """
+
+        managed = self._managed(session_id)
+        with managed.lock:
+            self._require_usable(managed)
+            native_map = managed.environment.session.scenario.map
+            cells = tuple(sorted(item.hex_id for item in native_map.hexes))
+            if not cells:
+                raise CommandGatewayError(
+                    "public_static_hex_map_unavailable",
+                    "scenario has no explicit Native hex declarations",
+                )
+            if len(set(cells)) != len(cells):
+                raise RuntimeError("scenario map contains duplicate Native hex IDs")
+            return {
+                "schema_version": "native-public-static-hex-map/1.0",
+                "map_id": native_map.map_id,
+                "map_hash": native_map_identity_hash(native_map),
+                "cell_set_rule": "ALL_DECLARED_NATIVE_HEXES",
+                "valid_hex_ids": cells,
+            }
+
+    def public_native_conventions(self, session_id: str) -> Mapping[str, object]:
+        """Configured public Native conventions; no World or RNG access."""
+        managed = self._managed(session_id)
+        policy = getattr(managed.environment.session.backend, "mounted_position_policy", None)
+        return {} if policy is None else {"mounted_position_policy": policy}
+
+    def public_scenario_identity(self, session_id: str) -> Mapping[str, str]:
+        """Return immutable scenario/map identity without exposing WorldState."""
+
+        managed = self._managed(session_id)
+        with managed.lock:
+            self._require_usable(managed)
+            scenario = managed.environment.session.scenario
+            return {
+                "scenario_id": scenario.scenario_id,
+                "scenario_hash": scenario.scenario_hash,
+                "map_id": scenario.map.map_id,
+                "map_hash": native_map_identity_hash(scenario.map),
+            }
+
     def plan_move(
         self,
         session_id: str,
@@ -279,15 +351,34 @@ class SessionManager:
         with managed.lock:
             self._require_usable(managed)
             _require_side(managed, side)
-            snapshot = managed.environment.session.snapshot()
-            state_hash = canonical_hash(snapshot["world"])
-            route = managed.environment.session.plan_move(
+            session = managed.environment.session
+            revision = session.state_revision()
+            cached = managed.planning_world_hash_cache
+            if (
+                self._reuse_planning_world_hash
+                and cached is not None
+                and cached[0] == revision
+            ):
+                managed.planning_world_hash_cache_hits += 1
+                state_hash = cached[1]
+            else:
+                managed.planning_world_hash_cache_misses += 1
+                state_hash = canonical_hash(session.snapshot()["world"])
+                managed.planning_world_hash_computations += 1
+            route = session.plan_move(
                 side, unit_id, destination_hex, movement_mode
             )
-            if canonical_hash(
-                managed.environment.session.snapshot()["world"]
-            ) != state_hash:
+            after_hash = canonical_hash(session.snapshot()["world"])
+            managed.planning_world_hash_computations += 1
+            if after_hash != state_hash:
                 raise RuntimeError("move_planning_modified_world_state")
+            after_revision = session.state_revision()
+            if after_revision != revision:
+                raise RuntimeError("move_planning_modified_state_revision")
+            managed.planning_world_hash_cache = (
+                (after_revision, after_hash)
+                if self._reuse_planning_world_hash else None
+            )
             return deepcopy(route), state_hash
 
     def query_unit_tactical_overlay(
@@ -368,6 +459,46 @@ class SessionManager:
                     "indirect_fire_mission_area_query_modified_engine_state"
                 )
             return deepcopy(result)
+
+    def _operation_execution_facts(
+        self,
+        session_id: str,
+        side: str,
+        *,
+        first_frame_index: int | None = None,
+        last_frame_index: int | None = None,
+    ) -> Mapping[str, object]:
+        """Return committed per-frame OWN facts for the trusted tracker.
+
+        The projection was built while the already-required post-step World
+        was current.  This read therefore performs no snapshot or World
+        reconstruction and deliberately omits raw attributes, RNG, enemy
+        records, damage evidence, and full replay history.
+        """
+
+        managed = self._managed(session_id)
+        with managed.lock:
+            self._require_usable(managed)
+            _require_side(managed, side)
+            frames = managed.environment.execution_fact_frames(
+                side,
+                first_frame_index=first_frame_index,
+                last_frame_index=last_frame_index,
+            )
+            if first_frame_index is None and frames:
+                frames = (frames[-1],)
+            expected = None
+            if first_frame_index is not None and last_frame_index is not None:
+                expected = tuple(range(first_frame_index, last_frame_index + 1))
+            actual = tuple(int(value["frame_index"]) for value in frames)
+            return {
+                "schema_version": "native-operation-execution-fact-batch/1.0",
+                "side": side,
+                "first_frame_index": first_frame_index,
+                "last_frame_index": last_frame_index,
+                "complete_range": expected is None or actual == expected,
+                "frames": frames,
+            }
 
     def plan_indirect_fire(
         self,
@@ -546,38 +677,44 @@ class SessionManager:
                     "session_terminal",
                     f"session {session_id} is already terminal",
                 )
+            revision_before = managed.environment.session.state_revision()
+            failure_reason = "committed_step_interrupted"
             try:
                 update = managed.live.step(
                     tuple(actions), delta_time_ms=delta_time_ms
                 )
-            except BaseException:
-                try:
-                    managed.live.current_timeline
-                except LiveAnalysisDesynchronizedError:
-                    managed.failed = "analysis_desynchronized"
-                raise
-            step_record = managed.environment.last_step_record
-            if step_record is None:
-                managed.failed = "missing_committed_step_record"
-                raise RuntimeError("environment did not expose committed step record")
-            step_record = json_clone(step_record)
-            if decision_window_index is not None:
-                step_record["decision_window_index"] = decision_window_index
-            if frame_interval_offset is not None:
-                step_record["frame_interval_offset"] = frame_interval_offset
-            if managed.recorder is not None:
-                try:
+                if type(update.done) is not bool:
+                    raise TypeError("live update done must be an exact bool")
+                step_record = managed.environment.last_step_record
+                if step_record is None:
+                    failure_reason = "missing_committed_step_record"
+                    raise RuntimeError(
+                        "environment did not expose committed step record"
+                    )
+                step_record = json_clone(step_record)
+                if decision_window_index is not None:
+                    step_record["decision_window_index"] = decision_window_index
+                if frame_interval_offset is not None:
+                    step_record["frame_interval_offset"] = frame_interval_offset
+                if managed.recorder is not None:
+                    failure_reason = "recorder_desynchronized"
                     managed.recorder.record_step(
                         update.green_frame,
                         step_record,
                     )
-                except BaseException:
-                    managed.failed = "recorder_desynchronized"
-                    raise
-            managed.step_index = update.frame_index
-            native_result = managed.environment.session.result()
-            if type(update.done) is not bool:
-                raise TypeError("live update done must be an exact bool")
+                failure_reason = "committed_step_interrupted"
+                managed.step_index = update.frame_index
+                native_result = managed.environment.session.result()
+            except BaseException as exc:
+                advanced = (
+                    managed.environment.session.state_revision()
+                    != revision_before
+                )
+                if managed.live.desynchronized:
+                    _mark_failed(managed, "analysis_desynchronized", exc)
+                elif advanced:
+                    _mark_failed(managed, failure_reason, exc)
+                raise
             return SessionDescriptor(
                 session_id=managed.external_id,
                 step_index=managed.step_index,
@@ -639,7 +776,6 @@ class SessionManager:
             outcome = dict(managed.environment.session.result().to_dict())
             if truncated and not done:
                 outcome["truncated"] = True
-            analysis_payload = managed.live.analysis_jsonl().encode("utf-8")
             manifest = managed.recorder.finalize(
                 outcome,
                 final_state_hash=str(outcome["world_hash"]),
@@ -649,9 +785,8 @@ class SessionManager:
             ))
             try:
                 replay_path = managed.recorder.package_zip(staging / "replay.zip")
-                _write_bytes(
-                    staging / "frame_analysis.native.jsonl",
-                    analysis_payload,
+                managed.live.write_analysis_jsonl(
+                    staging / "frame_analysis.native.jsonl"
                 )
                 if control_audit_payload is not None:
                     _write_bytes(
@@ -683,6 +818,7 @@ class SessionManager:
         with managed.lock:
             _clear_controller_view_cache(managed)
             managed.environment.session.close()
+            managed.live.close()
         with self._lock:
             self._sessions.pop(session_id, None)
 
@@ -698,10 +834,13 @@ class SessionManager:
     @staticmethod
     def _require_usable(managed: _ManagedSession) -> None:
         if managed.failed is not None:
-            raise CommandGatewayError(
+            error = CommandGatewayError(
                 "session_failed",
                 f"session requires replacement: {managed.failed}",
             )
+            if managed.first_failure is not None:
+                raise error from managed.first_failure
+            raise error
         if managed.environment.session.closed:
             raise CommandGatewayError(
                 "session_closed", f"session {managed.external_id} is closed"
@@ -766,6 +905,7 @@ class SessionManager:
         terminal = session.is_terminal()
         result = session.result()
         cache_key = (
+            managed.environment.source_contract,
             state_revision,
             side,
             window,
@@ -859,6 +999,17 @@ def _managed_sim_time_ms(managed: _ManagedSession) -> int:
 def _clear_controller_view_cache(managed: _ManagedSession) -> None:
     managed.controller_view_cache.clear()
     managed.controller_view_cache_revision = None
+    managed.planning_world_hash_cache = None
+
+
+def _mark_failed(
+    managed: _ManagedSession, reason: str, error: BaseException,
+) -> None:
+    """Retain the first fatal cause without consulting historical data."""
+
+    if managed.failed is None:
+        managed.failed = reason
+        managed.first_failure = error
 
 
 def _managed_lifecycle(managed: _ManagedSession) -> SessionLifecycleState:
@@ -910,6 +1061,11 @@ def _recorder_metadata(
         "episode_seed": seed,
         "max_ticks": environment.session.max_ticks,
     }
+    policy = getattr(environment.session.backend, "mounted_position_policy", None)
+    if policy is not None:
+        value["mounted_position_policy"] = policy
+    if "source_frame_compatibility_version" in native:
+        value["source_frame_compatibility_version"] = native["source_frame_compatibility_version"]
     if "map_runtime_data" in native:
         value["map_runtime_data"] = json_clone(native["map_runtime_data"])
     for name in (

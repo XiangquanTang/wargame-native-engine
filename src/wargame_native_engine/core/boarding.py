@@ -4,9 +4,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from enum import Enum
-from typing import Any, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
+from wargame_native_engine.core.action import ActionType, EngineAction
 from wargame_native_engine.io.serialization import canonical_hash
+
+if TYPE_CHECKING:
+    from wargame_native_engine.adjudication.boarding import (
+        BoardRequest,
+        UnloadRequest,
+    )
 
 
 class BoardingTransitionType(str, Enum):
@@ -81,6 +88,42 @@ class UnloadCapability:
         _authority(self.profile_id, self.authority_version, self.authority_hash)
         if self.passenger_id == self.carrier_id:
             raise ValueError("passenger and carrier must differ")
+
+
+def _encode_board_action(
+    side: str,
+    value: BoardCapability | BoardRequest,
+) -> EngineAction:
+    return EngineAction(
+        side=side,
+        actor_id=value.passenger_id,
+        action_type=ActionType.BOARD,
+        target_id=value.carrier_id,
+        parameters=_boarding_action_parameters(value),
+    )
+
+
+def _encode_unload_action(
+    side: str,
+    value: UnloadCapability | UnloadRequest,
+) -> EngineAction:
+    return EngineAction(
+        side=side,
+        actor_id=value.carrier_id,
+        action_type=ActionType.UNLOAD,
+        target_id=value.passenger_id,
+        parameters=_boarding_action_parameters(value),
+    )
+
+
+def _boarding_action_parameters(
+    value: BoardCapability | UnloadCapability | BoardRequest | UnloadRequest,
+) -> dict[str, str]:
+    return {
+        "profile_id": value.profile_id,
+        "authority_version": value.authority_version,
+        "authority_hash": value.authority_hash,
+    }
 
 
 @dataclass(frozen=True, slots=True)

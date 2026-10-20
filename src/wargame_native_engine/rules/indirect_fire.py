@@ -29,11 +29,15 @@ INDIRECT_FIRE_AMMUNITION_MAPPING_SCHEMA_VERSION = (
     "native-indirect-fire-ammunition-mapping/1.0"
 )
 INDIRECT_FIRE_OBSERVATION_POLICY_SCHEMA_VERSION = (
-    "native-indirect-fire-observation-policy/1.0"
+    "native-indirect-fire-observation-policy/1.1"
 )
 INDIRECT_FIRE_DAMAGE_POLICY_SCHEMA_VERSION = (
     "native-indirect-fire-damage-policy/1.0"
 )
+INDIRECT_FIRE_BOUNDARY_SEMANTICS_VERSION = (
+    "native-indirect-fire-out-of-map/1.0"
+)
+INDIRECT_FIRE_LIFECYCLE_VERSION = "native-indirect-fire-active-area/1.2"
 
 
 class ArtilleryClass(str, Enum):
@@ -399,7 +403,10 @@ class IndirectFireObservationAuthority:
     impact_observation_policy: str
     requires_observer: bool
     correction_level_policy: str
-    dispersion_table_id: str
+    correction_levels: tuple[str, ...]
+    dispersion_table_ids: tuple[tuple[str, str], ...]
+    observer_eligibility: tuple[str, ...]
+    observation_interface: str
     authority_basis: str
     content_hash: str
 
@@ -409,20 +416,33 @@ class IndirectFireObservationAuthority:
             "version",
             "impact_observation_policy",
             "correction_level_policy",
-            "dispersion_table_id",
+            "observation_interface",
             "authority_basis",
         ):
             _nonempty(getattr(self, name), name)
         if self.authority_status != INDIRECT_FIRE_AUTHORITY_STATUS:
             raise ValueError("indirect observation authority is not executable")
-        if self.impact_observation_policy != "UNOBSERVED":
-            raise ValueError("Native simplified v1 supports only UNOBSERVED impact")
+        if self.impact_observation_policy != "DYNAMIC_AT_IMPACT":
+            raise ValueError("indirect observation must be determined at impact")
         if self.requires_observer is not False:
-            raise ValueError("UNOBSERVED impact cannot require an observer")
-        if self.correction_level_policy != "FIXED_UNOBSERVED":
+            raise ValueError("area fire must remain legal without an observer")
+        if self.correction_level_policy != "OBSERVED_GRID_AND_TARGET":
             raise ValueError("unsupported indirect observation correction policy")
-        if self.dispersion_table_id != "indirect_fire.unobserved_dispersion":
-            raise ValueError("UNOBSERVED authority requires the unobserved table")
+        expected_levels = (
+            "UNOBSERVED", "GRID_CORRECTED", "TARGET_CORRECTED",
+        )
+        if self.correction_levels != expected_levels:
+            raise ValueError("indirect observation levels must be complete")
+        if self.dispersion_table_ids != (
+            ("GRID_CORRECTED", "indirect_fire.grid_corrected_dispersion"),
+            ("TARGET_CORRECTED", "indirect_fire.target_corrected_dispersion"),
+            ("UNOBSERVED", "indirect_fire.unobserved_dispersion"),
+        ):
+            raise ValueError("indirect observation dispersion tables mismatch")
+        if self.observer_eligibility != (
+            "CANONICAL_DRONE", "GROUND_PERSONNEL", "GROUND_VEHICLE",
+        ):
+            raise ValueError("indirect observer eligibility mismatch")
         _sha256(self.content_hash, "content_hash")
 
 
@@ -711,7 +731,9 @@ def load_indirect_fire_observation_authority(
     item = _exact_mapping(root, "indirect-fire observation authority", {
         "schema_version", "policy_id", "version", "authority_status",
         "impact_observation_policy", "requires_observer",
-        "correction_level_policy", "dispersion_table_id", "authority_basis",
+        "correction_level_policy", "correction_levels",
+        "dispersion_table_ids", "observer_eligibility",
+        "observation_interface", "authority_basis",
     })
     if item["schema_version"] != INDIRECT_FIRE_OBSERVATION_POLICY_SCHEMA_VERSION:
         raise ValueError("unsupported indirect-fire observation policy schema")
@@ -728,8 +750,23 @@ def load_indirect_fire_observation_authority(
         correction_level_policy=_nonempty(
             item["correction_level_policy"], "correction_level_policy"
         ),
-        dispersion_table_id=_nonempty(
-            item["dispersion_table_id"], "dispersion_table_id"
+        correction_levels=_string_tuple(
+            item["correction_levels"], "correction_levels"
+        ),
+        dispersion_table_ids=tuple(sorted(
+            (
+                _nonempty(key, "correction level"),
+                _nonempty(value, "dispersion table id"),
+            )
+            for key, value in _mapping(
+                item["dispersion_table_ids"], "dispersion_table_ids"
+            ).items()
+        )),
+        observer_eligibility=tuple(sorted(_string_tuple(
+            item["observer_eligibility"], "observer_eligibility"
+        ))),
+        observation_interface=_nonempty(
+            item["observation_interface"], "observation_interface"
         ),
         authority_basis=_nonempty(item["authority_basis"], "authority_basis"),
         content_hash=canonical_hash(root),
@@ -835,7 +872,7 @@ def build_indirect_fire_authority_descriptor(
 
 
 def load_indirect_fire_replay_identity() -> dict[str, str]:
-    """Load the exact, versioned authority set bound to INDIRECT actions."""
+    """Load the exact, versioned authority set bound to INDIRECT archives."""
 
     authority = load_indirect_fire_authority()
     execution = load_indirect_fire_execution_policy()
@@ -843,8 +880,11 @@ def load_indirect_fire_replay_identity() -> dict[str, str]:
     observation = load_indirect_fire_observation_authority()
     damage = load_indirect_fire_damage_policy()
     return {
+        "indirect_fire_boundary_semantics_version": (
+            INDIRECT_FIRE_BOUNDARY_SEMANTICS_VERSION
+        ),
         "indirect_fire_lifecycle_version": (
-            "native-indirect-fire-active-area/1.0"
+            INDIRECT_FIRE_LIFECYCLE_VERSION
         ),
         "indirect_fire_authority_version": (
             INDIRECT_FIRE_AUTHORITY_SCHEMA_VERSION
@@ -855,6 +895,14 @@ def load_indirect_fire_replay_identity() -> dict[str, str]:
         "observation_policy_hash": observation.content_hash,
         "damage_policy_hash": damage.content_hash,
     }
+
+
+def load_legacy_indirect_fire_replay_identity() -> dict[str, str]:
+    """Return the pre-0.4.2 identity retained for strict archive replay."""
+
+    identity = load_indirect_fire_replay_identity()
+    identity.pop("indirect_fire_boundary_semantics_version")
+    return identity
 
 
 def load_indirect_fire_execution_policy(
@@ -1276,6 +1324,15 @@ def _mapping(value: object, name: str) -> Mapping[str, Any]:
     return value
 
 
+def _string_tuple(value: object, name: str) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        raise ValueError(f"{name} must be an array")
+    result = tuple(_nonempty(item, name) for item in value)
+    if result != tuple(dict.fromkeys(result)):
+        raise ValueError(f"{name} must contain unique strings")
+    return result
+
+
 def _read_json_object(path: Path, name: str) -> Mapping[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -1386,6 +1443,8 @@ __all__ = [
     "IndirectScatterDistancePolicy",
     "IndirectScatterProfile",
     "IndirectTargetDomain",
+    "INDIRECT_FIRE_BOUNDARY_SEMANTICS_VERSION",
+    "INDIRECT_FIRE_LIFECYCLE_VERSION",
     "ScatterDirectionPolicy",
     "UnresolvedAuthority",
     "build_indirect_fire_authority_descriptor",
@@ -1400,4 +1459,5 @@ __all__ = [
     "load_indirect_fire_execution_policy",
     "load_indirect_fire_observation_authority",
     "load_indirect_fire_replay_identity",
+    "load_legacy_indirect_fire_replay_identity",
 ]

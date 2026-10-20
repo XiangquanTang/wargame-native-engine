@@ -1,0 +1,7 @@
+{
+  "schema_version": "native-objective-capture-policy/1.0",
+  "policy_id": "native-objective-capture",
+  "policy_version": "1.0.0",
+  "mode": "LEGACY_AUTOMATIC_EUCLIDEAN_RADIUS",
+  "description": "Frozen historical Native simplified objective behavior. Ownership follows automatic Euclidean-radius occupation."
+}

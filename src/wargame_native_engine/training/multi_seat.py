@@ -24,6 +24,12 @@ from wargame_native_engine.projection.decision_semantic import (
     DecisionProjectionContractError,
 )
 from wargame_native_engine.operations import ProductOperationService
+from wargame_native_engine.operations.execution_lifecycle import (
+    OperationExecutionAvailability,
+    OperationExecutionPage,
+    OperationExecutionRecord,
+    OperationExecutionTracker,
+)
 from wargame_native_engine.operations.facade import MatchHandle
 from wargame_native_engine.training.models import (
     AgentResetResult,
@@ -199,6 +205,7 @@ class NativeDecisionSession:
         }
         self._failed = False
         self._snapshot: _DecisionSnapshot | None = None
+        self.execution_tracker = OperationExecutionTracker(episode_id)
 
     def reset_result(self) -> AgentResetResult:
         self._require_synchronized()
@@ -270,6 +277,17 @@ class NativeDecisionSession:
             "blue": _decision(blue_decision),
         }
         decision_index = snapshot.decision_index
+        execution_handles = {
+            side: self.execution_tracker.submit(
+                side,
+                decisions[side],
+                decision_window_index=decision_index,
+                frame_index=snapshot.frame_index,
+                sim_time_ms=snapshot.sim_time_ms,
+                command_status="SUBMITTED",
+            )
+            for side in ("red", "blue")
+        }
         if any(
             value.decision_index != decision_index
             for value in before_capabilities.values()
@@ -290,12 +308,34 @@ class NativeDecisionSession:
                     ),
                 )
             except BaseException as exc:
+                for tracked_side in ("red", "blue"):
+                    self.execution_tracker.set_command_status(
+                        execution_handles[tracked_side],
+                        (
+                            "REJECTED_AT_PREFLIGHT"
+                            if tracked_side == side
+                            else "ABORTED_ATOMIC_PREFLIGHT"
+                        ),
+                        reason_code=(
+                            getattr(exc, "code", type(exc).__name__)
+                            if tracked_side == side
+                            else "OTHER_SIDE_PREFLIGHT_REJECTED"
+                        ),
+                    )
                 raise NativeMultiSeatError(
                     "decision_preview_failed",
                     f"{type(exc).__name__}:{exc}",
                     side=side,
                     phase="preview",
                 ) from exc
+
+        for side in ("red", "blue"):
+            self.execution_tracker.bind_plan(
+                execution_handles[side],
+                self.product_services[side]._decision_action_correlations(  # noqa: SLF001
+                    previews[side].preview_token
+                ),
+            )
 
         executions = {}
         submitted: list[str] = []
@@ -311,6 +351,17 @@ class NativeDecisionSession:
                 submitted.append(side)
             except BaseException as exc:
                 self._failed = True
+                for tracked_side in ("red", "blue"):
+                    self.execution_tracker.set_command_status(
+                        execution_handles[tracked_side],
+                        "UNKNOWN_AFTER_SUBMISSION_FAILURE",
+                        reason_code="DECISION_EXECUTION_FAILED_RESET_REQUIRED",
+                    )
+                self.execution_tracker.end_active(
+                    frame_index=snapshot.frame_index,
+                    sim_time_ms=snapshot.sim_time_ms,
+                    reason_code="ADVANCE_FAILED_WITHOUT_COMMITTED_FACT",
+                )
                 raise NativeMultiSeatError(
                     "decision_execution_failed_reset_required",
                     f"{type(exc).__name__}:{exc};submitted={','.join(submitted)}",
@@ -454,6 +505,54 @@ class NativeDecisionSession:
             after_capabilities,
             ended=terminated or truncated,
         )
+        for side in ("red", "blue"):
+            handles = self.execution_tracker.latest_handles(side)
+            fact_batch = self.match.gateway.manager._operation_execution_facts(  # noqa: SLF001
+                self.match.session_id,
+                side,
+                first_frame_index=advance.first_frame_index,
+                last_frame_index=advance.last_frame_index,
+            )
+            fact_frames = tuple(fact_batch.get("frames", ()))
+            action_results = {}
+            for facts in fact_frames:
+                for value in facts.get("action_results", ()):
+                    if isinstance(value, Mapping):
+                        action_results[str(value.get("action_id"))] = (
+                            value, facts,
+                        )
+            for handle in handles:
+                record = self.execution_tracker.get(side, handle)
+                if record.command_status.startswith("REJECTED"):
+                    continue
+                result = action_results.get(record.action_id or "")
+                if result is None:
+                    self.execution_tracker.set_command_status(
+                        (handle,),
+                        "APPLICATION_EVIDENCE_UNKNOWN",
+                        reason_code="ACTION_RESULT_NOT_RETAINED",
+                    )
+                    continue
+                action_result, result_frame = result
+                if action_result.get("accepted") is False:
+                    self.execution_tracker.set_command_status(
+                        (handle,),
+                        "REJECTED_AT_APPLY",
+                        reason_code=str(
+                            action_result.get("code") or "ACTION_REJECTED"
+                        ),
+                        frame_index=int(result_frame["frame_index"]),
+                        sim_time_ms=int(result_frame["sim_time_ms"]),
+                    )
+                else:
+                    self.execution_tracker.set_command_status(
+                        (handle,),
+                        "APPLIED",
+                        frame_index=int(result_frame["frame_index"]),
+                        sim_time_ms=int(result_frame["sim_time_ms"]),
+                    )
+            for facts in fact_frames:
+                self.execution_tracker.consume(side, facts)
         native_result = self.match.gateway.manager.native_result(
             self.match.session_id
         )
@@ -700,7 +799,7 @@ class NativeDecisionSession:
         summary = (
             _empty_capability_summary()
             if view.terminal
-            else self.product_services[side].capabilities(actors)
+            else self.product_services[side].capabilities(actors, view=view)
         )
         operations = summary.get("operations", {})
         operation_types = tuple(
@@ -744,6 +843,28 @@ class NativeDecisionSession:
                 "native_multi_seat_failed_reset_required",
                 "decision execution failed; create or reset the episode",
             )
+
+    def execution_status(
+        self, side: str, execution_handle: str,
+    ) -> OperationExecutionRecord:
+        return self.execution_tracker.get(_side(side), execution_handle)
+
+    def current_executions(
+        self, side: str, *, limit: int = 100,
+    ) -> tuple[OperationExecutionRecord, ...]:
+        return self.execution_tracker.current(_side(side), limit=limit)
+
+    def execution_changes(
+        self, side: str, *, cursor: str | None = None, limit: int = 100,
+    ) -> OperationExecutionPage:
+        return self.execution_tracker.changes(
+            _side(side), cursor=cursor, limit=limit,
+        )
+
+    def execution_tracking_status(
+        self, side: str,
+    ) -> OperationExecutionAvailability:
+        return self.execution_tracker.tracking_status(_side(side))
 
 
 class NativeMultiSeatEnv:
@@ -914,6 +1035,12 @@ class NativeMultiSeatEnv:
         result = replace(result, info=info)
         self._transitions.extend(deepcopy(result.transitions))
         self._ended = result.terminated or result.truncated
+        if self._ended:
+            self._require_session().execution_tracker.end_active(
+                frame_index=result.transitions[0].fact_frame_end,
+                sim_time_ms=result.transitions[0].sim_time_end_ms,
+                reason_code="EPISODE_ENDED_WITHOUT_TERMINAL_EXECUTION_FACT",
+            )
         return deepcopy(result)
 
     def decision_context(self, side: str) -> AgentDecisionContext:
@@ -954,6 +1081,49 @@ class NativeMultiSeatEnv:
     @property
     def episode_id(self) -> str:
         return self._require_session().episode_id
+
+    def latest_execution_handles(self, side: str) -> tuple[str, ...]:
+        self._require_initialized()
+        return self._require_session().execution_tracker.latest_handles(_side(side))
+
+    @property
+    def execution_tracking_available(self) -> bool:
+        """Compatibility aggregate; prefer side-bound tracking status."""
+
+        self._require_initialized()
+        return self._require_session().execution_tracker.available
+
+    def execution_tracking_status(
+        self, side: str,
+    ) -> OperationExecutionAvailability:
+        self._require_initialized()
+        return deepcopy(
+            self._require_session().execution_tracking_status(side)
+        )
+
+    def execution_status(
+        self, side: str, execution_handle: str,
+    ) -> OperationExecutionRecord:
+        self._require_initialized()
+        return deepcopy(
+            self._require_session().execution_status(side, execution_handle)
+        )
+
+    def current_executions(
+        self, side: str, *, limit: int = 100,
+    ) -> tuple[OperationExecutionRecord, ...]:
+        self._require_initialized()
+        return deepcopy(
+            self._require_session().current_executions(side, limit=limit)
+        )
+
+    def execution_changes(
+        self, side: str, *, cursor: str | None = None, limit: int = 100,
+    ) -> OperationExecutionPage:
+        self._require_initialized()
+        return deepcopy(self._require_session().execution_changes(
+            side, cursor=cursor, limit=limit,
+        ))
 
     def write_transitions(self, path: str | Path) -> Path:
         return write_decision_transitions_jsonl(path, self.transitions)
@@ -1016,6 +1186,13 @@ class NativeMultiSeatEnv:
         self._closed = True
 
     def _close_match(self) -> None:
+        if self._session is not None and self._match is not None:
+            descriptor = self._match.status
+            self._session.execution_tracker.end_active(
+                frame_index=descriptor.frame_index,
+                sim_time_ms=descriptor.sim_time_ms,
+                reason_code="TRACKING_CLOSED_WITHOUT_TERMINAL_EXECUTION_FACT",
+            )
         if self._match is not None:
             self._match.close()
         self._match = None

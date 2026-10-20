@@ -1,0 +1,23 @@
+{
+  "schema_version": "native-behavior-cloning-config/1.0",
+  "config_id": "objective-capture-small-sample-bc",
+  "config_version": "1.0.0",
+  "training_method": "MASKED_CROSS_ENTROPY_SINGLE_EXACT_EXPERT_LABEL",
+  "seed": 937000,
+  "optimizer": {
+    "type": "ADAM",
+    "learning_rate": 0.01,
+    "betas": [0.9, 0.999],
+    "epsilon": 1e-08,
+    "weight_decay": 0.0
+  },
+  "batch": "ALL_DEDUPLICATED_SAMPLES_CANONICAL_ORDER",
+  "maximum_optimizer_steps": 256,
+  "stop": {
+    "all_expert_labels_top1": true,
+    "mean_loss_at_most": 0.05
+  },
+  "trainable_parameters": "SHARED_BACKBONE_AND_POLICY_HEAD_ONLY",
+  "equivalent_label_policy": "NONE_SINGLE_EXACT_RULE_LABEL",
+  "checkpoint_selection": "FINAL_STEP_ONLY_NO_EVALUATION_SELECTION"
+}

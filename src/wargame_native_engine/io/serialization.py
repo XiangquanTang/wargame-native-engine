@@ -9,6 +9,11 @@ from typing import Any, Mapping
 
 
 def to_json_value(value: Any) -> Any:
+    # Most leaves are already JSON scalars. Exact types preserve the existing
+    # Enum/dataclass dispatch for subclasses while avoiding those checks for
+    # every scalar in a detached projection or canonical hash.
+    if type(value) in (str, int, float, bool) or value is None:
+        return value
     if isinstance(value, Enum):
         return value.value
     if is_dataclass(value):

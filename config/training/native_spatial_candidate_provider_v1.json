@@ -1,0 +1,13 @@
+{
+  "schema_version": "native-spatial-candidate-provider-config/1.0",
+  "provider_id": "native-bounded-static-map-spatial-candidates",
+  "provider_version": "1.0.0",
+  "cell_set_rule": "ALL_DECLARED_NATIVE_HEXES",
+  "cell_sort_order": "HEX_ID_ASC",
+  "semantic_deduplication": "ENGINE_ACTION_ID",
+  "movement_modes": ["NORMAL"],
+  "max_map_cells": 16,
+  "max_planning_requests": 128,
+  "final_action_capacity": 256,
+  "config_hash": "7191a1db86b471104fd85654a977cceb2162980a3739f766cc276d5ddc5b6bd0"
+}

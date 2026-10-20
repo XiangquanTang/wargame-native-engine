@@ -19,6 +19,9 @@ from wargame_native_engine.training.reward import (
     JointTrainingRewardRecord,
     TrainingRewardRecord,
 )
+from wargame_native_engine.training.objective_task import (
+    ObjectiveTaskTransitionRecord,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,18 +84,35 @@ class TrainingStep:
     info: Mapping[str, Any]
     action_space: EncodedActionSpace
     reward_record: TrainingRewardRecord
+    task_reward_record: ObjectiveTaskTransitionRecord | None = None
 
     def __post_init__(self) -> None:
         _exact_bool(self.terminated, "terminated")
         _exact_bool(self.truncated, "truncated")
         if not isinstance(self.reward_record, TrainingRewardRecord):
             raise TypeError("reward_record must be TrainingRewardRecord")
-        if float(self.reward) != self.reward_record.total_reward:
-            raise ValueError("reward scalar/record mismatch")
-        if self.terminated != self.reward_record.terminated or (
-            self.truncated != self.reward_record.truncated
-        ):
-            raise ValueError("reward record terminal flags mismatch")
+        task = self.task_reward_record
+        if task is None:
+            if float(self.reward) != self.reward_record.total_reward:
+                raise ValueError("reward scalar/record mismatch")
+            if self.terminated != self.reward_record.terminated or (
+                self.truncated != self.reward_record.truncated
+            ):
+                raise ValueError("reward record terminal flags mismatch")
+        else:
+            if not isinstance(task, ObjectiveTaskTransitionRecord):
+                raise TypeError("task_reward_record has invalid type")
+            if float(self.reward) != task.task_reward:
+                raise ValueError("task reward scalar/record mismatch")
+            if self.terminated != task.task_terminated or (
+                self.truncated != task.task_truncated
+            ):
+                raise ValueError("task reward terminal flags mismatch")
+            if (
+                task.joint_transition_id
+                != self.reward_record.transition_identity.joint_transition_id
+            ):
+                raise ValueError("base/task transition identity mismatch")
 
     def to_record(self) -> dict[str, object]:
         return {
@@ -103,6 +123,11 @@ class TrainingStep:
             "info": json_clone(self.info),
             "action_space": self.action_space.to_record(),
             "reward_record": self.reward_record.to_dict(),
+            "task_reward_record": (
+                None
+                if self.task_reward_record is None
+                else self.task_reward_record.to_dict()
+            ),
         }
 
 

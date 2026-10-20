@@ -121,6 +121,7 @@ class DecisionCapabilityFamily(str, Enum):
     WEAPON_LOCK = "WEAPON_LOCK"
     WEAPON_UNFOLD = "WEAPON_UNFOLD"
     CHANGE_STATE = "CHANGE_STATE"
+    CAPTURE = "CAPTURE"
 
 
 @dataclass(frozen=True, slots=True)

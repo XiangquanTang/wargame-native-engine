@@ -15,9 +15,153 @@ from wargame_native_engine.rules.indirect_fire import (
 )
 
 
-FIRE_MISSION_SCHEMA_VERSION = "native-indirect-fire-mission/1.1"
+FIRE_MISSION_SCHEMA_VERSION = "native-indirect-fire-mission/1.2"
+PREVIOUS_FIRE_MISSION_SCHEMA_VERSION = "native-indirect-fire-mission/1.1"
 LEGACY_FIRE_MISSION_SCHEMA_VERSION = "native-indirect-fire-mission/1.0"
+SCATTER_OUT_OF_MAP_OUTCOME = "SCATTER_OUT_OF_MAP"
 FireMissionPhase = IndirectFireMissionState
+
+
+@dataclass(frozen=True, slots=True)
+class FireMissionObservationEvidence:
+    """Compact GREEN-only evidence for the landing-time correction decision."""
+
+    correction_level: str
+    state_tick: int
+    state_time_ms: int
+    state_hash: str
+    planned_hex: int
+    firing_side: str
+    policy_id: str
+    policy_hash: str
+    source_interface: str
+    eligible_observer_ids: tuple[int, ...]
+    grid_observer_ids: tuple[int, ...]
+    target_observations: tuple[tuple[int, int], ...]
+    selected_observer_id: int | None
+    selected_target_id: int | None
+    reason: str
+
+    def __post_init__(self) -> None:
+        if self.correction_level not in {
+            "UNRESOLVED", "UNOBSERVED", "GRID_CORRECTED", "TARGET_CORRECTED",
+        }:
+            raise ValueError("unsupported indirect-fire correction level")
+        for name in ("state_tick", "state_time_ms", "planned_hex"):
+            _require_nonnegative_exact_int(getattr(self, name), name)
+        _require_sha256(self.state_hash, "state_hash")
+        _require_sha256(self.policy_hash, "policy_hash")
+        for name in (
+            "firing_side", "policy_id", "source_interface", "reason",
+        ):
+            _require_nonempty(getattr(self, name), name)
+        for name in ("eligible_observer_ids", "grid_observer_ids"):
+            values = getattr(self, name)
+            if values != tuple(sorted(set(values))) or any(
+                type(value) is not int or value < 0 for value in values
+            ):
+                raise ValueError(f"{name} must be sorted unique ids")
+        if self.target_observations != tuple(sorted(set(
+            self.target_observations
+        ))):
+            raise ValueError("target_observations must be sorted unique pairs")
+        for observer_id, target_id in self.target_observations:
+            _require_nonnegative_exact_int(observer_id, "observer_id")
+            _require_nonnegative_exact_int(target_id, "target_id")
+            if observer_id not in self.grid_observer_ids:
+                raise ValueError("target observation requires grid observation")
+        for name in ("selected_observer_id", "selected_target_id"):
+            value = getattr(self, name)
+            if value is not None:
+                _require_nonnegative_exact_int(value, name)
+        if self.correction_level in {"UNRESOLVED", "UNOBSERVED"}:
+            if (
+                self.selected_observer_id is not None
+                or self.selected_target_id is not None
+            ):
+                raise ValueError(
+                    "unobserved fire cannot select observation objects"
+                )
+        elif self.correction_level == "GRID_CORRECTED":
+            if (
+                self.selected_observer_id not in self.grid_observer_ids
+                or self.selected_target_id is not None
+                or self.target_observations
+            ):
+                raise ValueError("grid correction evidence is inconsistent")
+        elif (
+            self.selected_observer_id,
+            self.selected_target_id,
+        ) not in self.target_observations:
+            raise ValueError(
+                "target correction requires a selected observation pair"
+            )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "correction_level": self.correction_level,
+            "state_tick": self.state_tick,
+            "state_time_ms": self.state_time_ms,
+            "state_hash": self.state_hash,
+            "planned_hex": self.planned_hex,
+            "firing_side": self.firing_side,
+            "policy_id": self.policy_id,
+            "policy_hash": self.policy_hash,
+            "source_interface": self.source_interface,
+            "eligible_observer_ids": list(self.eligible_observer_ids),
+            "grid_observer_ids": list(self.grid_observer_ids),
+            "target_observations": [
+                {"observer_id": observer_id, "target_id": target_id}
+                for observer_id, target_id in self.target_observations
+            ],
+            "selected_observer_id": self.selected_observer_id,
+            "selected_target_id": self.selected_target_id,
+            "reason": self.reason,
+        }
+
+    @classmethod
+    def from_dict(
+        cls, value: Mapping[str, Any],
+    ) -> "FireMissionObservationEvidence":
+        observations = value.get("target_observations", ())
+        if not isinstance(observations, Sequence) or isinstance(
+            observations, (str, bytes)
+        ):
+            raise TypeError("target_observations must be a sequence")
+        pairs = tuple(
+            (int(item["observer_id"]), int(item["target_id"]))
+            for item in observations
+            if isinstance(item, Mapping)
+        )
+        if len(pairs) != len(observations):
+            raise TypeError("target_observations must contain mappings")
+        selected_observer = value.get("selected_observer_id")
+        selected_target = value.get("selected_target_id")
+        return cls(
+            correction_level=str(value["correction_level"]),
+            state_tick=int(value["state_tick"]),
+            state_time_ms=int(value["state_time_ms"]),
+            state_hash=str(value["state_hash"]),
+            planned_hex=int(value["planned_hex"]),
+            firing_side=str(value["firing_side"]),
+            policy_id=str(value["policy_id"]),
+            policy_hash=str(value["policy_hash"]),
+            source_interface=str(value["source_interface"]),
+            eligible_observer_ids=tuple(int(item) for item in value.get(
+                "eligible_observer_ids", ()
+            )),
+            grid_observer_ids=tuple(int(item) for item in value.get(
+                "grid_observer_ids", ()
+            )),
+            target_observations=pairs,
+            selected_observer_id=(
+                None if selected_observer is None else int(selected_observer)
+            ),
+            selected_target_id=(
+                None if selected_target is None else int(selected_target)
+            ),
+            reason=str(value["reason"]),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,7 +321,7 @@ class FireMissionScatterEvidence:
 
 @dataclass(frozen=True, slots=True)
 class FireMission:
-    """One authoritative mission lifecycle record without impact semantics.
+    """One authoritative mission lifecycle record and committed impact state.
 
     ``created_at`` is authoritative simulation time in milliseconds.  Flight
     duration remains exposed in whole seconds, while the private contract field
@@ -210,6 +354,8 @@ class FireMission:
     impact_hex: int | None = None
     affected_operator_ids: tuple[int, ...] = ()
     scatter_evidence: FireMissionScatterEvidence | None = None
+    observation_evidence: FireMissionObservationEvidence | None = None
+    terminal_outcome: str | None = None
 
     def __post_init__(self) -> None:
         for name in (
@@ -254,6 +400,14 @@ class FireMission:
             self.scatter_evidence, FireMissionScatterEvidence
         ):
             raise TypeError("scatter_evidence must be FireMissionScatterEvidence")
+        if self.observation_evidence is not None and not isinstance(
+            self.observation_evidence, FireMissionObservationEvidence
+        ):
+            raise TypeError(
+                "observation_evidence must be FireMissionObservationEvidence"
+            )
+        if self.terminal_outcome not in {None, SCATTER_OUT_OF_MAP_OUTCOME}:
+            raise ValueError("unsupported indirect-fire terminal outcome")
         _require_sha256(self.execution_policy_hash, "execution_policy_hash")
         if not isinstance(self.phase, IndirectFireMissionState):
             raise TypeError("phase must be FireMissionPhase")
@@ -286,16 +440,32 @@ class FireMission:
             if self.active_remaining_seconds <= 0:
                 raise ValueError("ACTIVE mission requires remaining active time")
         if self.impact_hex is None:
-            if self.scatter_evidence is not None or self.affected_operator_ids:
+            if (
+                self.affected_operator_ids
+                or (
+                    self.scatter_evidence is not None
+                    and self.terminal_outcome != SCATTER_OUT_OF_MAP_OUTCOME
+                )
+            ):
                 raise ValueError("unresolved impact cannot retain impact evidence")
         elif self.scatter_evidence is None:
             raise ValueError("impact_hex requires scatter_evidence")
+        if self.terminal_outcome == SCATTER_OUT_OF_MAP_OUTCOME and (
+            self.phase is not IndirectFireMissionState.RESOLVED
+            or self.impact_hex is not None
+            or self.scatter_evidence is None
+        ):
+            raise ValueError(
+                "out-of-map mission must be resolved without an impact hex"
+            )
+        if self.terminal_outcome is not None and self.affected_operator_ids:
+            raise ValueError("terminal miss cannot retain affected operators")
         if (self.phase is IndirectFireMissionState.RESOLVED
                 and self.active_remaining_seconds != 0):
             raise ValueError("RESOLVED mission cannot retain active time")
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        record = {
             "schema_version": FIRE_MISSION_SCHEMA_VERSION,
             "mission_id": self.mission_id,
             "created_tick": self.created_tick,
@@ -335,18 +505,27 @@ class FireMission:
                 None if self.scatter_evidence is None
                 else self.scatter_evidence.to_dict()
             ),
+            "observation_evidence": (
+                None if self.observation_evidence is None
+                else self.observation_evidence.to_dict()
+            ),
         }
+        if self.terminal_outcome is not None:
+            record["terminal_outcome"] = self.terminal_outcome
+        return record
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "FireMission":
         schema_version = value.get("schema_version")
         if schema_version not in {
             FIRE_MISSION_SCHEMA_VERSION,
+            PREVIOUS_FIRE_MISSION_SCHEMA_VERSION,
             LEGACY_FIRE_MISSION_SCHEMA_VERSION,
         }:
             raise ValueError("unsupported indirect-fire mission schema")
         cancellation = value.get("cancellation_reason")
         scatter = value.get("scatter_evidence")
+        observation = value.get("observation_evidence")
         affected = tuple(int(item) for item in value.get(
             "affected_operator_ids", ()
         ))
@@ -400,6 +579,16 @@ class FireMission:
             scatter_evidence=(
                 None if scatter is None
                 else FireMissionScatterEvidence.from_dict(scatter)
+            ),
+            observation_evidence=(
+                None
+                if observation is None
+                else FireMissionObservationEvidence.from_dict(observation)
+            ),
+            terminal_outcome=(
+                None
+                if value.get("terminal_outcome") is None
+                else str(value["terminal_outcome"])
             ),
         )
 
@@ -629,6 +818,7 @@ def _require_sha256(value: object, name: str) -> None:
 __all__ = [
     "FIRE_MISSION_SCHEMA_VERSION",
     "LEGACY_FIRE_MISSION_SCHEMA_VERSION",
+    "SCATTER_OUT_OF_MAP_OUTCOME",
     "FireMission",
     "FireMissionPhase",
     "FireMissionScatterEvidence",

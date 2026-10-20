@@ -22,7 +22,7 @@ from wargame_native_engine.training.learner_backend import (
     load_learner_backend_authority,
 )
 from wargame_native_engine.training.learner_preprocessor import (
-    load_learner_observation_preprocessor_spec,
+    load_learner_observation_preprocessor_spec_for_identity,
 )
 from wargame_native_engine.training.training_seed import (
     TrainingSeedConfig,
@@ -381,7 +381,10 @@ def require_ppo_runtime_authorities(
     if not isinstance(config, PPOAlgorithmConfig):
         raise TypeError("config must be PPOAlgorithmConfig")
     backend = load_learner_backend_authority()
-    preprocessor = load_learner_observation_preprocessor_spec()
+    preprocessor = load_learner_observation_preprocessor_spec_for_identity(
+        config.observation_preprocessor.identity_id,
+        config.observation_preprocessor.identity_version,
+    )
     action = DecisionActionEncoder(config.action_encoder.capacity)
     actual_discount = load_shared_training_discount_config() if discount is None else discount
     actual_seed = load_training_seed_config() if seed is None else seed

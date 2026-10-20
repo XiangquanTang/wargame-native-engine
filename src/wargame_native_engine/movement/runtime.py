@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from wargame_native_engine.adjudication.scheduler import EventQueue, ScheduledCommand
+from wargame_native_engine.core.destruction import destroy_source_operator
 from wargame_native_engine.core.event import EngineEvent, EventType
 from wargame_native_engine.core.operator import (
     MovementTaskPauseReason,
@@ -26,6 +27,8 @@ class MovementRuntime:
     def start(self, world: WorldState, operator: OperatorState, *, path: list[int],
               mode: MovementMode, action_id: str, action_sequence: int,
               events: list[EngineEvent]) -> None:
+        if not operator.alive:
+            raise ValueError("ACTOR_DESTROYED")
         operator.move_path = list(path)
         operator.movement_mode = mode.value
         operator.movement_action_id = action_id
@@ -40,6 +43,8 @@ class MovementRuntime:
     def request_stop(self, world: WorldState, operator: OperatorState, *,
                      action_id: str, action_sequence: int,
                      events: list[EngineEvent]) -> None:
+        if not operator.alive:
+            raise ValueError("ACTOR_DESTROYED")
         operator.movement_stop_requested = True
         operator.movement_task_pause_reason = None
         events.append(self._event(world, EventType.STOP_MOVE_REQUESTED, operator,
@@ -52,11 +57,18 @@ class MovementRuntime:
 
     def advance(self, world: WorldState, delta_time_ms: int,
                 events: list[EngineEvent]) -> None:
+        for operator in sorted(
+            world.operators.values(), key=lambda item: item.operator_id
+        ):
+            if not operator.alive:
+                destroy_source_operator(world, operator)
         end_time = world.elapsed_time_ms + delta_time_ms
         while world.elapsed_time_ms < end_time:
             remaining = end_time - world.elapsed_time_ms
             boundaries = [remaining]
             for operator in world.operators.values():
+                if not operator.alive:
+                    continue
                 if operator.moving:
                     boundaries.append(operator.segment_traversal_ms
                                       - operator.segment_elapsed_ms)
@@ -78,6 +90,8 @@ class MovementRuntime:
 
     def _advance_duration(self, world: WorldState, duration: int) -> None:
         for operator in world.operators.values():
+            if not operator.alive:
+                continue
             if operator.moving:
                 operator.segment_elapsed_ms += duration
                 operator.cur_pos_millionths = min(
@@ -123,7 +137,8 @@ class MovementRuntime:
         queue = EventQueue()
         operators = {item.operator_id: item for item in world.operators.values()}
         for operator in operators.values():
-            if (not operator.moving
+            if (not operator.alive
+                    or not operator.moving
                     or operator.segment_elapsed_ms < operator.segment_traversal_ms):
                 continue
             event_sequence = next(
@@ -140,6 +155,8 @@ class MovementRuntime:
         arrivals = queue.pop_ready(world.elapsed_time_ms)
         for scheduled in arrivals:
             operator = operators[int(scheduled.payload["unit_id"])]
+            if not operator.alive or operator.segment_to_hex is None:
+                continue
             target = int(operator.segment_to_hex)
             action_sequence = int(operator.movement_action_sequence or 0)
             if self.planner.friendly_ground_count(
@@ -221,6 +238,8 @@ class MovementRuntime:
                          events: list[EngineEvent]) -> None:
         for operator in sorted(world.operators.values(),
                                key=lambda item: item.operator_id):
+            if not operator.alive:
+                continue
             action_sequence = int(operator.movement_action_sequence or 0)
             if (operator.move_to_stop_remaining_ms == 0
                     and operator.state == "TRANSITIONING_TO_STOP"):
@@ -315,7 +334,12 @@ class MovementRuntime:
     def _start_next_segment(self, world: WorldState, operator: OperatorState,
                             event_time_ms: int,
                             events: list[EngineEvent]) -> None:
-        if not operator.move_path or operator.current_hex is None:
+        if (
+            not operator.alive
+            or not operator.deployed
+            or not operator.move_path
+            or operator.current_hex is None
+        ):
             return
         mode = MovementMode(operator.movement_mode)
         legality, plan = self.planner.plan_segment(
@@ -372,6 +396,8 @@ class MovementRuntime:
     def _start_stopping(self, world: WorldState, operator: OperatorState,
                         action_sequence: int, events: list[EngineEvent], *,
                         preserve_path: bool) -> None:
+        if not operator.alive:
+            return
         if not preserve_path:
             operator.move_path.clear()
         operator.speed = 0.0

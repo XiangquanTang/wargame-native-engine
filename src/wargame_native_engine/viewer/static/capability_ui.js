@@ -12,6 +12,7 @@
     "INDIRECT_FIRE",
     "BOARD",
     "UNLOAD",
+    "CAPTURE",
     "ENTER_CONCEALMENT",
     "STOP_MOVE",
     "WEAPON_UNFOLD",
@@ -130,6 +131,17 @@
     )).sort((left, right) => Number(left.target_id) - Number(right.target_id));
   }
 
+  function captureOptions(model, actorIds = []) {
+    const values = model?.capture?.options;
+    if (!Array.isArray(values)) return [];
+    const actors = new Set(actorIds.map(Number));
+    return values.filter((value) => actors.has(Number(value.actor_id)))
+      .sort((left, right) => (
+        Number(left.objective_id) - Number(right.objective_id)
+        || Number(left.actor_id) - Number(right.actor_id)
+      ));
+  }
+
   const publicApi = Object.freeze({
     schema: SCHEMA,
     supported_capabilities: SUPPORTED,
@@ -144,6 +156,7 @@
     guidedFirePlatforms,
     indirectFireOptions,
     boardingOptions,
+    captureOptions,
   });
   root.HumanCapabilityUI = publicApi;
   if (typeof module !== "undefined" && module.exports) {

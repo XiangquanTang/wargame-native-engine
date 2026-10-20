@@ -191,6 +191,12 @@ class NativeParallelPPORunner:
         self.vector_config = vector_config
         self.base_runner_config = base_runner_config
         self.core = core
+        if self.core.preprocessor_spec.input_encoder_schema != (
+            "native-decision-observation-encoder/1.0"
+        ):
+            raise PPOParallelRunnerError(
+                "parallel runner does not support Decision-v2 observations"
+            )
         self.factories = tuple(environment_factories)
         if len(self.factories) != self.config.num_envs:
             raise PPOParallelRunnerError("factory count must equal num_envs")

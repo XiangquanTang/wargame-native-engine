@@ -6,9 +6,12 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import sys
 import tempfile
 
-from scripts.run_realtime_agent_match import DEFAULT_SCENARIO, _MatchFactory
+from wargame_native_engine.operations import ScenarioMatchFactory
+
+DEFAULT_SCENARIO = Path("examples/source_movement_scenario.json")
 from wargame_native_engine.agents import (
     RealtimeAgentSession,
     RealtimeCancellationReason,
@@ -52,10 +55,13 @@ def main(argv: list[str] | None = None) -> int:
         prefix="wargame-realtime-web.",
     ) as storage:
         session = RealtimeAgentSession(
-            _MatchFactory(
-                bundle,
+            ScenarioMatchFactory(
+                bundle=bundle,
                 storage_root=Path(storage),
-                tick_interval_ms=args.tick_interval_ms,
+                red_controller_id="realtime-local-red",
+                blue_controller_id="realtime-local-blue",
+                decision_interval_ms=args.tick_interval_ms,
+                frame_interval_ms=args.tick_interval_ms,
             ),
             run_namespace=args.run_namespace,
             tick_interval_ms=args.tick_interval_ms,
@@ -91,12 +97,18 @@ def main(argv: list[str] | None = None) -> int:
         print("按 Ctrl+C 停止并发布 Replay、分析与实时命令事件。", flush=True)
         session.start_realtime()
         try:
-            server.serve_forever()
-        except KeyboardInterrupt:
-            pass
-        finally:
-            server.server_close()
-        try:
+            try:
+                server.serve_forever()
+            except KeyboardInterrupt:
+                server.server_close()
+            except BaseException as primary_error:
+                try:
+                    server.server_close()
+                except BaseException as cleanup_error:
+                    _note_cleanup_error(primary_error, "server", cleanup_error)
+                raise
+            else:
+                server.server_close()
             publication = session.publish(
                 args.output_dir,
                 truncated=None,
@@ -104,24 +116,52 @@ def main(argv: list[str] | None = None) -> int:
                 shutdown_timeout_seconds=args.shutdown_timeout_seconds,
                 cancellation_reason=RealtimeCancellationReason.USER_STOP,
             )
-            print(json.dumps({
-                "run_namespace": publication.run_namespace,
-                "episode_id": publication.episode_id,
-                "tick_count": publication.tick_count,
-                "fact_frame_count": publication.fact_frame_count,
-                "accepted_command_count": publication.accepted_command_count,
-                "applied_command_count": publication.applied_command_count,
-                "terminal": publication.terminal,
-                "truncated": publication.truncated,
-                "sample_package": str(publication.output_dir),
-                "replay": str(publication.replay_path),
-                "analysis": str(publication.analysis_path),
-                "seat_commands": str(publication.command_path),
-                "realtime_ticks": str(publication.tick_path),
-            }, ensure_ascii=False, sort_keys=True), flush=True)
-        finally:
+        except BaseException as primary_error:
+            # Cleanup is best-effort on the failure path.  It must never hide
+            # the publication/background exception and its causal chain.
+            try:
+                session.close(timeout_seconds=args.shutdown_timeout_seconds)
+            except BaseException as cleanup_error:
+                _note_cleanup_error(primary_error, "session", cleanup_error)
+            raise
+        else:
             session.close(timeout_seconds=args.shutdown_timeout_seconds)
+        print(json.dumps({
+            "run_namespace": publication.run_namespace,
+            "episode_id": publication.episode_id,
+            "tick_count": publication.tick_count,
+            "fact_frame_count": publication.fact_frame_count,
+            "accepted_command_count": publication.accepted_command_count,
+            "applied_command_count": publication.applied_command_count,
+            "terminal": publication.terminal,
+            "truncated": publication.truncated,
+            "sample_package": str(publication.output_dir),
+            "replay": str(publication.replay_path),
+            "analysis": str(publication.analysis_path),
+            "seat_commands": str(publication.command_path),
+            "realtime_ticks": str(publication.tick_path),
+        }, ensure_ascii=False, sort_keys=True), flush=True)
     return 0
+
+
+def _note_cleanup_error(
+    primary_error: BaseException,
+    component: str,
+    cleanup_error: BaseException,
+) -> None:
+    note = (
+        f"realtime {component} cleanup also failed: "
+        f"{type(cleanup_error).__name__}: {cleanup_error}"
+    )
+    try:
+        add_note = getattr(primary_error, "add_note", None)
+        if callable(add_note):
+            add_note(note)
+        else:
+            print(note, file=sys.stderr, flush=True)
+    except BaseException:
+        # Failure reporting must not replace the primary launcher exception.
+        pass
 
 
 if __name__ == "__main__":

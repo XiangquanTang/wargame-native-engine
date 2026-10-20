@@ -21,6 +21,7 @@ class EventType(str, Enum):
     OPERATOR_DESTROYED = "operator_destroyed"
     ACTION_REJECTED = "action_rejected"
     OBJECTIVE_CONTROLLED = "objective_controlled"
+    OBJECTIVE_CAPTURED = "objective_captured"
     GAME_TERMINATED = "game_terminated"
     GAME_TRUNCATED = "game_truncated"
     DIRECT_FIRE_REQUESTED = "direct_fire_requested"
@@ -79,6 +80,7 @@ EVENT_PRIORITY = {
     EventType.OPERATOR_DAMAGED: 32,
     EventType.OPERATOR_DESTROYED: 33,
     EventType.OBJECTIVE_CONTROLLED: 40,
+    EventType.OBJECTIVE_CAPTURED: 40,
     EventType.GAME_TERMINATED: 90,
     EventType.GAME_TRUNCATED: 91,
     EventType.ENGINE_RESET: 99,
@@ -124,6 +126,38 @@ EVENT_PRIORITY = {
     EventType.MOVEMENT_MODE_CHANGE_STARTED: 27,
     EventType.MOVEMENT_MODE_CHANGED: 28,
 }
+
+
+GREEN_JUDGE_EVENT_TYPES = frozenset({
+    EventType.DIRECT_FIRE_REQUESTED,
+    EventType.DIRECT_FIRE_VALIDATED,
+    EventType.ATTACK_LEVEL_SELECTED,
+    EventType.ATTACK_LEVEL_MODIFIED,
+    EventType.DICE_ROLLED,
+    EventType.ROLL_MODIFIERS_APPLIED,
+    EventType.COMBAT_RESULT_LOOKED_UP,
+    EventType.LOSSES_APPLIED,
+    EventType.SUPPRESSION_APPLIED,
+    EventType.UNIT_DESTROYED,
+    EventType.WEAPON_COOLDOWN_STARTED,
+    EventType.AMMUNITION_CONSUMED,
+    EventType.GUIDED_FIRE_RESOLVED,
+    EventType.INDIRECT_FIRE_MISSION_CREATED,
+    EventType.INDIRECT_FIRE_MISSION_CANCELLED,
+    EventType.INDIRECT_FIRE_ACTIVE_STARTED,
+    EventType.INDIRECT_FIRE_AREA_TRIGGERED,
+    EventType.INDIRECT_FIRE_RESOLVED,
+    EventType.BOARD_STARTED,
+    EventType.BOARD_COMPLETED,
+    EventType.UNLOAD_STARTED,
+    EventType.UNLOAD_COMPLETED,
+    EventType.UNIT_CONCEALED,
+    EventType.UNIT_EXPOSED,
+})
+
+
+def is_green_judge_event(event_type: EventType) -> bool:
+    return event_type in GREEN_JUDGE_EVENT_TYPES
 
 
 @dataclass(frozen=True, slots=True)

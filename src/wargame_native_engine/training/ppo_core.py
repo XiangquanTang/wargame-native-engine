@@ -19,6 +19,9 @@ from wargame_native_engine.training.discount import (
     load_shared_training_discount_config,
 )
 from wargame_native_engine.training.learner_backend import require_pytorch
+from wargame_native_engine.training.learner_preprocessor import (
+    load_learner_observation_preprocessor_spec_for_identity,
+)
 from wargame_native_engine.training.ppo_config import (
     PPOAlgorithmConfig,
     PPOAuthorityReference,
@@ -163,8 +166,8 @@ class SharedActorCriticMLP(nn.Module):
         _tensor(observations, "observations", dtype=torch.float32, min_ndim=1)
         if observations.shape[-1] != self.observation_size:
             raise PPOCoreError("actor-critic observation shape mismatch")
-        if observations.device.type != "cpu":
-            raise PPOCoreError("PPO v1 actor-critic requires CPU observations")
+        if observations.device != next(self.parameters()).device:
+            raise PPOCoreError("actor-critic model and observation devices must match")
         if not bool(torch.isfinite(observations).all()):
             raise PPOCoreError("actor-critic observation contains NaN or Inf")
         hidden = self.backbone(observations)
@@ -213,6 +216,8 @@ class LearnerTransition:
     bootstrap_allowed: bool
     trace_continues: bool
     preprocessor_hash: str
+    task_reward_amount: float = 0.0
+    training_reward_mode: str = "BASE_OR_COMPOSITE"
 
     def __post_init__(self) -> None:
         if self.schema_version != PPO_LEARNER_TRANSITION_SCHEMA_VERSION:
@@ -226,13 +231,13 @@ class LearnerTransition:
             "reward_record_hash", "next_decision_identity", "preprocessor_hash",
         ):
             _sha256(getattr(self, name), name)
-        if len(self.observation) != 8302 or len(self.next_observation) != 8302:
+        if not self.observation or len(self.observation) != len(self.next_observation):
             raise PPOCoreError("learner transition observation shape mismatch")
         _finite_sequence(self.observation, "observation")
         _finite_sequence(self.next_observation, "next_observation")
-        if len(self.action_mask) != 256 or any(type(item) is not bool for item in self.action_mask):
-            raise PPOCoreError("learner transition action mask must be 256 bools")
-        if type(self.action_index) is not int or not 0 <= self.action_index < 256:
+        if not self.action_mask or any(type(item) is not bool for item in self.action_mask):
+            raise PPOCoreError("learner transition action mask must contain bools")
+        if type(self.action_index) is not int or not 0 <= self.action_index < len(self.action_mask):
             raise PPOCoreError("learner transition action index is invalid")
         if not self.action_mask[self.action_index]:
             raise InvalidMaskedActionError("stored action is masked")
@@ -242,13 +247,20 @@ class LearnerTransition:
             "effective_gamma", "next_value_prediction",
         ):
             _finite(getattr(self, name), name)
+        _finite(self.task_reward_amount, "task_reward_amount")
+        if self.training_reward_mode not in {
+            "BASE_OR_COMPOSITE", "TASK_OBJECTIVE_CAPTURE"
+        }:
+            raise PPOCoreError("unsupported training reward mode")
+        expected_reward = (
+            self.task_reward_amount
+            if self.training_reward_mode == "TASK_OBJECTIVE_CAPTURE"
+            else self.base_reward_amount + self.shaping_reward_amount
+        )
         if not math.isclose(
-            self.reward,
-            self.base_reward_amount + self.shaping_reward_amount,
-            rel_tol=0.0,
-            abs_tol=1e-7,
+            self.reward, expected_reward, rel_tol=0.0, abs_tol=1e-7,
         ):
-            raise PPOCoreError("reward components do not equal stored reward")
+            raise PPOCoreError("selected reward component does not equal stored reward")
         if not 0.0 <= self.effective_gamma <= 1.0:
             raise PPOCoreError("effective_gamma must be in [0, 1]")
         for name in (
@@ -348,9 +360,11 @@ class PPORolloutBatch:
             raise PPOCoreError("unsupported PPO rollout batch schema")
         _sha256(self.ppo_config_hash, "PPO config hash")
         length = self.observations.shape[0]
+        observation_width = self.observations.shape[1]
+        action_width = self.action_masks.shape[1]
         expected = {
-            "observations": (torch.float32, (length, 8302)),
-            "action_masks": (torch.bool, (length, 256)),
+            "observations": (torch.float32, (length, observation_width)),
+            "action_masks": (torch.bool, (length, action_width)),
             "actions": (torch.long, (length,)),
             "old_log_probs": (torch.float32, (length,)),
             "old_values": (torch.float32, (length,)),
@@ -366,6 +380,8 @@ class PPORolloutBatch:
         }
         if length <= 0:
             raise PPOCoreError("rollout batch cannot be empty")
+        if observation_width <= 0 or action_width <= 0:
+            raise PPOCoreError("rollout tensor widths must be positive")
         for name, (dtype, shape) in expected.items():
             value = getattr(self, name)
             _tensor(value, name, dtype=dtype, min_ndim=len(shape), exact_ndim=len(shape))
@@ -395,6 +411,19 @@ class PPORolloutBatch:
             raise PPOCoreError("rollout transitions cannot be empty")
         if len(values) > config.rollout_length:
             raise PPOCoreError("rollout exceeds configured rollout_length")
+        preprocessor = load_learner_observation_preprocessor_spec_for_identity(
+            config.observation_preprocessor.identity_id,
+            config.observation_preprocessor.identity_version,
+        )
+        expected_width = preprocessor.output_shape[0]
+        if any(
+            len(item.observation) != expected_width
+            or len(item.next_observation) != expected_width
+            or len(item.action_mask) != config.action_encoder.capacity
+            or item.preprocessor_hash != preprocessor.semantic_hash
+            for item in values
+        ):
+            raise PPOCoreError("rollout transition/runtime shape authority mismatch")
         def floats(name: str):
             return torch.tensor(
                 [getattr(item, name) for item in values], dtype=torch.float32
@@ -574,9 +603,14 @@ class NativeMaskedPPO:
             TrainingSeedStream.MINIBATCH_SHUFFLE,
             stream_index=self.seed_stream_index,
         ))
+        self.preprocessor_spec = load_learner_observation_preprocessor_spec_for_identity(
+            self.config.observation_preprocessor.identity_id,
+            self.config.observation_preprocessor.identity_version,
+        )
         self.model = SharedActorCriticMLP(
             self.config,
             initialization_generator=self.initialization_generator,
+            observation_size=self.preprocessor_spec.output_shape[0],
         )
         self.optimizer = torch.optim.Adam(
             self.model.parameters(),
@@ -637,7 +671,24 @@ class NativeMaskedPPO:
             digest.update(tensor.numpy().tobytes(order="C"))
         return digest.hexdigest()
 
-    def act(self, observation, action_mask, *, evaluation: bool = False) -> PPOActionOutput:
+    def act(
+        self, observation, action_mask, *, evaluation: bool = False,
+        evaluation_generator=None,
+    ) -> PPOActionOutput:
+        if evaluation_generator is not None and not evaluation:
+            raise ValueError("evaluation_generator requires evaluation=True")
+        if evaluation_generator is not None and not isinstance(
+            evaluation_generator, torch.Generator
+        ):
+            raise TypeError("evaluation_generator must be a torch.Generator")
+        device = next(self.model.parameters()).device
+        if device.type != "cpu" and (not evaluation or evaluation_generator is not None):
+            raise PPOCoreError("CUDA core supports only optimizer-free argmax evaluation")
+        _tensor(observation, "observation", dtype=torch.float32, min_ndim=1)
+        _tensor(action_mask, "action_mask", dtype=torch.bool, min_ndim=1)
+        observation = observation.to(device)
+        action_mask = action_mask.to(device)
+        self.last_action_devices = {"input_device": str(observation.device), "mask_device": str(action_mask.device), "model_device": str(device)}
         was_training = self.model.training
         self.model.eval() if evaluation else self.model.train()
         try:
@@ -645,7 +696,11 @@ class NativeMaskedPPO:
                 logits, value = self.model(observation)
                 distribution = MaskedCategorical(logits, action_mask)
                 action = (
-                    masked_argmax(logits, action_mask)
+                    (
+                        masked_argmax(logits, action_mask)
+                        if evaluation_generator is None
+                        else distribution.sample(generator=evaluation_generator)
+                    )
                     if evaluation
                     else distribution.sample(generator=self.policy_sampling_generator)
                 )
@@ -659,6 +714,8 @@ class NativeMaskedPPO:
             self.model.train(was_training)
 
     def update(self, batch: PPORolloutBatch) -> PPOUpdateMetrics:
+        if next(self.model.parameters()).device.type != "cpu":
+            raise PPOCoreError("CUDA PPO optimizer updates are not supported")
         if not isinstance(batch, PPORolloutBatch):
             raise TypeError("batch must be PPORolloutBatch")
         if batch.ppo_config_hash != self.config.content_hash:
