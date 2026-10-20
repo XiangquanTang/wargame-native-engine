@@ -17,7 +17,7 @@
 按 2 倍速呈现，时长 **25.5 秒**。采用 GREEN 裁判全局视角，展示红蓝双方移动以及
 已通过校验的射击事件；被拒绝的请求单独标注，不作为已执行攻击展示。
 这是根据真实回放事实渲染的态势动画，不是浏览器录屏，也不是训练策略效果证明。
-下方启动命令默认使用包内公开河谷场景，Map123 完整运行资产未包含在本精简包中。
+下方默认启动公开河谷场景；Map123 的完整发布数据和启动入口也已包含，见“地图数据与启动”。
 
 ## 目录
 
@@ -27,6 +27,8 @@ config/                     运行规则、映射、Schema 和训练配置
 docs/rules/                 引擎初始化校验所需的两份规则来源
 scripts/                    Web、回放与训练接入启动入口
 examples/                   公开场景与地图
+examples/map123/            Map123 场景、移动表和压缩视线数据
+examples/maps/              地图目录清单与功能示例场景
 assets/                     Map123 展示视频、动图预览和封面
 pyproject.toml              安装配置与依赖
 LICENSE                     MIT 许可证
@@ -69,6 +71,91 @@ python -m scripts.run_realtime_dual_control \
 引擎持续推进，指令提交成功不表示动作已经完成。移动、上下车等持续动作由后续 Tick
 推进，调用方应读取后续己方观察与动作状态。运行至少一个 Tick 后，使用 Ctrl+C 停止并发布回放、分析和控制记录。
 输出目录应使用新的路径；只有明确需要覆盖旧结果时才传入 `--overwrite`。
+
+## 地图数据与启动
+
+本版收录 **18 项地图资源、19 个场景变体**。完整文件路径、字节数、SHA-256、地图身份、
+场景身份和初始单位数见 [地图数据目录](examples/maps/catalog.json)。所有地图和场景内容
+沿用现有公开示例的原始文件字节；功能示例仅收录运行所需的场景数据。
+
+| 地图入口 ID | 用途 | 已配置六角格数 |
+| --- | --- | ---: |
+| `map123` | 完整 Map123；原始场景与 12 门炮各 2 发弹药的演示变体 | 10000 |
+| `river-valley` | 公开河谷，含道路、河流、桥梁与目标点 | 432 |
+| `close-combat` | 公开近战；与河谷共用地形布局，保留独立地图和场景身份 | 432 |
+| `source-movement` | 基础移动与外部训练接入 | 6 |
+| `boarding` | 上下车 | 2 |
+| `concealment` | 隐蔽 | 3 |
+| `direct-fire` | 直射火力 | 2 |
+| `drone` | 无人机 | 4 |
+| `guided-fire` | 引导火力 | 24 |
+| `indirect-fire` | 间接火力 | 2 |
+| `loitering-munition` | 巡飞弹 | 4 |
+| `loitering-expiry` | 巡飞弹生命周期 | 2 |
+| `mechanized-assault` | 机械化突击 | 3 |
+| `objective-control` | 目标点控制 | 3 |
+| `visibility` | 视线与遮挡 | 21 |
+| `operation-lifecycle` | 持续动作 | 8 |
+| `combined-arms` | 合成作战 | 11 |
+| `joint-fire` | 同 Tick 联合火力 | 2 |
+
+功能示例可能只配置少量相邻格；地图声明的宽高或行列范围不表示所有格都可执行移动。
+河谷与近战的地形布局相同，表中按各自运行身份分别列出。
+
+查看地图清单并核对全部数据文件与引擎/查看器的地图身份：
+
+```bash
+python -m scripts.run_maps list
+python -m scripts.run_maps verify
+```
+
+通过统一入口启动任一地图，例如：
+
+```bash
+python -m scripts.run_maps run close-combat --port 8003
+python -m scripts.run_maps run combined-arms --port 8003
+```
+
+每次启动会生成新的运行目录，终端打印 RED、BLUE 操作页地址。`run` 后的端口、时间间隔、
+输出目录等参数交给原有 Web 启动器处理。上面两条启动命令应分别运行，结束一场后再启动下一场。
+
+### Map123 数据包
+
+Map123 使用 **100×100 六角格、200 米格尺度**。场景中的地图宽高为 20000 米，
+不能将这两个物理尺寸误解成六角格的行列数。
+
+| 文件 | 内容 |
+| --- | --- |
+| `examples/map123/scenario.json` | 原始转换后的 Native 场景，含权威地形和 49 个初始单位 |
+| `examples/map123/scenario-artillery-ammo2.json` | 独立标注的炮兵演示变体，不改写原场景 |
+| `examples/map123/movement_costs.native.json` | Native 规范移动代价表，约 3.05 MiB |
+| `examples/map123/123see.npz` | 原始压缩静态视线数据，约 21.3 MiB |
+| `examples/map123/map_runtime_manifest.native.json` | 地图身份、网格、查表模式、尺寸和内容校验信息 |
+
+首次使用前可以单独准备缓存：
+
+```bash
+python -m scripts.run_map123 --prepare-only --scenario artillery-ammo2
+```
+
+该命令校验压缩源和移动表，流式展开视线数据，并验证运行时地图身份。展开后的
+`visibility.native.npy` 为 **1,000,000,128 字节**，通过只读内存映射使用；请为本地缓存
+留出约 1.1 GB 磁盘空间。缓存写入 `local_data/map123/runtime-cache/`，后续启动校验后复用。
+展开数据、缓存锁、推演结果和回放不属于 Git 上传内容。缓存准备目前按 Linux 环境验证。
+
+启动视频对应的炮兵演示场景，或切换到原始场景：
+
+```bash
+python -m scripts.run_maps run map123 --variant artillery-ammo2 --port 8003
+python -m scripts.run_maps run map123 --variant original --port 8003
+```
+
+分别执行其中一条即可；`run` 会自动准备或复用缓存。新启动是一场新对局，不会自动重现
+上方视频中的人工操作序列。Map123 运行结果默认保存在 `local_data/map123/runs/`。
+
+场景中的 `map` 是引擎的地形输入，`public_*_map.json` 是独立展示数据。Map123 还必须
+配合上述移动与视线资源；从代码接入时，先使用 `prepare_map_runtime_data(...)` 得到缓存，
+再将其作为 `map_runtime_data` 传入 `ScenarioMatchFactory.from_path(...)`，保持地图身份一致。
 
 ## 查看回放
 

@@ -1,0 +1,839 @@
+{
+  "data_bytes": 29064286,
+  "data_file_count": 25,
+  "files": [
+    {
+      "bytes": 22335408,
+      "path": "examples/map123/123see.npz",
+      "sha256": "019bee4a66cbf8c21ea1c010bc9449706c38d1c1ce57c89e5d9ebc38a9c33bb0",
+      "source": "examples/map123/123see.npz"
+    },
+    {
+      "bytes": 2317,
+      "path": "examples/map123/map_runtime_manifest.native.json",
+      "sha256": "f659fbcb4c5adf2f13540343c8d1b68309da24965ad100ab9ef3c1d31612f657",
+      "source": "examples/map123/map_runtime_manifest.native.json"
+    },
+    {
+      "bytes": 3194502,
+      "path": "examples/map123/movement_costs.native.json",
+      "sha256": "7e24f2a8db8d2063edbb0b1664a9e89329def6fa576140ca419a693927463cf1",
+      "source": "examples/map123/movement_costs.native.json"
+    },
+    {
+      "bytes": 1342078,
+      "path": "examples/map123/scenario-artillery-ammo2.json",
+      "sha256": "9a5c9185066f18280c9a193e83abcd92795161a9681a6909095febb54298f1fa",
+      "source": "examples/map123/scenario-artillery-ammo2.json"
+    },
+    {
+      "bytes": 1340161,
+      "path": "examples/map123/scenario.json",
+      "sha256": "fa21a063de9e46fc553ac777002d9207ea78a48d0628ebc1fb8a06efe66d2a5a",
+      "source": "examples/map123/scenario.json"
+    },
+    {
+      "bytes": 3339,
+      "path": "examples/maps/scenarios/boarding.json",
+      "sha256": "a340832a8702b0f7f0d5d8ededc9d997b86d8402380ee000e5d1fc2f289719df",
+      "source": "examples/demos/boarding_basic/scenario.json"
+    },
+    {
+      "bytes": 11845,
+      "path": "examples/maps/scenarios/combined-arms.json",
+      "sha256": "42d2006d75c435905693a5162b7b1a77fd8a6616e23bb4fbd75c5e376d0087de",
+      "source": "examples/demos/combined_arms_test/scenario.json"
+    },
+    {
+      "bytes": 2814,
+      "path": "examples/maps/scenarios/concealment.json",
+      "sha256": "c4b84b3307722956eec3128d2a278424c77a42efcc50bb799aeeb6b4c984d2fa",
+      "source": "examples/demos/concealment_basic/scenario.json"
+    },
+    {
+      "bytes": 2655,
+      "path": "examples/maps/scenarios/direct-fire.json",
+      "sha256": "049c5df5021edbc738a90502e00257b82cae55dc8fd4e457cc05b39bdf289510",
+      "source": "examples/demos/direct_fire_basic/scenario.json"
+    },
+    {
+      "bytes": 3225,
+      "path": "examples/maps/scenarios/drone.json",
+      "sha256": "7f329bcaa3f44e858e83a9e25d36222efcc64f6656955d3b686178bd19786f14",
+      "source": "examples/demos/drone_basic/scenario.json"
+    },
+    {
+      "bytes": 15282,
+      "path": "examples/maps/scenarios/guided-fire.json",
+      "sha256": "9fe61bd5dba67168d6ec094c688f7977ae42606c97af6c3dd5293233db868002",
+      "source": "examples/demos/guided_fire/scenario.json"
+    },
+    {
+      "bytes": 2119,
+      "path": "examples/maps/scenarios/indirect-fire.json",
+      "sha256": "31df45a0a28a46f8085b1ac7d5308ae4dcb81b0bfdc5554b904bd438c6c33af0",
+      "source": "examples/demos/indirect_fire_basic/scenario.json"
+    },
+    {
+      "bytes": 2912,
+      "path": "examples/maps/scenarios/joint-fire.json",
+      "sha256": "d4d1d81caf0ead343dd50fd59d09c98654a17b2cd2bb75055a4d743eb5626e27",
+      "source": "examples/joint_fire_scenario.json"
+    },
+    {
+      "bytes": 3349,
+      "path": "examples/maps/scenarios/loitering-expiry.json",
+      "sha256": "ba75e0d74e181080a85c23a4e3c0871d94c3b697af372f2a9d889612a0a49095",
+      "source": "examples/demos/loitering_munition_expiry/scenario.json"
+    },
+    {
+      "bytes": 3630,
+      "path": "examples/maps/scenarios/loitering-munition.json",
+      "sha256": "1f8a1687014320d5a3088e34b87f63ac07d2ed93a1c52f712ab69389f310c3c1",
+      "source": "examples/demos/loitering_munition_basic/scenario.json"
+    },
+    {
+      "bytes": 3922,
+      "path": "examples/maps/scenarios/mechanized-assault.json",
+      "sha256": "70a6693526a8419b332bb254f086d0eb174986b23e5e34c5347338d1f5c662ba",
+      "source": "examples/demos/mechanized_assault_basic/scenario.json"
+    },
+    {
+      "bytes": 2448,
+      "path": "examples/maps/scenarios/objective-control.json",
+      "sha256": "7c73c3a7f015145cc9affca9d2883dc8dd0502e85d871b4cdffac38994d85694",
+      "source": "examples/demos/objective_control_basic/scenario.json"
+    },
+    {
+      "bytes": 7885,
+      "path": "examples/maps/scenarios/operation-lifecycle.json",
+      "sha256": "b8578a96b603b710fc306e3474e320d33455add24009220794d13ed95d051806",
+      "source": "examples/demos/operation_lifecycle/scenario.json"
+    },
+    {
+      "bytes": 6890,
+      "path": "examples/maps/scenarios/visibility.json",
+      "sha256": "13d05f5b8169d84a52a81e027d687d436edbdb97ce665f5a20ed5c61b0cd75ce",
+      "source": "examples/demos/visibility_blocking/scenario.json"
+    },
+    {
+      "bytes": 194148,
+      "path": "examples/public_close_combat_map.json",
+      "sha256": "a9af4690cd828287b81a96d1d96bfa854fa3d0b5a37dfc6845e3b6ba48638cda",
+      "source": "examples/public_close_combat_map.json"
+    },
+    {
+      "bytes": 192579,
+      "path": "examples/public_close_combat_scenario.json",
+      "sha256": "16795b2447aed6a422aad3f20949eaf87ffc73c26a8ddd81b29b27465005f989",
+      "source": "examples/public_close_combat_scenario.json"
+    },
+    {
+      "bytes": 194148,
+      "path": "examples/public_river_valley_map.json",
+      "sha256": "f973396841b9743c339deab301c674fa147ad2bcedc46345ad9c0db58428fd99",
+      "source": "examples/public_river_valley_map.json"
+    },
+    {
+      "bytes": 192122,
+      "path": "examples/public_river_valley_scenario.json",
+      "sha256": "9748c638a5ef558e0f53125dbf59d6499e872528411bf6dfb8944af276647bc6",
+      "source": "examples/public_river_valley_scenario.json"
+    },
+    {
+      "bytes": 1129,
+      "path": "examples/public_source_movement_map.json",
+      "sha256": "e3c083351e36bf93197507ff71ecaf1351865d6a767aca73773f6a1f11b2cfd8",
+      "source": "examples/public_source_movement_map.json"
+    },
+    {
+      "bytes": 3379,
+      "path": "examples/source_movement_scenario.json",
+      "sha256": "2c01e462121205018022b8aa0c82ea2a873305d334ec113d8aaf0f2793c760c6",
+      "source": "examples/source_movement_scenario.json"
+    }
+  ],
+  "map_count": 18,
+  "maps": [
+    {
+      "category": "public",
+      "declared_dimensions": {
+        "distance_unit": "hex",
+        "height": 18,
+        "width": 24
+      },
+      "default_variant": "default",
+      "grid": {
+        "column_extent": 24,
+        "configured_hexes": 432,
+        "coordinate_system": "odd-r",
+        "max_column": 24,
+        "max_row": 18,
+        "min_column": 1,
+        "min_row": 1,
+        "row_extent": 18
+      },
+      "id": "river-valley",
+      "name": "公开河谷",
+      "native_map_id": "public-river-valley-24x18",
+      "native_map_sha256": "e13f3b674804a9284a97cda26331b12064459e873addb151202cf5e985461197",
+      "resources": [
+        "examples/public_river_valley_scenario.json",
+        "examples/public_river_valley_map.json"
+      ],
+      "scenarios": [
+        {
+          "initial_units": 12,
+          "path": "examples/public_river_valley_scenario.json",
+          "scenario_id": "public-river-valley-contact",
+          "scenario_sha256": "b38a771dbf2a41e314fad644613be8923dbdd76213f4297aa829b74041740be3",
+          "variant": "default"
+        }
+      ],
+      "terrain_layout_sha256": "cf83c3f320e9474d98ac792b386efff8f5f5fe4c92835d15214c6143c527c02a"
+    },
+    {
+      "category": "public",
+      "declared_dimensions": {
+        "distance_unit": "hex",
+        "height": 18,
+        "width": 24
+      },
+      "default_variant": "default",
+      "grid": {
+        "column_extent": 24,
+        "configured_hexes": 432,
+        "coordinate_system": "odd-r",
+        "max_column": 24,
+        "max_row": 18,
+        "min_column": 1,
+        "min_row": 1,
+        "row_extent": 18
+      },
+      "id": "close-combat",
+      "name": "公开近战",
+      "native_map_id": "public-close-combat-24x18",
+      "native_map_sha256": "4a814f95f47af4f5382bdf227ae15691888d41bb4e4bf5314b4dad00343c7eb0",
+      "resources": [
+        "examples/public_close_combat_scenario.json",
+        "examples/public_close_combat_map.json"
+      ],
+      "scenarios": [
+        {
+          "initial_units": 12,
+          "path": "examples/public_close_combat_scenario.json",
+          "scenario_id": "public-close-combat-contact",
+          "scenario_sha256": "58e7922fa88706b5ff5deefdcf083cd2a232991c505a2abed92f5bf16d8b89be",
+          "variant": "default"
+        }
+      ],
+      "terrain_layout_sha256": "cf83c3f320e9474d98ac792b386efff8f5f5fe4c92835d15214c6143c527c02a"
+    },
+    {
+      "category": "public",
+      "declared_dimensions": {
+        "distance_unit": "hex",
+        "height": 20,
+        "width": 20
+      },
+      "default_variant": "default",
+      "grid": {
+        "column_extent": 6,
+        "configured_hexes": 6,
+        "coordinate_system": "odd-r",
+        "max_column": 6,
+        "max_row": 1,
+        "min_column": 1,
+        "min_row": 1,
+        "row_extent": 1
+      },
+      "id": "source-movement",
+      "name": "基础移动",
+      "native_map_id": "source-movement-fixture-map",
+      "native_map_sha256": "594cca0b88edf92a972ff755d887ed781eabbc74044711c1aee6267dbfa3505e",
+      "resources": [
+        "examples/source_movement_scenario.json",
+        "examples/public_source_movement_map.json"
+      ],
+      "scenarios": [
+        {
+          "initial_units": 2,
+          "path": "examples/source_movement_scenario.json",
+          "scenario_id": "source-movement-small",
+          "scenario_sha256": "bac70219f5e1edf09f9701b95b6ab9ce6a7864ad2bea98843f77e868e0641e8c",
+          "variant": "default"
+        }
+      ],
+      "terrain_layout_sha256": "c55dadfd067be93c8a7cdaa941bc7a344519420fb2707fb026233b7b48f63fe2"
+    },
+    {
+      "category": "full-runtime-map",
+      "declared_dimensions": {
+        "distance_unit": "m",
+        "height": 20000.0,
+        "width": 20000.0
+      },
+      "default_variant": "artillery-ammo2",
+      "grid": {
+        "column_extent": 100,
+        "configured_hexes": 10000,
+        "coordinate_system": "odd-r",
+        "max_column": 99,
+        "max_row": 99,
+        "min_column": 0,
+        "min_row": 0,
+        "row_extent": 100
+      },
+      "id": "map123",
+      "name": "Map123",
+      "native_map_id": "123",
+      "native_map_sha256": "571ab1bb626e88465c6c09e02eb1554d57d286902c4070969e28d27e134aebaf",
+      "resources": [
+        "examples/map123/scenario.json",
+        "examples/map123/scenario-artillery-ammo2.json",
+        "examples/map123/123see.npz",
+        "examples/map123/movement_costs.native.json",
+        "examples/map123/map_runtime_manifest.native.json"
+      ],
+      "runtime": {
+        "cache": "local_data/map123/runtime-cache/",
+        "compressed_visibility_bytes": 22335408,
+        "expanded_visibility_bytes": 1000000128,
+        "launcher": "scripts.run_map123",
+        "requires_prepare": true,
+        "visibility_semantics": "static_line_of_sight_only"
+      },
+      "scenarios": [
+        {
+          "initial_units": 49,
+          "path": "examples/map123/scenario.json",
+          "scenario_id": "source-2201010105-native-v1",
+          "scenario_sha256": "fa21a063de9e46fc553ac777002d9207ea78a48d0628ebc1fb8a06efe66d2a5a",
+          "variant": "original"
+        },
+        {
+          "initial_units": 49,
+          "path": "examples/map123/scenario-artillery-ammo2.json",
+          "scenario_id": "human-map123-r3-12-artillery-ammo2",
+          "scenario_sha256": "9a5c9185066f18280c9a193e83abcd92795161a9681a6909095febb54298f1fa",
+          "variant": "artillery-ammo2"
+        }
+      ],
+      "terrain_layout_sha256": "ce29570cdaae6f0c7350a3cd7a02e7dc69b49e456e1d4ed6af998f082c65e79e"
+    },
+    {
+      "category": "feature-example",
+      "declared_dimensions": {
+        "distance_unit": "hex",
+        "height": 2,
+        "width": 2
+      },
+      "default_variant": "default",
+      "grid": {
+        "column_extent": 2,
+        "configured_hexes": 2,
+        "coordinate_system": "odd-r",
+        "max_column": 2,
+        "max_row": 1,
+        "min_column": 1,
+        "min_row": 1,
+        "row_extent": 1
+      },
+      "id": "boarding",
+      "name": "上下车",
+      "native_map_id": "boarding-basic-two-hex",
+      "native_map_sha256": "ba815c483638fb5a523ee67bc8610749250f5a58b4c1163ff99dd27581a3f0b4",
+      "resources": [
+        "examples/maps/scenarios/boarding.json"
+      ],
+      "scenarios": [
+        {
+          "initial_units": 3,
+          "path": "examples/maps/scenarios/boarding.json",
+          "scenario_id": "boarding-basic",
+          "scenario_sha256": "f62d588ddbf3f1b15ffa83dfa61b0109ee271978af8328db113a482435ad64fc",
+          "variant": "default"
+        }
+      ],
+      "terrain_layout_sha256": "80a07c02ee4c3c94efafa6b8f2f6fe7f3689a4b12a6819c1f7e5040ec0f438e8"
+    },
+    {
+      "category": "feature-example",
+      "declared_dimensions": {
+        "distance_unit": "hex",
+        "height": 1,
+        "width": 3
+      },
+      "default_variant": "default",
+      "grid": {
+        "column_extent": 3,
+        "configured_hexes": 3,
+        "coordinate_system": "odd-r",
+        "max_column": 3,
+        "max_row": 1,
+        "min_column": 1,
+        "min_row": 1,
+        "row_extent": 1
+      },
+      "id": "concealment",
+      "name": "隐蔽",
+      "native_map_id": "demo-concealment-map",
+      "native_map_sha256": "544e828f541f5bc9643fd063ffb40a0c9ef46f9ac1d0f1eb143859a054b1ee92",
+      "resources": [
+        "examples/maps/scenarios/concealment.json"
+      ],
+      "scenarios": [
+        {
+          "initial_units": 2,
+          "path": "examples/maps/scenarios/concealment.json",
+          "scenario_id": "demo-concealment-basic",
+          "scenario_sha256": "5209ed80d5b3ee148c341c537cad214335935415b0357ae9b194a01fcc9e1337",
+          "variant": "default"
+        }
+      ],
+      "terrain_layout_sha256": "bb69358a74addf8b0e9d2893cca4463f2779a741f9bc221a708146cdc2e8f5e9"
+    },
+    {
+      "category": "feature-example",
+      "declared_dimensions": {
+        "distance_unit": "hex",
+        "height": 2,
+        "width": 3
+      },
+      "default_variant": "default",
+      "grid": {
+        "column_extent": 2,
+        "configured_hexes": 2,
+        "coordinate_system": "odd-r",
+        "max_column": 2,
+        "max_row": 1,
+        "min_column": 1,
+        "min_row": 1,
+        "row_extent": 1
+      },
+      "id": "direct-fire",
+      "name": "直射火力",
+      "native_map_id": "demo-direct-fire-map",
+      "native_map_sha256": "7849a551473307df40b675ae8ef5742b9766dbd70fb77d9aa11a7b80a4bf5287",
+      "resources": [
+        "examples/maps/scenarios/direct-fire.json"
+      ],
+      "scenarios": [
+        {
+          "initial_units": 2,
+          "path": "examples/maps/scenarios/direct-fire.json",
+          "scenario_id": "demo-direct-fire-basic",
+          "scenario_sha256": "330402a5667129724b58d2bd785c04975bfd1952b5326becf1b76fcb11ca5757",
+          "variant": "default"
+        }
+      ],
+      "terrain_layout_sha256": "dbf0572654d62136392e689b6011bb50f5e85979f075b77e1d8d4ad300c75dbf"
+    },
+    {
+      "category": "feature-example",
+      "declared_dimensions": {
+        "distance_unit": "hex",
+        "height": 2,
+        "width": 4
+      },
+      "default_variant": "default",
+      "grid": {
+        "column_extent": 4,
+        "configured_hexes": 4,
+        "coordinate_system": "odd-r",
+        "max_column": 4,
+        "max_row": 1,
+        "min_column": 1,
+        "min_row": 1,
+        "row_extent": 1
+      },
+      "id": "drone",
+      "name": "无人机",
+      "native_map_id": "demo-drone-map",
+      "native_map_sha256": "adfdd8ac311a832741e302016b4946c84c05e8dc1b3095f713892f782deb44a1",
+      "resources": [
+        "examples/maps/scenarios/drone.json"
+      ],
+      "scenarios": [
+        {
+          "initial_units": 3,
+          "path": "examples/maps/scenarios/drone.json",
+          "scenario_id": "demo-drone-basic",
+          "scenario_sha256": "595576689be713a9ebbee2dc9a836c392d60ef7922d6d97d4a72b1785e870d9d",
+          "variant": "default"
+        }
+      ],
+      "terrain_layout_sha256": "419a4a057c03749a332cffd9499a2b411425ef47e46e76921f8bd2bdce189a97"
+    },
+    {
+      "category": "feature-example",
+      "declared_dimensions": {
+        "distance_unit": "hex",
+        "height": 3,
+        "width": 24
+      },
+      "default_variant": "default",
+      "grid": {
+        "column_extent": 24,
+        "configured_hexes": 24,
+        "coordinate_system": "odd-r",
+        "max_column": 24,
+        "max_row": 1,
+        "min_column": 1,
+        "min_row": 1,
+        "row_extent": 1
+      },
+      "id": "guided-fire",
+      "name": "引导火力",
+      "native_map_id": "guided-capability-line-map",
+      "native_map_sha256": "2f25c89f4c5f6c84db6b47de91deb1a51f927610c0635137cf467cc4ebb7f811",
+      "resources": [
+        "examples/maps/scenarios/guided-fire.json"
+      ],
+      "scenarios": [
+        {
+          "initial_units": 3,
+          "path": "examples/maps/scenarios/guided-fire.json",
+          "scenario_id": "guided-fire-basic",
+          "scenario_sha256": "ca8cedb0a6cd6e1f1ec7ac025c9598fe168515b63a65d4d6fb28d04370a747ee",
+          "variant": "default"
+        }
+      ],
+      "terrain_layout_sha256": "c533b87a1fab67db105607485e0b9ef1cb34f8b5147816ada67afa55eba290cb"
+    },
+    {
+      "category": "feature-example",
+      "declared_dimensions": {
+        "distance_unit": "hex",
+        "height": 2,
+        "width": 3
+      },
+      "default_variant": "default",
+      "grid": {
+        "column_extent": 2,
+        "configured_hexes": 2,
+        "coordinate_system": "odd-r",
+        "max_column": 2,
+        "max_row": 1,
+        "min_column": 1,
+        "min_row": 1,
+        "row_extent": 1
+      },
+      "id": "indirect-fire",
+      "name": "间接火力",
+      "native_map_id": "demo-indirect-full-cycle-map",
+      "native_map_sha256": "1a32074b9411c92c8fc785caf8e03f3f8df4d256a1f5156e0a5984700c079343",
+      "resources": [
+        "examples/maps/scenarios/indirect-fire.json"
+      ],
+      "scenarios": [
+        {
+          "initial_units": 2,
+          "path": "examples/maps/scenarios/indirect-fire.json",
+          "scenario_id": "demo-indirect-fire-full-cycle",
+          "scenario_sha256": "c2054e0e197b1dbf4d2b2a47d1ea977faccdbff22c9bde6ce49eefdbb9eb2e23",
+          "variant": "default"
+        }
+      ],
+      "terrain_layout_sha256": "dbf0572654d62136392e689b6011bb50f5e85979f075b77e1d8d4ad300c75dbf"
+    },
+    {
+      "category": "feature-example",
+      "declared_dimensions": {
+        "distance_unit": "hex",
+        "height": 2,
+        "width": 4
+      },
+      "default_variant": "default",
+      "grid": {
+        "column_extent": 4,
+        "configured_hexes": 4,
+        "coordinate_system": "odd-r",
+        "max_column": 4,
+        "max_row": 1,
+        "min_column": 1,
+        "min_row": 1,
+        "row_extent": 1
+      },
+      "id": "loitering-munition",
+      "name": "巡飞弹",
+      "native_map_id": "demo-loitering-munition-map",
+      "native_map_sha256": "996b06d0e0fda7998057ff8d8a7952d38389e0fc63fb44a973f080ef95f4542f",
+      "resources": [
+        "examples/maps/scenarios/loitering-munition.json"
+      ],
+      "scenarios": [
+        {
+          "initial_units": 3,
+          "path": "examples/maps/scenarios/loitering-munition.json",
+          "scenario_id": "demo-loitering-munition-basic",
+          "scenario_sha256": "c8b75f0fc8747e3de9e985de33ba6fbd94033df76724d6902e0fac0044575c17",
+          "variant": "default"
+        }
+      ],
+      "terrain_layout_sha256": "419a4a057c03749a332cffd9499a2b411425ef47e46e76921f8bd2bdce189a97"
+    },
+    {
+      "category": "feature-example",
+      "declared_dimensions": {
+        "distance_unit": "hex",
+        "height": 2,
+        "width": 2
+      },
+      "default_variant": "default",
+      "grid": {
+        "column_extent": 2,
+        "configured_hexes": 2,
+        "coordinate_system": "odd-r",
+        "max_column": 2,
+        "max_row": 1,
+        "min_column": 1,
+        "min_row": 1,
+        "row_extent": 1
+      },
+      "id": "loitering-expiry",
+      "name": "巡飞弹生命周期",
+      "native_map_id": "demo-loitering-munition-expiry-map",
+      "native_map_sha256": "d65052cf2687d0a017dca6c8b5cb31d94b8a9aba711d1df707e4953c8691ac9f",
+      "resources": [
+        "examples/maps/scenarios/loitering-expiry.json"
+      ],
+      "scenarios": [
+        {
+          "initial_units": 3,
+          "path": "examples/maps/scenarios/loitering-expiry.json",
+          "scenario_id": "demo-loitering-munition-expiry",
+          "scenario_sha256": "12b0e32dbea4dce36b1da0ed1e3ac6097f5dbcec380236da10e588e870213323",
+          "variant": "default"
+        }
+      ],
+      "terrain_layout_sha256": "80a07c02ee4c3c94efafa6b8f2f6fe7f3689a4b12a6819c1f7e5040ec0f438e8"
+    },
+    {
+      "category": "feature-example",
+      "declared_dimensions": {
+        "distance_unit": "hex",
+        "height": 2,
+        "width": 4
+      },
+      "default_variant": "default",
+      "grid": {
+        "column_extent": 3,
+        "configured_hexes": 3,
+        "coordinate_system": "odd-r",
+        "max_column": 3,
+        "max_row": 1,
+        "min_column": 1,
+        "min_row": 1,
+        "row_extent": 1
+      },
+      "id": "mechanized-assault",
+      "name": "机械化突击",
+      "native_map_id": "demo-mechanized-assault-map",
+      "native_map_sha256": "b8f824b3fdfdae659f6fae820d3b3f36096ff840c2bef7576bd9339967e98230",
+      "resources": [
+        "examples/maps/scenarios/mechanized-assault.json"
+      ],
+      "scenarios": [
+        {
+          "initial_units": 3,
+          "path": "examples/maps/scenarios/mechanized-assault.json",
+          "scenario_id": "demo-mechanized-assault-basic",
+          "scenario_sha256": "a3885899a0059907fcb9d0cdcf889c88a75f3662bd05d421aa015f3d978185bc",
+          "variant": "default"
+        }
+      ],
+      "terrain_layout_sha256": "2b0270b4f1ef25fa1fda107a5f14141132577256d0d7a781c4a199b4e8d7ba9c"
+    },
+    {
+      "category": "feature-example",
+      "declared_dimensions": {
+        "distance_unit": "hex",
+        "height": 2,
+        "width": 4
+      },
+      "default_variant": "default",
+      "grid": {
+        "column_extent": 3,
+        "configured_hexes": 3,
+        "coordinate_system": "odd-r",
+        "max_column": 3,
+        "max_row": 1,
+        "min_column": 1,
+        "min_row": 1,
+        "row_extent": 1
+      },
+      "id": "objective-control",
+      "name": "目标点控制",
+      "native_map_id": "demo-objective-control-map",
+      "native_map_sha256": "d00ffcf2080bd4dfe0e08fe86bd6b4515c1f7e8edb44d4fcd02c93521dd5b30d",
+      "resources": [
+        "examples/maps/scenarios/objective-control.json"
+      ],
+      "scenarios": [
+        {
+          "initial_units": 2,
+          "path": "examples/maps/scenarios/objective-control.json",
+          "scenario_id": "demo-objective-control-basic",
+          "scenario_sha256": "ace5ded1932999ff24078e83ccb53f69cc110cfe991077add15fdb5701db3705",
+          "variant": "default"
+        }
+      ],
+      "terrain_layout_sha256": "0a18d9d96bfa3e9909ceb3d6df34c48ff57f396746d8be091f88ba95aececa4e"
+    },
+    {
+      "category": "feature-example",
+      "declared_dimensions": {
+        "distance_unit": "hex",
+        "height": 4,
+        "width": 8
+      },
+      "default_variant": "default",
+      "grid": {
+        "column_extent": 7,
+        "configured_hexes": 21,
+        "coordinate_system": "odd-r",
+        "max_column": 7,
+        "max_row": 3,
+        "min_column": 1,
+        "min_row": 1,
+        "row_extent": 3
+      },
+      "id": "visibility",
+      "name": "视线与遮挡",
+      "native_map_id": "demo-visibility-map",
+      "native_map_sha256": "e1379b5eb6c100b2e6652bd3b52a2c6ce34ef831204a976fd26a296532c9739f",
+      "resources": [
+        "examples/maps/scenarios/visibility.json"
+      ],
+      "scenarios": [
+        {
+          "initial_units": 6,
+          "path": "examples/maps/scenarios/visibility.json",
+          "scenario_id": "demo-visibility-blocking",
+          "scenario_sha256": "f2b5f853b6fbd96769cf9a921eb2aced5d6b2db2b16f131972f32a250cf1a2e0",
+          "variant": "default"
+        }
+      ],
+      "terrain_layout_sha256": "2e3c75f5cea22aeac86c86e591a2fb8f4b3acfed72a59fa08f5a1ac15d714188"
+    },
+    {
+      "category": "feature-example",
+      "declared_dimensions": {
+        "distance_unit": "hex",
+        "height": 1,
+        "width": 8
+      },
+      "default_variant": "default",
+      "grid": {
+        "column_extent": 8,
+        "configured_hexes": 8,
+        "coordinate_system": "odd-r",
+        "max_column": 8,
+        "max_row": 1,
+        "min_column": 1,
+        "min_row": 1,
+        "row_extent": 1
+      },
+      "id": "operation-lifecycle",
+      "name": "持续动作",
+      "native_map_id": "public-full-action-training-map",
+      "native_map_sha256": "711fa716f2c3e8e8c55792de992bad0f99a3918cf69d9bd7eb01c378a8a0b561",
+      "resources": [
+        "examples/maps/scenarios/operation-lifecycle.json"
+      ],
+      "scenarios": [
+        {
+          "initial_units": 6,
+          "path": "examples/maps/scenarios/operation-lifecycle.json",
+          "scenario_id": "public-operation-lifecycle",
+          "scenario_sha256": "33dcf0cb1ca14007697cd58abfd6af0baa3e0c47471af0d46f7ba9914b588de8",
+          "variant": "default"
+        }
+      ],
+      "terrain_layout_sha256": "d990a7ddb9012fb5612121a3acc823ce3751a6e62d1ca7ba5548b9c912cbd663"
+    },
+    {
+      "category": "feature-example",
+      "declared_dimensions": {
+        "distance_unit": "hex",
+        "height": 2,
+        "width": 10
+      },
+      "default_variant": "default",
+      "grid": {
+        "column_extent": 10,
+        "configured_hexes": 11,
+        "coordinate_system": "odd-r",
+        "max_column": 10,
+        "max_row": 2,
+        "min_column": 1,
+        "min_row": 1,
+        "row_extent": 2
+      },
+      "id": "combined-arms",
+      "name": "合成作战",
+      "native_map_id": "demo-combined-arms-interactive-map",
+      "native_map_sha256": "8edf32b751b0e18b60d01e73ff456f7eebc8a1259451b5e7776abb9ad3faa06d",
+      "resources": [
+        "examples/maps/scenarios/combined-arms.json"
+      ],
+      "scenarios": [
+        {
+          "initial_units": 9,
+          "path": "examples/maps/scenarios/combined-arms.json",
+          "scenario_id": "demo-combined-arms-interactive-test",
+          "scenario_sha256": "b152fc2ac2353a17359b16d4de347737b924f34857347311ab5a2cabd7f06450",
+          "variant": "default"
+        }
+      ],
+      "terrain_layout_sha256": "3071d4b899592f50bcadaf110a03b815061b55eb67e90bb3ec33a789543fcdc4"
+    },
+    {
+      "category": "feature-example",
+      "declared_dimensions": {
+        "distance_unit": "hex",
+        "height": 3,
+        "width": 4
+      },
+      "default_variant": "default",
+      "grid": {
+        "column_extent": 2,
+        "configured_hexes": 2,
+        "coordinate_system": "odd-r",
+        "max_column": 2,
+        "max_row": 1,
+        "min_column": 1,
+        "min_row": 1,
+        "row_extent": 1
+      },
+      "id": "joint-fire",
+      "name": "同 Tick 联合火力",
+      "native_map_id": "public-joint-fire-map",
+      "native_map_sha256": "2864d440f92a4b549025cd180962b69d615d1de07c272812f1bb2194247d15d9",
+      "resources": [
+        "examples/maps/scenarios/joint-fire.json"
+      ],
+      "scenarios": [
+        {
+          "initial_units": 2,
+          "path": "examples/maps/scenarios/joint-fire.json",
+          "scenario_id": "public-joint-fire-small",
+          "scenario_sha256": "d39eedec4bf5453944a0a4a3288f30e2027990f05cc636d19f400def5db065a6",
+          "variant": "default"
+        }
+      ],
+      "terrain_layout_sha256": "fd7c486e2262f509a336f7dfb237aeb385c651581054015be587ec7e36f219fa"
+    }
+  ],
+  "native_rules_equivalence": false,
+  "notes": [
+    "All resources are existing public Native examples; map/scenario source bytes are preserved.",
+    "River-valley and close-combat share terrain layout but retain different map and scenario identities.",
+    "Feature maps can be sparse; row/column extent is not a promise that every cell exists.",
+    "Abstract legacy fixtures without explicit hex terrain and duplicate acceptance scenarios are omitted.",
+    "Map123 expanded visibility NPY is generated locally; runs, tests, reports and SDK files are excluded."
+  ],
+  "scenario_count": 19,
+  "schema": "native-release-map-catalog/1.0"
+}
