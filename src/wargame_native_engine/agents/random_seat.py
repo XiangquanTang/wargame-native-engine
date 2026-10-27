@@ -27,6 +27,7 @@ _PRODUCT_ACTION_TYPES = frozenset({
     "CAPTURE",
     "ENTER_CONCEALMENT",
     "WEAPON_LOCK",
+    "WEAPON_UNLOCK",
     "WEAPON_UNFOLD",
 })
 
@@ -200,6 +201,11 @@ def _product_operation(
             destination_hex=path[-1],
             movement_mode=movement_mode,
         )
+    if operation_type == "WEAPON_LOCK":
+        weapon_id = parameters.get("weapon_id")
+        if type(weapon_id) is not int:
+            return None
+        return SeatOperation("WEAPON_LOCK", (actor_id,), weapon_choices=((actor_id, weapon_id),))
     if operation_type == "SHOOT":
         target_id = action.get("target_id")
         if type(target_id) is not int:

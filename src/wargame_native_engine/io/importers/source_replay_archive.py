@@ -180,6 +180,8 @@ class SourceReplayArchiveReader:
             raise ValueError("source replay has no numbered JSON frames")
         self._frame_numbers = tuple(number for number, _ in numbered)
         self.frame_names = tuple(name for _, name in numbered)
+        # Empty is a valid zero-step trajectory; absent is not equivalent.
+        self.steps_file_present = "steps.jsonl" in self._member_names
         self.steps_payload = self._read_member("steps.jsonl", required=False)
         self.steps = tuple(json_clone(_jsonl(self.steps_payload)))
         manifest_present = "replay_manifest.native.jsonl" in self._member_names
@@ -305,6 +307,13 @@ class LazySourceFrameSequence(Sequence[SourceFrame]):
 
     def __len__(self) -> int:
         return self.reader.frame_count
+
+    def __iter__(self) -> Iterator[SourceFrame]:
+        # Sequence's default iterator calls frame_at for every element, which
+        # reopens a ZIP and reparses its central directory on every iteration.
+        # Streaming validates the same hashes/contracts with one open handle.
+        for _, _, frame in self.reader.iter_frames():
+            yield frame
 
     def __getitem__(self, index):
         if isinstance(index, slice):

@@ -15,6 +15,7 @@ def source_frame_template_for_scenario(scenario: NativeScenario) -> SourceFrame:
     """Return a detached GREEN-compatible template from canonical facts."""
 
     units = []
+    passengers = []
     for value in scenario.operators:
         source = value.raw_attributes.get("source_frame")
         source_codes = source_identity_codes(value.subtype)
@@ -30,7 +31,8 @@ def source_frame_template_for_scenario(scenario: NativeScenario) -> SourceFrame:
             "name": f"fixture-{value.operator_id}",
             "owner": value.side,
             "armor": 0,
-            "cur_hex": value.current_hex,
+            "cur_hex": (value.current_hex if value.current_hex is not None else
+                        int(round(value.y)) * 100 + int(round(value.x))),
             "cur_pos": 0,
             "basic_speed": value.basic_speed,
             "speed": 0,
@@ -58,7 +60,8 @@ def source_frame_template_for_scenario(scenario: NativeScenario) -> SourceFrame:
         unit.update({
             "obj_id": value.operator_id,
             "color": 0 if value.side == "red" else 1,
-            "cur_hex": value.current_hex,
+            "cur_hex": (value.current_hex if value.current_hex is not None else
+                        int(round(value.y)) * 100 + int(round(value.x))),
             "cur_pos": value.cur_pos,
             "blood": value.blood,
             "max_blood": value.max_blood,
@@ -77,7 +80,15 @@ def source_frame_template_for_scenario(scenario: NativeScenario) -> SourceFrame:
             unit["remain_bullet_nums"] = (
                 json_clone(ammunition) if isinstance(ammunition, Mapping) else {}
             )
-        units.append(unit)
+        if value.passenger_id is not None:
+            unit["passenger_ids"] = [value.passenger_id]
+        if value.mounted_on is not None:
+            unit["car"] = value.mounted_on
+            unit["on_board"] = 1
+            unit["is_passenger"] = True
+            passengers.append(unit)
+        else:
+            units.append(unit)
     source_cities = scenario.metadata.get("source_cities", [])
     city_templates = (
         [json_clone(value) for value in source_cities]
@@ -119,7 +130,7 @@ def source_frame_template_for_scenario(scenario: NativeScenario) -> SourceFrame:
         cities.append(city)
     document = {
         "operators": units,
-        "passengers": [],
+        "passengers": passengers,
         "time": {
             "cur_step": 0,
             "tick": 1,

@@ -24,6 +24,12 @@ from wargame_native_engine._framed_history import (
     append_private_record,
     read_private_record,
 )
+from wargame_native_engine.agents._timeouts import validated_timeout
+from wargame_native_engine.adjudication.fire_effect_query import FireEffectQuery
+from wargame_native_engine.core.region_visibility import (
+    RegionVisibilityQuery,
+    RegionVisibilityResult,
+)
 from wargame_native_engine.agents.protocol import AgentResetContext
 from wargame_native_engine.agents.seat import (
     AgentDecisionContext,
@@ -34,6 +40,7 @@ from wargame_native_engine.agents.seat import (
 from wargame_native_engine.gateway import CommandGatewayError, DeadlineMode
 from wargame_native_engine.core.tactical_overlay import UnitTacticalOverlay
 from wargame_native_engine.gateway.models import ControllerView
+from wargame_native_engine.io.detached import detached_copy, detached_record
 from wargame_native_engine.io.serialization import canonical_hash, json_clone
 from wargame_native_engine.operations import ProductOperationService
 from wargame_native_engine.operations.execution_lifecycle import (
@@ -149,6 +156,35 @@ class RealtimeSeatBinding:
 
 
 @dataclass(frozen=True, slots=True)
+class RealtimeCommandSummary:
+    """Immutable presentation fields for one command, without its decision."""
+
+    status: CommandStatus
+    target_tick: int | None
+    applied_frame_index: int | None
+    error_code: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class RealtimeStatusSnapshot:
+    """Constant-size side-bound metadata for polling clients."""
+
+    seat: str
+    frame_index: int
+    sim_time_ms: int
+    tick_index: int
+    observation_version: int
+    terminated: bool
+    truncated: bool
+    winner: str | None
+    outcome: str | None
+    lifecycle: RealtimeLifecycleState
+    pending_command_count: int
+    last_command: RealtimeCommandSummary | None
+
+
+@detached_record
+@dataclass(frozen=True, slots=True)
 class RealtimeSeatView:
     seat: str
     observation_version: int
@@ -171,7 +207,7 @@ class RealtimeSeatView:
         _exact_bool(self.terminated, "terminated")
         _exact_bool(self.truncated, "truncated")
         object.__setattr__(self, "observation", json_clone(self.observation))
-        object.__setattr__(self, "capabilities", deepcopy(self.capabilities))
+        object.__setattr__(self, "capabilities", detached_copy(self.capabilities))
         if (self.decision_semantic is None) != (self.action_catalog is None):
             raise ValueError("realtime decision semantic/catalog must be paired")
         if self.decision_semantic is not None:
@@ -185,9 +221,9 @@ class RealtimeSeatView:
             if self.decision_semantic.action_space != self.action_catalog.reference():
                 raise ValueError("realtime Decision catalog mismatch")
             object.__setattr__(
-                self, "decision_semantic", deepcopy(self.decision_semantic)
+                self, "decision_semantic", detached_copy(self.decision_semantic)
             )
-            object.__setattr__(self, "action_catalog", deepcopy(self.action_catalog))
+            object.__setattr__(self, "action_catalog", detached_copy(self.action_catalog))
 
     def to_record(self) -> dict[str, object]:
         return {
@@ -211,6 +247,7 @@ class RealtimeSeatView:
         }
 
 
+@detached_record
 @dataclass(frozen=True, slots=True)
 class RealtimeResetResult:
     episode_id: str
@@ -227,8 +264,8 @@ class RealtimeResetResult:
         _positive_int(self.tick_interval_ms, "tick_interval_ms")
         object.__setattr__(self, "red_binding", deepcopy(self.red_binding))
         object.__setattr__(self, "blue_binding", deepcopy(self.blue_binding))
-        object.__setattr__(self, "red", deepcopy(self.red))
-        object.__setattr__(self, "blue", deepcopy(self.blue))
+        object.__setattr__(self, "red", detached_copy(self.red))
+        object.__setattr__(self, "blue", detached_copy(self.blue))
 
 
 @dataclass(frozen=True, slots=True)
@@ -301,6 +338,7 @@ class SeatCommandReceipt:
         object.__setattr__(self, "execution_handles", tuple(self.execution_handles))
 
 
+@detached_record
 @dataclass(frozen=True, slots=True)
 class RealtimeTickResult:
     tick_index: int
@@ -343,8 +381,8 @@ class RealtimeTickResult:
                 for value in self.blue_command_sequences
             ),
         )
-        object.__setattr__(self, "red", deepcopy(self.red))
-        object.__setattr__(self, "blue", deepcopy(self.blue))
+        object.__setattr__(self, "red", detached_copy(self.red))
+        object.__setattr__(self, "blue", detached_copy(self.blue))
 
     @property
     def red_observation(self) -> Mapping[str, Any]:
@@ -505,6 +543,8 @@ class RealtimeAgentSession:
         self._version_owner: dict[int, str] = {}
         self._next_observation_version = 0
         self._events: dict[int, SeatCommandEvent] = {}
+        self._pending_event_counts = {"red": 0, "blue": 0}
+        self._last_event_sequence: dict[str, int] = {}
         self._pending: dict[tuple[int, str], int] = {}
         self._ticks: list[RealtimeTickRecord] = []
         self._recent_ticks: deque[RealtimeTickResult] = deque(
@@ -528,6 +568,7 @@ class RealtimeAgentSession:
         self._failed = False
         self._published = False
         self._closed = False
+        self._reset_in_progress = False
         self._background_error: BaseException | None = None
         self._background_failure_diagnostic: str | None = None
         self._background_tick_limit: int | None = None
@@ -540,8 +581,29 @@ class RealtimeAgentSession:
         self._catch_up_yield_count = 0
 
     def reset(self, *, seed: int = 42) -> RealtimeResetResult:
+        """Replace the episode without allowing concurrent reset or resurrection.
+
+        Factories run outside the session lock so that ``close`` remains
+        responsive. A competing reset is rejected, and closure wins over an
+        in-flight factory: its result is disposed rather than installed.
+        """
+
         if type(seed) is not int:
             raise TypeError("seed must be an exact int")
+        with self._lock:
+            self._require_open()
+            if self._reset_in_progress:
+                raise RealtimeAgentSessionError(
+                    "realtime_reset_in_progress", "another reset is in progress"
+                )
+            self._reset_in_progress = True
+        try:
+            return self._reset_episode(seed)
+        finally:
+            with self._lock:
+                self._reset_in_progress = False
+
+    def _reset_episode(self, seed: int) -> RealtimeResetResult:
         self.stop_realtime()
         with self._lock:
             self._require_open()
@@ -552,11 +614,20 @@ class RealtimeAgentSession:
             self._match = None
             self._services.clear()
             self._advisory_services.clear()
+            # A detached episode must not leave readable seat bindings behind
+            # while its replacement is being constructed or if that fails.
+            self._bindings.clear()
+            self._binding_by_id.clear()
+            self._latest.clear()
+            self._controller_views.clear()
+            self._tactical_overlay_cache.clear()
+            self._episode_id = None
+            self._episode_sequence += 1
+            episode_sequence = self._episode_sequence
         _close_product_services(old_services)
         if old is not None:
             old.close()
-        self._episode_sequence += 1
-        match = self._match_factory(seed, self._episode_sequence)
+        match = self._match_factory(seed, episode_sequence)
         if not isinstance(match, MatchHandle):
             raise TypeError("match_factory must return MatchHandle")
         services: dict[str, ProductOperationService] = {}
@@ -567,7 +638,7 @@ class RealtimeAgentSession:
                 self.run_namespace,
                 match.bundle.scenario_identity.sha256,
                 seed,
-                self._episode_sequence,
+                episode_sequence,
             )
             bindings = {
                 side: RealtimeSeatBinding(
@@ -578,28 +649,22 @@ class RealtimeAgentSession:
                 )
                 for side in ("red", "blue")
             }
-            services = {
-                side: ProductOperationService(match.bind_controller(
-                    side,
-                    controller_id=(
-                        match.red_controller_id
-                        if side == "red" else match.blue_controller_id
-                    ),
-                ))
-                for side in ("red", "blue")
-            }
-            advisory_services = {
-                side: ProductOperationService(match.bind_controller(
-                    side,
-                    controller_id=(
-                        match.red_controller_id
-                        if side == "red" else match.blue_controller_id
-                    ),
-                ))
-                for side in ("red", "blue")
-            }
+            # Retain each created service immediately so partial construction
+            # failures also close its temporary history resources.
+            for collection in (services, advisory_services):
+                for side in ("red", "blue"):
+                    collection[side] = ProductOperationService(
+                        match.bind_controller(
+                            side,
+                            controller_id=(
+                                match.red_controller_id
+                                if side == "red" else match.blue_controller_id
+                            ),
+                        )
+                    )
             anchor = self._clock_now()
             with self._lock:
+                self._require_open()
                 self._match = match
                 self._services = services
                 self._advisory_services = advisory_services
@@ -614,6 +679,8 @@ class RealtimeAgentSession:
                 self._version_owner.clear()
                 self._next_observation_version = 0
                 self._events.clear()
+                self._pending_event_counts = {"red": 0, "blue": 0}
+                self._last_event_sequence.clear()
                 self._pending.clear()
                 self._ticks.clear()
                 self._recent_ticks.clear()
@@ -646,10 +713,13 @@ class RealtimeAgentSession:
                     self.tick_interval_ms,
                     deepcopy(bindings["red"]),
                     deepcopy(bindings["blue"]),
-                    deepcopy(self._latest["red"]),
-                    deepcopy(self._latest["blue"]),
+                    detached_copy(self._latest["red"]),
+                    detached_copy(self._latest["blue"]),
                 )
         except BaseException:
+            failed_services = tuple(services.values()) + tuple(
+                advisory_services.values()
+            )
             with self._lock:
                 if self._match is match:
                     self._match = None
@@ -660,9 +730,20 @@ class RealtimeAgentSession:
                     self._latest.clear()
                     self._controller_views.clear()
                     self._tactical_overlay_cache.clear()
-            _close_product_services(
-                tuple(services.values()) + tuple(advisory_services.values())
-            )
+                    self._episode_id = None
+                    self._anchor_ns = None
+                    self._execution_tracker = None
+                    self._ticks.clear()
+                    self._recent_ticks.clear()
+                    self._tick_history_offsets.clear()
+                    self._failed = True
+                    self._lifecycle = RealtimeLifecycleState.FAILED
+                    self._stop_reason = RealtimeCancellationReason.FAILURE
+                    self._stop.set()
+                    history, self._tick_history = self._tick_history, None
+                    if history is not None:
+                        history.close()
+            _close_product_services(failed_services)
             match.close()
             raise
 
@@ -715,6 +796,35 @@ class RealtimeAgentSession:
                 binding,
                 version=version,
                 decision=SeatDecision.single(detached),
+                merge_operation=detached,
+            )
+
+    def submit_operation_if_current(
+        self,
+        binding: RealtimeSeatBinding,
+        *,
+        observation_version: int,
+        operation: "SeatOperation",
+    ) -> SeatCommandReceipt:
+        """Submit only against the current seat view, without a check/use race.
+
+        Unlike ``submit_operation``, this opt-in agent entry point rejects
+        retained older observations. The check and queue insertion share the
+        session lock; existing replay and browser semantics remain unchanged.
+        """
+        if not isinstance(operation, SeatOperation):
+            raise TypeError("operation must be a SeatOperation")
+        version = _nonnegative_int(observation_version, "observation_version")
+        detached = deepcopy(operation)
+        with self._lock:
+            side = self._resolve_binding_locked(binding).seat
+            if version != self._latest[side].observation_version:
+                raise RealtimeAgentSessionError(
+                    "observation_version_stale",
+                    "operation requires the current seat observation version",
+                )
+            return self._submit_locked(
+                binding, version=version, decision=SeatDecision.single(detached),
                 merge_operation=detached,
             )
 
@@ -779,16 +889,16 @@ class RealtimeAgentSession:
             )
         if old_sequence is not None:
             old = self._events[old_sequence]
-            self._events[old_sequence] = replace(
+            self._record_command_event_locked(replace(
                 old, status=CommandStatus.SUPERSEDED,
                 error_code="superseded_by_later_seat_decision",
-            )
+            ))
             self._sync_execution_command_locked(old_sequence)
         event = SeatCommandEvent(
             self._episode(), sequence, side, version, decision,
             self._current_tick, target, CommandStatus.PENDING, now,
         )
-        self._events[sequence] = event
+        self._record_command_event_locked(event)
         self._pending[(target, side)] = sequence
         handles = self._track_command_locked(event)
         return SeatCommandReceipt(
@@ -849,13 +959,13 @@ class RealtimeAgentSession:
                 )
             old_sequence = self._pending.get((target, side))
             if old_sequence is not None:
-                self._events[old_sequence] = replace(
+                self._record_command_event_locked(replace(
                     self._events[old_sequence],
                     status=CommandStatus.SUPERSEDED,
                     error_code="superseded_by_later_seat_decision",
-                )
+                ))
                 self._sync_execution_command_locked(old_sequence)
-            self._events[sequence] = SeatCommandEvent(
+            self._record_command_event_locked(SeatCommandEvent(
                 self._episode(),
                 sequence,
                 side,
@@ -865,7 +975,7 @@ class RealtimeAgentSession:
                 target,
                 CommandStatus.PENDING,
                 received,
-            )
+            ))
             self._pending[(target, side)] = sequence
             handles = self._track_command_locked(self._events[sequence])
             return SeatCommandReceipt(
@@ -1036,18 +1146,18 @@ class RealtimeAgentSession:
             with self._lock:
                 for side, value in rejected.items():
                     sequence, code = value
-                    self._events[sequence] = replace(
+                    self._record_command_event_locked(replace(
                         self._events[sequence],
                         status=CommandStatus.REJECTED_AT_APPLY,
                         error_code=code,
-                    )
+                    ))
                     self._sync_execution_command_locked(sequence)
                 for side, sequence in applied.items():
-                    self._events[sequence] = replace(
+                    self._record_command_event_locked(replace(
                         self._events[sequence],
                         status=CommandStatus.APPLIED,
                         applied_frame_index=advance.last_frame_index,
-                    )
+                    ))
                     self._sync_execution_command_locked(sequence)
                 tracker = self._require_execution_tracker_locked()
                 for side in ("red", "blue"):
@@ -1109,7 +1219,7 @@ class RealtimeAgentSession:
                         else RealtimeCancellationReason.TRUNCATION
                     )
                     self._begin_stopping_locked(reason)
-                return deepcopy(result)
+                return detached_copy(result)
         except BaseException as exc:
             diagnostic = None
             with self._lock:
@@ -1140,7 +1250,7 @@ class RealtimeAgentSession:
     def latest_view(self, binding: RealtimeSeatBinding) -> RealtimeSeatView:
         with self._lock:
             authoritative = self._resolve_binding_locked(binding)
-            return deepcopy(self._latest[authoritative.seat])
+            return detached_copy(self._latest[authoritative.seat])
 
     def controller_snapshot(
         self, binding: RealtimeSeatBinding,
@@ -1158,9 +1268,56 @@ class RealtimeAgentSession:
         with self._lock:
             authoritative = self._resolve_binding_locked(binding)
             return (
-                deepcopy(self._latest[authoritative.seat]),
-                deepcopy(self._controller_views[authoritative.seat]),
+                detached_copy(self._latest[authoritative.seat]),
+                detached_copy(self._controller_views[authoritative.seat]),
             )
+
+    def status_snapshot(self, binding: RealtimeSeatBinding) -> RealtimeStatusSnapshot:
+        """Read coherent side status without copying observations or history.
+
+        Only immutable scalar fields are returned. The observation version,
+        terminal state, lifecycle and command summary share one lock boundary.
+        """
+
+        with self._lock:
+            authoritative = self._resolve_binding_locked(binding)
+            side = authoritative.seat
+            view = self._latest[side]
+            controller = self._controller_views[side]
+            sequence = self._last_event_sequence.get(side)
+            last = None if sequence is None else self._events[sequence]
+            return RealtimeStatusSnapshot(
+                seat=side,
+                frame_index=view.frame_index,
+                sim_time_ms=view.sim_time_ms,
+                tick_index=view.tick_index,
+                observation_version=view.observation_version,
+                terminated=view.terminated,
+                truncated=view.truncated,
+                winner=controller.winner,
+                outcome=controller.outcome,
+                lifecycle=self._lifecycle,
+                pending_command_count=self._pending_event_counts[side],
+                last_command=None if last is None else RealtimeCommandSummary(
+                    status=last.status,
+                    target_tick=last.target_tick,
+                    applied_frame_index=last.applied_frame_index,
+                    error_code=last.error_code,
+                ),
+            )
+
+    def command_event(
+        self, binding: RealtimeSeatBinding, command_sequence: int,
+    ) -> SeatCommandEvent | None:
+        """Return one detached own-seat receipt, never another seat's history."""
+
+        sequence = _nonnegative_int(command_sequence, "command_sequence")
+        with self._lock:
+            authoritative = self._resolve_binding_locked(binding)
+            event = self._events.get(sequence)
+            if event is None or event.seat != authoritative.seat:
+                return None
+            return deepcopy(event)
 
     def operation_capabilities(
         self,
@@ -1173,11 +1330,11 @@ class RealtimeAgentSession:
             authoritative = self._resolve_binding_locked(binding)
             self._require_accepting()
             service = self._advisory_services[authoritative.seat]
-            seat_view = deepcopy(self._latest[authoritative.seat])
+            seat_view = detached_copy(self._latest[authoritative.seat])
             cached = deepcopy(
                 seat_view.capabilities.operation_summary.get("indirect_fire", {})
             )
-            controller_view = deepcopy(
+            controller_view = detached_copy(
                 self._controller_views[authoritative.seat]
             )
         return self._operation_capabilities_from_view(
@@ -1195,8 +1352,8 @@ class RealtimeAgentSession:
             authoritative = self._resolve_binding_locked(binding)
             self._require_accepting()
             service = self._advisory_services[authoritative.seat]
-            seat_view = deepcopy(self._latest[authoritative.seat])
-            controller_view = deepcopy(
+            seat_view = detached_copy(self._latest[authoritative.seat])
+            controller_view = detached_copy(
                 self._controller_views[authoritative.seat]
             )
             cached = deepcopy(
@@ -1245,6 +1402,89 @@ class RealtimeAgentSession:
                     entry["unavailable"] = []
         return result
 
+    def _current_query_views_locked(
+        self,
+        binding: RealtimeSeatBinding,
+        observation_version: int,
+    ) -> tuple[RealtimeSeatView, ControllerView]:
+        """Resolve current, authentic evidence while the caller holds the lock.
+
+        Queries use the frozen controller projection, not live WorldState. An
+        already-running tick may be updating its private state even while this
+        orchestration lock is held.
+        """
+
+        version = _nonnegative_int(observation_version, "observation_version")
+        authoritative = self._resolve_binding_locked(binding)
+        self._require_accepting()
+        latest = self._latest[authoritative.seat]
+        if version != latest.observation_version:
+            raise RealtimeAgentSessionError(
+                "observation_version_stale",
+                "query requires the current seat observation version",
+            )
+        return (
+            detached_copy(latest),
+            detached_copy(self._controller_views[authoritative.seat]),
+        )
+
+    def region_visibility_snapshot(
+        self,
+        binding: RealtimeSeatBinding,
+        *,
+        observation_version: int,
+        actor_id: int,
+        query: RegionVisibilityQuery,
+    ) -> tuple[RealtimeSeatView, RegionVisibilityResult]:
+        """Evaluate hypothetical area visibility against one frozen seat view."""
+
+        actor = _nonnegative_int(actor_id, "actor_id")
+        if not isinstance(query, RegionVisibilityQuery):
+            raise TypeError("query must be a RegionVisibilityQuery")
+        with self._lock:
+            seat_view, controller_view = self._current_query_views_locked(
+                binding, observation_version,
+            )
+            match = self._require_match()
+            result = match.gateway.manager.query_region_visibility_from_projection(
+                match.session_id, seat_view.seat, actor, controller_view, query,
+            )
+            return seat_view, deepcopy(result)
+
+    def weapon_catalog_snapshot(
+        self, binding: RealtimeSeatBinding,
+    ) -> tuple[RealtimeSeatView, dict[str, Any]]:
+        """Read public weapon definitions, never enemy inventories or state."""
+
+        with self._lock:
+            authoritative = self._resolve_binding_locked(binding)
+            self._require_accepting()
+            seat_view = detached_copy(self._latest[authoritative.seat])
+            match = self._require_match()
+            catalog = match.gateway.manager.get_weapon_catalog(match.session_id)
+            return seat_view, deepcopy(catalog)
+
+    def fire_effect_snapshot(
+        self,
+        binding: RealtimeSeatBinding,
+        *,
+        observation_version: int,
+        query: FireEffectQuery,
+    ) -> tuple[RealtimeSeatView, dict[str, Any]]:
+        """Estimate a strike without RNG draws, ammunition changes or queuing."""
+
+        if not isinstance(query, FireEffectQuery):
+            raise TypeError("query must be a FireEffectQuery")
+        with self._lock:
+            seat_view, controller_view = self._current_query_views_locked(
+                binding, observation_version,
+            )
+            match = self._require_match()
+            result = match.gateway.manager.query_fire_effect_from_projection(
+                match.session_id, seat_view.seat, controller_view, query=query,
+            )
+            return seat_view, deepcopy(result)
+
     def tactical_overlay(
         self,
         binding: RealtimeSeatBinding,
@@ -1275,7 +1515,7 @@ class RealtimeAgentSession:
             cached = self._tactical_overlay_cache.get(key)
             if cached is None:
                 match = self._require_match()
-                view = deepcopy(self._controller_views[authoritative.seat])
+                view = detached_copy(self._controller_views[authoritative.seat])
                 try:
                     cached = (
                         match.gateway.manager
@@ -1343,9 +1583,9 @@ class RealtimeAgentSession:
             view.frame_index,
             view.sim_time_ms,
             json_clone(view.observation),
-            deepcopy(view.capabilities),
-            deepcopy(view.decision_semantic),
-            deepcopy(view.action_catalog),
+            detached_copy(view.capabilities),
+            detached_copy(view.decision_semantic),
+            detached_copy(view.action_catalog),
         )
 
     def agent_reset_context(
@@ -1414,9 +1654,7 @@ class RealtimeAgentSession:
             RealtimeCancellationReason.USER_STOP
         ),
     ) -> None:
-        if timeout_seconds is not None:
-            if isinstance(timeout_seconds, bool) or timeout_seconds <= 0:
-                raise ValueError("timeout_seconds must be positive or None")
+        timeout_seconds = validated_timeout(timeout_seconds, allow_none=True)
         self.stop_accepting(cancellation_reason)
         started = monotonic()
         with self._lock:
@@ -1691,7 +1929,7 @@ class RealtimeAgentSession:
             recent_start = count - len(self._recent_ticks)
             if start >= recent_start:
                 offset = start - recent_start
-                return deepcopy(tuple(self._recent_ticks)[offset:])
+                return detached_copy(tuple(self._recent_ticks)[offset:])
             return tuple(
                 self._load_full_tick_locked(index)
                 for index in range(start, count)
@@ -1931,6 +2169,27 @@ class RealtimeAgentSession:
             else self._current_tick + 1
         )
 
+    def _record_command_event_locked(self, event: SeatCommandEvent) -> None:
+        """Update the retained command ledger and its side summaries together.
+
+        Pending includes commands frozen by an in-flight tick, not just the
+        admission queue. Every transition must pass through this method while
+        holding ``_lock``; the full event history remains unchanged for replay.
+        """
+
+        previous = self._events.get(event.command_sequence)
+        if previous is not None:
+            if previous.seat != event.seat:
+                raise AssertionError("command sequence cannot change seat")
+            if previous.status is CommandStatus.PENDING:
+                self._pending_event_counts[event.seat] -= 1
+        self._events[event.command_sequence] = event
+        if event.status is CommandStatus.PENDING:
+            self._pending_event_counts[event.seat] += 1
+        last = self._last_event_sequence.get(event.seat, -1)
+        if event.command_sequence > last:
+            self._last_event_sequence[event.seat] = event.command_sequence
+
     def _reject_at_submit_locked(
         self,
         sequence: int,
@@ -1941,11 +2200,11 @@ class RealtimeAgentSession:
         target_tick: int,
         code: str,
     ) -> SeatCommandReceipt:
-        self._events[sequence] = SeatCommandEvent(
+        self._record_command_event_locked(SeatCommandEvent(
             self._episode(), sequence, side, version, decision,
             self._current_tick, target_tick, CommandStatus.REJECTED_AT_SUBMIT,
             received_ns, error_code=code,
-        )
+        ))
         return SeatCommandReceipt(
             sequence, side, False, None, CommandStatus.REJECTED_AT_SUBMIT, code,
         )
@@ -2037,9 +2296,9 @@ class RealtimeAgentSession:
         for sequence in sequences:
             event = self._events.get(sequence)
             if event is not None and event.status is CommandStatus.PENDING:
-                self._events[sequence] = replace(
+                self._record_command_event_locked(replace(
                     event, status=status, error_code=code
-                )
+                ))
                 self._sync_execution_command_locked(sequence)
 
     def _cancel_pending_locked(
@@ -2049,11 +2308,11 @@ class RealtimeAgentSession:
         for sequence in tuple(self._pending.values()):
             event = self._events[sequence]
             if event.status is CommandStatus.PENDING:
-                self._events[sequence] = replace(
+                self._record_command_event_locked(replace(
                     event,
                     status=status,
                     error_code=code,
-                )
+                ))
                 self._sync_execution_command_locked(sequence)
         self._pending.clear()
 

@@ -1,0 +1,7 @@
+{
+  "schema_version": "native-objective-capture-policy/1.0",
+  "policy_id": "native-objective-capture",
+  "policy_version": "3.0.0",
+  "mode": "EXPLICIT_CENTER_AND_MAP_NEIGHBORS",
+  "description": "Explicit CAPTURE by stopped ground units after all movement and posture transitions complete, in the objective hex or an existing map neighbor. Enemy ground presence contests regardless of movement readiness."
+}

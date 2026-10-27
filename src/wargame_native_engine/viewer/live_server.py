@@ -12,13 +12,16 @@ from urllib.parse import unquote, urlsplit
 from wargame_native_engine.gateway import CommandGateway, CommandGatewayError
 from wargame_native_engine.viewer.live_control import controller_view_record
 from wargame_native_engine.viewer.static_resources import (
+    VIEWER_CONTENT_SECURITY_POLICY,
     load_symbol_static_resource,
 )
 
 
 _STATIC_ROOT = Path(__file__).with_name("static")
 _STATIC_FILES = {
+    "/static/viewer_urls.js": ("viewer_urls.js", "text/javascript; charset=utf-8"),
     "/": ("live_index.html", "text/html; charset=utf-8"),
+    "/static/unit_radial_actions.js": ("unit_radial_actions.js", "text/javascript; charset=utf-8"),
     "/static/map_renderer.js": ("map_renderer.js", "text/javascript; charset=utf-8"),
     "/static/unit_symbol_renderer.js": ("unit_symbol_renderer.js", "text/javascript; charset=utf-8"),
     "/static/unit_symbol_resolver.js": ("unit_symbol_resolver.js", "text/javascript; charset=utf-8"),
@@ -245,7 +248,7 @@ class LiveControlRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header(
             "Content-Security-Policy",
-                "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' blob:",
+                VIEWER_CONTENT_SECURITY_POLICY,
         )
         self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()

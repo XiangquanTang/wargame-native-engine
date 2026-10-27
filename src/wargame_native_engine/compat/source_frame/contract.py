@@ -3,13 +3,22 @@ from collections.abc import Mapping
 
 LEGACY_SOURCE_CONTRACT = "source-frame-compat/1.0"
 CURRENT_SOURCE_CONTRACT = "source-frame-compat/1.1"
+ANALYSIS_SOURCE_CONTRACT = "source-frame-compat/1.2"
+NATIVE_ANALYSIS_FACTS_SCHEMA_VERSION = "native-analysis-facts/1.0"
 SOURCE_CONTRACT_KEY = "source_frame_compatibility_version"
 
 
 def require_source_contract(value: object) -> str:
-    if value not in (LEGACY_SOURCE_CONTRACT, CURRENT_SOURCE_CONTRACT):
+    if value not in (
+        LEGACY_SOURCE_CONTRACT, CURRENT_SOURCE_CONTRACT, ANALYSIS_SOURCE_CONTRACT,
+    ):
         raise ValueError(f"unsupported Source projection contract: {value!r}")
     return str(value)
+
+
+def is_dynamic_source_contract(value: object) -> bool:
+    """Whether the declared projection uses current Native state semantics."""
+    return value in (CURRENT_SOURCE_CONTRACT, ANALYSIS_SOURCE_CONTRACT)
 
 
 def source_contract_from_manifest(manifest: Mapping) -> str:

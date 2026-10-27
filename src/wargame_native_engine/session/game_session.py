@@ -4,11 +4,15 @@ from typing import Mapping, Sequence
 
 from wargame_native_engine.agents.protocol import AgentAction, AgentStepContext
 from wargame_native_engine.backends.protocol import EngineBackend
+from wargame_native_engine.adjudication.fire_effect_query import FireEffectQuery
 from wargame_native_engine.core.action import EngineAction, ValidAction
 from wargame_native_engine.core.fire_capability import IndirectFireCapability
 from wargame_native_engine.core.observation import SideObservation
-from wargame_native_engine.core.result import GameResult, StepResult
+from wargame_native_engine.core.result import GameResult, GameStatus, StepResult
 from wargame_native_engine.core.tactical_overlay import UnitTacticalOverlay
+from wargame_native_engine.core.region_visibility import (
+    RegionVisibilityQuery, RegionVisibilityResult,
+)
 from wargame_native_engine.core.world import Stage, WorldState
 from wargame_native_engine.io.serialization import canonical_hash
 from wargame_native_engine.movement.models import MovementMode, RoutePlan
@@ -73,6 +77,16 @@ class GameSession:
         self._require_active()
         return self.backend.plan_move(
             side, unit_id, destination_hex, movement_mode
+        )
+
+    def query_region_visibility_from_projection(
+        self, side: str, actor_id: int,
+        observation: Mapping[str, object], source_frame: Mapping[str, object],
+        query: RegionVisibilityQuery,
+    ) -> RegionVisibilityResult:
+        self._require_active()
+        return self.backend.query_region_visibility_from_projection(
+            side, actor_id, observation, source_frame, query
         )
 
     def query_unit_tactical_overlay(
@@ -151,25 +165,43 @@ class GameSession:
         self._require_active()
         return self.backend.own_weapon_inventory(side)
 
+    def get_weapon_catalog(self) -> Mapping[str, object]:
+        self._require_active()
+        return self.backend.get_weapon_catalog()
+
+    def query_fire_effect_from_projection(
+        self, side: str, observation: Mapping[str, object],
+        source_frame: Mapping[str, object],
+        valid_actions: Sequence[Mapping[str, object]],
+        own_weapon_inventory: Sequence[Mapping[str, object]],
+        *, query: FireEffectQuery,
+    ) -> Mapping[str, object]:
+        self._require_active()
+        return self.backend.query_fire_effect_from_projection(
+            side, observation, source_frame, valid_actions,
+            own_weapon_inventory, query=query,
+        )
+
     def direct_fire_intent_action(
-        self, side: str, actor_id: int, weapon_id: int, target_id: int,
+        self, side: str, actor_id: int, weapon_id: int,
+        target_id: int | None = None, *, target_hex: int | None = None,
     ) -> EngineAction:
         """Build a side-authorized intent without pre-adjudicating rules."""
 
         self._require_active()
         return self.backend.direct_fire_intent_action(
-            side, actor_id, weapon_id, target_id,
+            side, actor_id, weapon_id, target_id, target_hex=target_hex,
         )
 
     def indirect_fire_action(
         self,
         capability: IndirectFireCapability,
-        planned_hex: int,
+        planned_hex: int, *, target_id: int | None = None,
     ) -> EngineAction:
         """Build one Engine-validated explicit FIRE/INDIRECT action."""
 
         self._require_active()
-        return self.backend.indirect_fire_action(capability, planned_hex)
+        return self.backend.indirect_fire_action(capability, planned_hex, target_id=target_id)
 
     def step(self, action_batch: Mapping[
             str, AgentAction | EngineAction | None] | Sequence[EngineAction], *,
@@ -225,6 +257,24 @@ class GameSession:
     def is_terminal(self) -> bool:
         self._require_active()
         return self.backend.is_terminal()
+
+    def game_status(self) -> GameStatus:
+        """Read lifecycle status, retaining compatibility with older backends.
+
+        ``game_status`` is an optional backend hook, not a new requirement on
+        EngineBackend. Backends without it retain their authoritative result.
+        """
+        self._require_active(allow_closed=True)
+        # A custom session may override result independently of its backend.
+        # Inherited status must preserve that existing authority boundary.
+        if type(self) is not GameSession:
+            return GameStatus.from_result(self.result())
+        query = getattr(self.backend, "game_status", None)
+        value = (query() if callable(query)
+                 else GameStatus.from_result(self.result()))
+        if type(value) is not GameStatus:
+            raise TypeError("backend game_status must return an exact GameStatus")
+        return value
 
     def result(self) -> GameResult:
         self._require_active(allow_closed=True)

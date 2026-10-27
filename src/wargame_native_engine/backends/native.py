@@ -3,12 +3,16 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 from pathlib import Path
 
+from wargame_native_engine.adjudication.fire_effect_query import FireEffectQuery
 from wargame_native_engine.core.action import EngineAction, ValidAction
 from wargame_native_engine.core.engine import NativeEngine
 from wargame_native_engine.core.fire_capability import IndirectFireCapability
 from wargame_native_engine.core.observation import SideObservation
-from wargame_native_engine.core.result import GameResult, StepResult
+from wargame_native_engine.core.result import GameResult, GameStatus, StepResult
 from wargame_native_engine.core.tactical_overlay import UnitTacticalOverlay
+from wargame_native_engine.core.region_visibility import (
+    RegionVisibilityQuery, RegionVisibilityResult,
+)
 from wargame_native_engine.core.world import WorldState
 from wargame_native_engine.io.scenario import NativeScenario
 from wargame_native_engine.movement.models import MovementMode, RoutePlan
@@ -87,11 +91,27 @@ class NativeEngineBackend:
     ) -> tuple[Mapping[str, object], ...]:
         return self.engine.own_weapon_inventory(side)
 
+    def get_weapon_catalog(self) -> Mapping[str, object]:
+        return self.engine.get_weapon_catalog()
+
+    def query_fire_effect_from_projection(
+        self, side: str, observation: Mapping[str, object],
+        source_frame: Mapping[str, object],
+        valid_actions: Sequence[Mapping[str, object]],
+        own_weapon_inventory: Sequence[Mapping[str, object]],
+        *, query: FireEffectQuery,
+    ) -> Mapping[str, object]:
+        return self.engine.query_fire_effect_from_projection(
+            side, observation, source_frame, valid_actions,
+            own_weapon_inventory, query=query,
+        )
+
     def direct_fire_intent_action(
-        self, side: str, actor_id: int, weapon_id: int, target_id: int,
+        self, side: str, actor_id: int, weapon_id: int,
+        target_id: int | None = None, *, target_hex: int | None = None,
     ) -> EngineAction:
         return self.engine.direct_fire_intent_action(
-            side, actor_id, weapon_id, target_id,
+            side, actor_id, weapon_id, target_id, target_hex=target_hex,
         )
 
     def valid_actions(self, side: str) -> tuple[ValidAction, ...]:
@@ -102,6 +122,15 @@ class NativeEngineBackend:
                   ) -> RoutePlan:
         return self.engine.plan_move(
             side, unit_id, destination_hex, movement_mode
+        )
+
+    def query_region_visibility_from_projection(
+        self, side: str, actor_id: int,
+        observation: Mapping[str, object], source_frame: Mapping[str, object],
+        query: RegionVisibilityQuery,
+    ) -> RegionVisibilityResult:
+        return self.engine.query_region_visibility_from_projection(
+            side, actor_id, observation, source_frame, query
         )
 
     def query_unit_tactical_overlay(
@@ -163,9 +192,9 @@ class NativeEngineBackend:
     def indirect_fire_action(
         self,
         capability: IndirectFireCapability,
-        planned_hex: int,
+        planned_hex: int, *, target_id: int | None = None,
     ) -> EngineAction:
-        return self.engine.indirect_fire_action(capability, planned_hex)
+        return self.engine.indirect_fire_action(capability, planned_hex, target_id=target_id)
 
     def step(self, actions: Mapping[str, EngineAction | None] | Sequence[EngineAction],
              *, delta_time_seconds: int | float | None = None,
@@ -182,6 +211,13 @@ class NativeEngineBackend:
 
     def is_terminal(self) -> bool:
         return self.engine.is_terminal()
+
+    def game_status(self) -> GameStatus:
+        # A subclass may customize result semantics. Keep its existing result
+        # contract unless it explicitly supplies its own lightweight query.
+        if type(self) is NativeEngineBackend and type(self.engine) is NativeEngine:
+            return self.engine.game_status()
+        return GameStatus.from_result(self.result())
 
     def result(self) -> GameResult:
         return self.engine.result()

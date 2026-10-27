@@ -9,6 +9,7 @@ from wargame_native_engine.adjudication import (
     AdjudicationTableSet, DiceRoller, DirectFireAdjudicator,
     DirectFireRequest, WeaponProfile,
 )
+from wargame_native_engine.adjudication.request import fire_elevation_level_difference
 from wargame_native_engine.adjudication.replay import (
     direct_fire_request_to_dict, write_direct_fire_replay,
 )
@@ -66,7 +67,11 @@ def main(argv: list[str] | None = None) -> int:
                                               float(item["elevation"]),
                                               str(item.get("terrain", "OPEN")))
                  for item in scenario["map"]["cells"]}
-        profile = HexMapProfile(cells)
+        profile = HexMapProfile(
+            cells,
+            elevation_kind=scenario["map"].get("elevation_kind", "LEVEL"),
+            elevation_unit_m=scenario["map"].get("elevation_unit_m"),
+        )
         attacker_hex = int(attacker.raw_attributes["hex_id"])
         target_hex = int(target.raw_attributes["hex_id"])
         visibility = evaluate_visibility(
@@ -87,11 +92,16 @@ def main(argv: list[str] | None = None) -> int:
             target_armor=ArmorClass(str(target.raw_attributes.get("armor_class", "NONE"))),
             ammunition_before=ammo.get(weapon.ammunition_key, 0),
             weapon_cooldown_before=int(attacker.raw_attributes.get("weapon_cooldown", 0)),
-            weapon_unfolded=bool(attacker.raw_attributes.get("weapon_unfolded", True)),
-            elevation_difference=int(profile.cell(target_hex).elevation
-                                     - profile.cell(attacker_hex).elevation),
+            weapon_unfolded=bool(attacker.raw_attributes.get(
+                "weapon_unfolded", attacker.weapon_unfolded)),
+            weapon_locked=bool(attacker.raw_attributes.get(
+                "weapon_locked", attacker.weapon_locked)),
+            locked_weapon_id=attacker.locked_weapon_id,
+            attacker_hovering=attacker.state not in {"MOVING", "MARCHING"},
+            elevation_difference=fire_elevation_level_difference(
+                profile, attacker_hex, target_hex, distance=visibility.distance, weapon=weapon),
             attacker_suppressed=attacker.state == "SUPPRESSED",
-            attacker_moving=attacker.state == "MOVING",
+            attacker_moving=attacker.state in {"MOVING", "MARCHING"},
             target_terrain=profile.cell(target_hex).terrain,
             target_concealed=target.concealed,
             target_moving=target.state == "MOVING",

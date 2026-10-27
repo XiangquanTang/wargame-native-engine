@@ -18,6 +18,7 @@ from wargame_native_engine._framed_history import (
 from wargame_native_engine.analysis.analyzer import (
     EightFactorAnalyzer,
     GreenFrameAnalysisInput,
+    ReplayAnalyzer,
 )
 from wargame_native_engine.analysis.jsonl import analysis_frames_to_jsonl
 from wargame_native_engine.analysis.models import AnalysisTimeline, FrameAnalysis
@@ -69,7 +70,7 @@ class LiveAnalyzedSession:
         self,
         environment: SourceCompatibleEnvironment,
         *,
-        analyzer: EightFactorAnalyzer | None = None,
+        analyzer: ReplayAnalyzer | None = None,
         retain_update_timeline: bool = True,
         retain_frame_analyses: bool = True,
     ) -> None:

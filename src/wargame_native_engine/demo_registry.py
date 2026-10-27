@@ -13,6 +13,14 @@ DEMO_REGISTRY_SCHEMA = "native-demo-registry/v2"
 LEGACY_DEMO_REGISTRY_SCHEMA = "native-demo-registry/1.0"
 DEMO_EXPECTED_SCHEMA = "native-demo-expected/1.0"
 
+# Accepted identifiers are a compatibility vocabulary, not a claim that a
+# corresponding demo/certification is bundled. Keep external v2 catalogs
+# readable when this distribution ships an empty optional capability catalog.
+_LEGACY_CAPABILITY_IDS = (
+    "boarding", "concealment", "direct_fire", "drone", "guided_fire",
+    "indirect_fire", "loitering_munition", "objective_control", "visibility",
+)
+
 
 class DemoRegistryError(ValueError):
     """A demo catalog or one of its referenced contracts is invalid."""
@@ -165,8 +173,15 @@ class DemoRegistry:
 
 def load_default_demo_registry() -> DemoRegistry:
     repository_root = Path(__file__).resolve().parents[2]
+    catalog = repository_root / "examples/demos/registry.json"
+    if not catalog.is_file():
+        raise DemoRegistryError(
+            "optional default demo library is not included in this release; "
+            "use examples/maps/catalog.json for shipped scenarios, or load "
+            "an explicitly supplied demo registry"
+        )
     return DemoRegistry.load(
-        repository_root / "examples/demos/registry.json",
+        catalog,
         known_capability_ids=_default_known_capability_ids(),
     )
 
@@ -180,11 +195,12 @@ def _default_known_capability_ids() -> tuple[str, ...]:
     capabilities = capability_record.get("capabilities")
     if not isinstance(capabilities, list):
         raise DemoRegistryError("default capability registry lacks capabilities")
-    return tuple(
+    known = tuple(
         _text(value.get("capability_id"), "capability_id")
         for value in capabilities
         if isinstance(value, Mapping)
     )
+    return known if capabilities else _LEGACY_CAPABILITY_IDS
 
 
 def _descriptor(

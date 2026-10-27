@@ -69,3 +69,24 @@ class GameResult:
                            "ruleset_version": self.ruleset_version,
                            "ruleset_hash": self.ruleset_hash,
                            "world_hash": self.world_hash})
+
+
+@dataclass(frozen=True, slots=True)
+class GameStatus:
+    """Small authoritative lifecycle projection, without evidence hashing.
+
+    Use ``GameResult`` when world hashes, counters and provenance are needed.
+    Status reads never cache state or replace the full result/replay contract.
+    """
+
+    terminal: bool
+    truncated: bool
+    winner: str | None
+    outcome: str
+    final_stage: Stage
+
+    @classmethod
+    def from_result(cls, result: GameResult) -> "GameStatus":
+        """Compatibility adapter for backends without a lightweight query."""
+        return cls(result.terminal, result.truncated, result.winner,
+                   result.outcome, result.final_stage)

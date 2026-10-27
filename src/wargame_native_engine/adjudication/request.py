@@ -27,6 +27,7 @@ class WeaponProfile:
     ammunition_key: str | None = "0"
     cooldown_ticks: int | None = None
     requires_unfolded: bool = True
+    # Ordinary DIRECT also requires a completed weapon lock while travelling.
     can_fire_while_moving: bool = False
     supported_fire_modes: frozenset[FireMode] = DIRECT_ONLY_FIRE_MODES
 
@@ -60,7 +61,8 @@ class DirectFireRequest:
     ammunition_before: int | None
     weapon_cooldown_before: int = 0
     weapon_unfolded: bool = True
-    elevation_difference: int = 0
+    # None means a DIRECT overshoot: no firing table is applicable.
+    elevation_difference: int | None = 0
     attacker_suppressed: bool = False
     attacker_moving: bool = False
     target_terrain: str = "OPEN"
@@ -77,6 +79,44 @@ class DirectFireRequest:
     resource_policy: DirectFireResourcePolicy = (
         DirectFireResourcePolicy.AMMUNITION_KEY
     )
+    fire_mode: FireMode = FireMode.DIRECT
+    # Appended for positional-constructor compatibility; sealed into replays.
+    weapon_locked: bool = False
+    locked_weapon_id: int | None = None
+
+    def __post_init__(self) -> None:
+        if (self.elevation_difference is None and self.permits_out_of_range_attempt
+                and self.distance > self.weapon.maximum_range):
+            return
+        if isinstance(self.elevation_difference, bool) or not isinstance(self.elevation_difference, int):
+            raise ValueError("elevation_difference must be an integer elevation-level difference")
+
+    @property
+    def permits_out_of_range_attempt(self) -> bool:
+        """Only ordinary DIRECT ammunition shots may be wasted beyond range."""
+        return (self.fire_mode is FireMode.DIRECT
+                and self.resource_policy is DirectFireResourcePolicy.AMMUNITION_KEY)
+
+
+def fire_elevation_level_difference(
+    map_profile: Any, shooter_hex: int, target_hex: int, *,
+    distance: int, weapon: WeaponProfile,
+    fire_mode: FireMode = FireMode.DIRECT,
+    resource_policy: DirectFireResourcePolicy = DirectFireResourcePolicy.AMMUNITION_KEY,
+) -> int | None:
+    """Exact grades; an ordinary overshoot never requires an applicable table.
+
+    Preserve grade evidence when defined. If normalization is unsupported, None
+    explicitly records that the overshoot resolver does not consult elevation.
+    """
+    try:
+        return map_profile.elevation_level_difference(shooter_hex, target_hex)
+    except ValueError:
+        if (fire_mode is FireMode.DIRECT
+                and resource_policy is DirectFireResourcePolicy.AMMUNITION_KEY
+                and distance > weapon.maximum_range):
+            return None
+        raise
 
 
 @dataclass(frozen=True, slots=True)

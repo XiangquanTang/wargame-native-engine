@@ -7,21 +7,14 @@ from typing import Any
 
 from wargame_native_engine.gateway import ControllerView
 from wargame_native_engine.io.scenario import NativeScenario
-
-
-_TERRAIN_NAMES = {
-    0: "open",
-    1: "forest",
-    2: "settlement",
-    3: "soft_ground",
-    4: "water",
-}
+from wargame_native_engine.viewer.terrain_display import terrain_display_semantic
 
 
 def native_scenario_map_record(scenario: NativeScenario) -> dict[str, object]:
     """Project immutable Native map facts into the existing map renderer."""
 
     cells = []
+    roadblocks = frozenset(scenario.map.roadblocks)
     for cell in scenario.map.hexes:
         row, column = divmod(cell.hex_id, 100)
         terrain_code = cell.terrain if type(cell.terrain) is int else None
@@ -37,7 +30,16 @@ def native_scenario_map_record(scenario: NativeScenario) -> dict[str, object]:
                 else None
             ),
             "terrain_code": terrain_code,
-            "terrain_semantic": _TERRAIN_NAMES.get(terrain_code, "unknown"),
+            "terrain_semantic": terrain_display_semantic(
+                cell.terrain, allow_native_strings=True,
+            ),
+            # Preserve the legacy numeric payload; retain a raw value only
+            # when terrain_code does not already represent it.
+            **({"terrain_source": cell.terrain}
+               if terrain_code is None and cell.terrain is not None else {}),
+            # A static roadblock is an overlay, not a replacement for forest,
+            # settlement or any other underlying terrain fact.
+            **({"roadblock": True} if cell.hex_id in roadblocks else {}),
             "roads": list(cell.roads),
             "rivers": list(cell.rivers),
         })
@@ -90,6 +92,8 @@ def native_scenario_map_record(scenario: NativeScenario) -> dict[str, object]:
             "max_column": max_column,
         },
         "hex_size": 18.0,
+        "elevation_kind": scenario.map.elevation_kind,
+        "elevation_unit_m": scenario.map.elevation_unit_m,
         "elevation": {
             "mode": "episode" if elevations else "unavailable",
             "minimum": min(elevations) if elevations else None,
@@ -244,6 +248,9 @@ def _viewer_unit(
                 raw_progress, bool
             ):
                 movement_progress = max(0.0, min(1.0, float(raw_progress)))
+    extra = value.get("extra")
+    native = extra.get("native", {}) if isinstance(extra, Mapping) else {}
+    native = native if isinstance(native, Mapping) else {}
     operator_id = value.get("obj_id")
     return {
         "operator_id": operator_id,
@@ -272,7 +279,9 @@ def _viewer_unit(
         "suppressed": bool(value.get("suppressed", False)),
         "move_state": value.get("move_state"),
         "direction": value.get("direction"),
-        "lose_control": bool(value.get("lose_control", False)),
+        "lose_control": (native["command_lost"]
+                         if type(native.get("command_lost")) is bool
+                         else bool(value.get("lose_control", False))),
         "can_to_move": value.get("can_to_move"),
         "on_board": (
             bool(value.get("on_board", False))

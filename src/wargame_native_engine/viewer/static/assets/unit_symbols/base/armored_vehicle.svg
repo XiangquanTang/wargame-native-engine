@@ -1,3 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
-  <path d="M20 42 H82 L100 61 L82 80 H20 Z" />
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" fill="none" stroke="currentColor" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M20 46 H80 L106 68 V82 H20 Z" fill="currentColor" fill-opacity=".28"/>
+  <path d="M34 46 V32 H65 L80 46 M78 57 H90"/>
+  <circle cx="36" cy="86" r="10" fill="currentColor"/>
+  <circle cx="87" cy="86" r="10" fill="currentColor"/>
 </svg>

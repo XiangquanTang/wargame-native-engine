@@ -16,6 +16,7 @@ from wargame_native_engine.core.observation import (
     ObservedEnemyOperatorObservation,
     SideObservation,
 )
+from wargame_native_engine.io.detached import detached_record
 from wargame_native_engine.io.serialization import canonical_hash, to_json_value
 from wargame_native_engine.projection.operator_lifecycle import (
     OPERATOR_LIFECYCLE_VIEW_SCHEMA_VERSION,
@@ -62,6 +63,7 @@ class ObservedIdentityStatus(str, Enum):
     UNKNOWN = "UNKNOWN"
 
 
+@detached_record
 @dataclass(frozen=True, slots=True)
 class GreenOperatorLifecyclePayload:
     operator_reference: int
@@ -83,6 +85,7 @@ class GreenOperatorLifecyclePayload:
     integrity: IntegrityView
 
 
+@detached_record
 @dataclass(frozen=True, slots=True)
 class OwnOperatorLifecyclePayload:
     operator_reference: int
@@ -101,6 +104,7 @@ class OwnOperatorLifecyclePayload:
     limited_lifecycle: LimitedLifecycleView
 
 
+@detached_record
 @dataclass(frozen=True, slots=True)
 class ObservedEnemyIdentityPayload:
     operator_type: str
@@ -112,18 +116,21 @@ class ObservedEnemyIdentityPayload:
     domain: str
 
 
+@detached_record
 @dataclass(frozen=True, slots=True)
 class ObservedEnemyObservationPayload:
     position: tuple[float, float]
     altitude: float
 
 
+@detached_record
 @dataclass(frozen=True, slots=True)
 class ObservedEnemySurvivalPayload:
     alive: bool
     destroyed: bool
 
 
+@detached_record
 @dataclass(frozen=True, slots=True)
 class ObservedEnemyOperatorLifecyclePayload:
     operator_reference: int
@@ -141,6 +148,7 @@ OperatorLifecyclePerspectivePayload = (
 )
 
 
+@detached_record
 @dataclass(frozen=True, slots=True)
 class OperatorLifecyclePerspectiveEnvelope:
     schema_version: str

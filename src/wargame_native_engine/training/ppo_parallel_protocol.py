@@ -7,6 +7,7 @@ import math
 from typing import Mapping
 
 from wargame_native_engine.io.serialization import canonical_hash
+from wargame_native_engine.training.decision_encoder import DecisionObservationEncoder
 from wargame_native_engine.training.training_seed import TrainingSeedConfig
 
 
@@ -16,7 +17,12 @@ PPO_PARALLEL_WORKER_PROTOCOL_SCHEMA_VERSION = (
 PPO_PARALLEL_WORKER_PROTOCOL_ID = "native-ppo-parallel-worker-protocol"
 PPO_PARALLEL_WORKER_PROTOCOL_VERSION = "1.0.0"
 
+_OBSERVATION_ENCODER = DecisionObservationEncoder()
+_OBSERVATION_WIDTH = _OBSERVATION_ENCODER.observation_space.flat_shape[0]
+
 _PROTOCOL_SPEC = {
+    "observation_encoder_hash": _OBSERVATION_ENCODER.contract_hash,
+    "observation_width": _OBSERVATION_WIDTH,
     "schema_version": PPO_PARALLEL_WORKER_PROTOCOL_SCHEMA_VERSION,
     "protocol_id": PPO_PARALLEL_WORKER_PROTOCOL_ID,
     "protocol_version": PPO_PARALLEL_WORKER_PROTOCOL_VERSION,
@@ -92,10 +98,10 @@ class WorkerDecisionEnvelope:
             "preprocessor_hash", "learner_tensor_hash", "binding_token",
         ):
             _sha256(getattr(self, name), name)
-        if len(self.observation) != 8302 or any(
+        if len(self.observation) != _OBSERVATION_WIDTH or any(
             not math.isfinite(item) for item in self.observation
         ):
-            raise PPOParallelProtocolError("worker observation must be finite [8302]")
+            raise PPOParallelProtocolError(f"worker observation must be finite [{_OBSERVATION_WIDTH}]")
         if len(self.action_mask) != 256 or any(
             type(item) is not bool for item in self.action_mask
         ):

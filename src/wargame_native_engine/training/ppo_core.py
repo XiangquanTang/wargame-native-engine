@@ -131,13 +131,18 @@ class SharedActorCriticMLP(nn.Module):
         config: PPOAlgorithmConfig,
         *,
         initialization_generator,
-        observation_size: int = 8302,
+        observation_size: int | None = None,
     ) -> None:
         super().__init__()
         if not isinstance(config, PPOAlgorithmConfig):
             raise TypeError("config must be PPOAlgorithmConfig")
         if not isinstance(initialization_generator, torch.Generator):
             raise TypeError("initialization_generator must be torch.Generator")
+        if observation_size is None:
+            observation_size = load_learner_observation_preprocessor_spec_for_identity(
+                config.observation_preprocessor.identity_id,
+                config.observation_preprocessor.identity_version,
+            ).output_shape[0]
         self.config_hash = config.content_hash
         self.observation_size = observation_size
         self.action_capacity = config.action_encoder.capacity

@@ -16,7 +16,7 @@
     "ENTER_CONCEALMENT",
     "STOP_MOVE",
     "WEAPON_UNFOLD",
-    "WEAPON_LOCK",
+    "WEAPON_LOCK", "WEAPON_UNLOCK",
     "WAIT",
   ]));
 
@@ -44,7 +44,17 @@
 
   function directFireWeapons(model, unitId) {
     const unit = directFireUnit(model, unitId);
-    return Array.isArray(unit?.weapons) ? unit.weapons : [];
+    const weapons = Array.isArray(unit?.weapons) ? unit.weapons : [];
+    if (Number.isInteger(unit?.locked_weapon_id)) {
+      return weapons.filter((weapon) => weapon.weapon_id === unit.locked_weapon_id);
+    }
+    return unit?.weapon_locked ? [] : weapons;
+  }
+
+  function lockWeapons(model, unitId) {
+    const unit = directFireUnit(model, unitId);
+    const ids = new Set(unit?.lock_weapon_ids || []);
+    return (unit?.weapons || []).filter((weapon) => ids.has(weapon.weapon_id));
   }
 
   function weaponTargetIds(model, unitId, weaponId) {
@@ -149,6 +159,7 @@
     findCapability,
     directFireUnit,
     directFireWeapons,
+    lockWeapons,
     weaponTargetIds,
     weaponSelectableTargetIds,
     weaponEnvelopeHexes,

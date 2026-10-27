@@ -1,72 +1,102 @@
-.live-main { grid-template-columns: minmax(560px, 1.7fr) minmax(320px, .8fr); }
-.command-panel { padding: 15px; display: flex; flex-direction: column; gap: 10px; }
-.command-panel select { width: 100%; min-height: 42px; background: var(--panel-2); color: var(--text); border: 1px solid var(--line); }
-.command-panel button { width: 100%; }
-.unit-detail, .action-preview { margin: 0; max-height: 150px; border: 1px solid var(--line); background: #0e1720; padding: 8px; }
-.action-groups { display: grid; gap: 9px; max-height: 360px; overflow: auto; }
-.action-group { border: 1px solid var(--line); padding: 7px; background: #101a23; }
-.action-group h3 { margin: 0 0 6px; color: var(--gold); font: 600 11px/1.2 ui-monospace, monospace; }
-.action-buttons { display: grid; gap: 5px; }
-.action-button { text-align: left; font-size: 11px; overflow-wrap: anywhere; }
-.action-button.selected { border-color: var(--gold); background: #59471d; }
-.action-button.move { border-left: 3px solid var(--green); }
-.action-button.shoot { border-left: 3px solid var(--red); }
-.action-button.stop_move, .action-button.weapon_lock, .action-button.weapon_unfold { border-left: 3px solid var(--blue); }
-.action-button.wait { border-left: 3px solid var(--muted); }
-.boundary-note { color: var(--muted); font-size: 11px; }
-.status-title { margin-top: 12px; margin-bottom: 0; }
-.observation-panel { grid-column: 1 / -1; padding: 14px; }
-.observation-panel pre { max-height: 300px; }
+/* Operational pages only; replay layout and rendering are unchanged. */
+.live-control-page header { min-height: 62px; padding: 10px 18px; }
+.live-control-page h1 { font-size: 20px; }
+.live-control-page .eyebrow { font-size: 9px; margin-bottom: 3px; }
+.live-main, .product-live-main { grid-template-columns: minmax(0, 1fr) 272px; align-items: start; padding: 10px; gap: 10px; }
+.live-main > .battle-panel { min-height: 0; height: calc(100dvh - 116px); padding: 10px; }
+.live-main .section-title { margin-bottom: 7px; }
+.live-main .section-title p { margin-top: 2px; }
+.live-main .map-tools { gap: 7px; flex-wrap: wrap; margin: 0 0 7px; }
+.live-main .map-tools > span { font-size: 10px; margin-left: auto; }
+.map-stage { position: relative; min-width: 0; min-height: 280px; flex: 1; }
+.live-main #battlefield { display: block; width: 100%; height: 100%; }
+.live-main .hex-info { min-height: 16px; margin-top: 5px; font-size: 10px; }
+.live-main .elevation-legend { margin-top: 5px; font-size: 10px; gap: 4px 8px; }
+.live-main .elevation-colorbar { width: 120px; height: 9px; }
+.live-main .map-fact-legend { margin-top: 4px; font-size: 10px; }
 
-.product-live-main { grid-template-columns: minmax(620px, 1.75fr) minmax(350px, .85fr); }
-.product-command-panel { max-height: calc(100vh - 155px); overflow-y: auto; }
-.product-section { border-bottom: 1px solid var(--line); padding-bottom: 12px; }
-.product-section:last-of-type { border-bottom: 0; }
-.product-section h2 { margin: 0 0 8px; font-size: 14px; }
-.match-summary p { margin: 4px 0; }
-.selection-summary { display: grid; gap: 4px; min-height: 36px; color: var(--muted); }
-.selection-summary strong { color: var(--text); }
-.operation-toolbar { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.operation-toolbar button { display: grid; gap: 3px; min-height: 52px; text-align: left; }
-.operation-toolbar button small { color: var(--muted); font-size: 10px; }
-.operation-toolbar button.active { border-color: var(--gold); background: #59471d; }
-.operation-toolbar button:disabled { opacity: .42; cursor: not-allowed; }
-.tool-instruction { min-height: 34px; margin: 9px 0 0; color: var(--muted); }
-.preview-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
-.preview-counts { color: var(--gold); font-size: 11px; }
-.operation-preview { display: grid; gap: 7px; max-height: 290px; overflow-y: auto; }
-.operation-preview.empty { padding: 12px; border: 1px dashed var(--line); color: var(--muted); }
-.unit-preview { padding: 8px 10px; border: 1px solid var(--line); border-left-width: 4px; background: #101a23; }
-.unit-preview.accepted { border-left-color: var(--green); }
-.unit-preview.rejected { border-left-color: var(--red); }
-.unit-preview p { margin: 4px 0 0; font-size: 11px; }
-.path-summary { color: var(--gold); overflow-wrap: anywhere; }
-.weapon-choices { display: grid; gap: 7px; padding: 9px; border: 1px solid var(--line); }
-.weapon-unit-group { display: grid; gap: 7px; }
-.weapon-unit-group + .weapon-unit-group { border-top: 1px solid var(--line); padding-top: 9px; }
-.weapon-choices label { display: grid; grid-template-columns: minmax(110px, auto) 1fr; align-items: center; }
+/* Compact action rectangle; never anchored to a map unit. */
+.unit-radial-actions { position: absolute; right: 8px; bottom: 8px; display: grid; grid-template-columns: repeat(4, 46px); gap: 6px; max-width: 100%; padding: 8px; border: 1px solid var(--line); border-radius: 6px; background: #101a23f5; z-index: 3; }
+.operation-dock .docked-actions { position: static; align-self: flex-end; flex-shrink: 0; margin-top: 0; }
+.product-command-panel { height: calc(100dvh - 116px); }
+.unit-radial-actions[hidden] { display: none; }
+.unit-radial-actions button { position: static; width: 46px; height: 46px; padding: 0; border-radius: 50%; border: 1px solid #d4b567; color: #f3ebcf; background: #18232bf2; box-shadow: 0 2px 8px #0008; font-size: 13px; pointer-events: auto; }
+.unit-radial-actions button:hover, .unit-radial-actions button.active { background: #6b531c; border-color: #ffe08a; }
+.unit-radial-actions button:focus-visible { outline: 3px solid #fff; outline-offset: 2px; }
+.unit-radial-actions button:disabled { opacity: .45; cursor: wait; }
+
+/* A compact right rail replaces the former full-width bottom dock. */
+.operation-dock { display: flex; flex-direction: column; gap: 10px; min-width: 0; max-height: calc(100dvh - 116px); overflow-y: auto; padding: 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); }
+.operation-dock[hidden], .operation-dock [hidden] { display: none; }
+.operation-dock .product-section { min-width: 0; width: 100%; border: 0; padding: 0; }
+.operation-dock > .product-section > h2, .operation-dock .preview-heading h2 { display: none; }
+.operation-dock .selection-summary { display: flex; flex-wrap: wrap; gap: 4px; align-items: baseline; font-size: 12px; color: var(--muted); }
+.operation-dock .selection-summary strong { color: var(--text); }
+.operation-dock .selection-summary small { font-size: 10px; }
+.operation-dock .tool-instruction { margin: 0; color: var(--gold); font-size: 12px; }
+.operation-dock .operation-preview-section { display: flex; flex-direction: column; gap: 6px; }
+.operation-dock .confirmation-box { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; width: 100%; padding: 8px; border: 1px solid var(--gold); border-radius: 6px; background: #17232c; }
+.operation-dock .confirmation-box[hidden] { display: none; }
+.operation-dock .confirmation-box button { min-width: 0; height: 42px; font-size: 24px; line-height: 1; border-radius: 4px; }
+.operation-dock .confirmation-box .primary, .operation-dock #submit-action { border-color: var(--green); background: #214f38; }
+.operation-dock .confirmation-box .secondary, .operation-dock #cancel-action { background: #29313a; }
+.operation-dock button:disabled { opacity: .45; cursor: default; }
+.operation-dock .preview-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; }
+.operation-dock .preview-counts { color: var(--gold); font-size: 11px; overflow-wrap: anywhere; }
+.operation-dock .operation-preview { display: grid; gap: 5px; max-height: 160px; overflow-y: auto; }
+.operation-dock .operation-preview.empty { color: var(--muted); font-size: 11px; }
+.operation-dock .unit-preview strong { font-size: 11px; }
+.operation-dock .unit-preview p { margin: 2px 0 0; font-size: 11px; overflow-wrap: anywhere; }
+.operation-dock .unit-preview.rejected { color: #ee8a82; }
+.operation-dock .path-summary { color: var(--gold); }
+.operation-dock .partial-confirmation { display: flex; gap: 6px; padding: 5px; border: 1px solid #d99b2b; background: #5a431d55; font-size: 11px; }
+.operation-dock .partial-confirmation[hidden] { display: none; }
+.operation-dock .partial-confirmation input { width: auto; }
+.operation-dock .operation-row { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; width: 100%; }
+.operation-dock > p, #action-preview, #command-status { margin: 0; font-size: 12px; overflow-wrap: anywhere; }
+.operation-dock select { width: 100%; max-width: 100%; background: var(--panel-2); color: var(--text); border: 1px solid var(--line); padding: 6px; }
+
 .direct-fire-panel[hidden] { display: none; }
-.weapon-card { display: grid; grid-template-columns: auto 1fr; gap: 8px; padding: 9px; border: 1px solid var(--line); background: #101a23; color: inherit; text-align: left; }
+.operation-dock .direct-fire-panel .preview-heading h2 { display: block; font-size: 12px; color: var(--muted); margin: 0 0 4px; }
+.weapon-choices { display: grid; gap: 6px; max-height: 38dvh; overflow: auto; min-width: 0; width: 100%; }
+.weapon-unit-group { display: grid; gap: 6px; min-width: 0; }
+.weapon-unit-group + .weapon-unit-group { border-top: 1px solid var(--line); padding-top: 6px; }
+.weapon-card { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px; width: 100%; padding: 7px; border: 1px solid var(--line); background: #101a23; color: inherit; text-align: left; }
 .weapon-card.active { border-color: var(--gold); background: #29261a; }
-.weapon-card .weapon-title { display: block; font-weight: 700; }
-.weapon-card .weapon-facts { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; line-height: 1.45; }
+.weapon-card .weapon-title { display: block; font-weight: 700; font-size: 12px; overflow-wrap: anywhere; }
+.weapon-card .weapon-facts { display: block; margin-top: 3px; color: var(--muted); font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; }
 .weapon-card .weapon-status { color: var(--green); }
-.partial-confirmation { display: flex; gap: 8px; padding: 9px; border: 1px solid #d99b2b; background: #5a431d55; }
-.partial-confirmation input { width: auto; }
-.execute-row { display: grid; grid-template-columns: 1fr 1.6fr; gap: 8px; }
-.execute-row .primary { border-color: var(--green); background: #214f38; }
-.execute-row .secondary { background: #29313a; }
-.advanced-debug { margin-top: 3px; padding: 8px; border: 1px solid var(--line); color: var(--muted); }
-.advanced-debug summary { cursor: pointer; }
-.advanced-debug dl { display: grid; gap: 5px; margin-bottom: 0; }
-.advanced-debug dl div { display: grid; grid-template-columns: 85px 1fr; }
-.advanced-debug dt { color: var(--muted); }
-.advanced-debug dd { margin: 0; color: var(--text); overflow-wrap: anywhere; }
-.product-status-bar { display: flex; gap: 12px; align-items: center; padding: 11px 20px; border-top: 1px solid var(--line); background: #111a22; position: sticky; bottom: 0; z-index: 4; }
+
+.observation-panel[hidden] { display: none; }
+.observation-panel { grid-column: 1 / -1; padding: 8px; }
+.observation-panel pre { max-height: 200px; }
+.operation-debug { color: var(--muted); }
+.operation-debug summary { cursor: pointer; font-size: 11px; }
+.operation-debug pre { max-height: 200px; overflow: auto; }
+.product-status-bar { display: flex; gap: 8px; align-items: center; padding: 7px 12px; border-top: 1px solid var(--line); background: #111a22; font-size: 11px; }
 .product-status-bar strong { color: var(--gold); }
 
-@media (max-width: 900px) {
-  .live-main { grid-template-columns: 1fr; }
-  .observation-panel { grid-column: 1; }
-  .product-command-panel { max-height: none; }
+@media (min-width: 901px) {
+  .live-main:has(> .operation-dock[hidden]) { grid-template-columns: minmax(0, 1fr); }
 }
+@media (max-width: 900px) {
+  .live-main, .product-live-main { grid-template-columns: minmax(0, 1fr); padding: 8px; gap: 8px; }
+  .live-main > .battle-panel { height: 62dvh; min-height: 380px; }
+  .operation-dock { max-height: none; }
+  .product-command-panel { height: auto; }
+  .operation-dock .weapon-choices { max-height: 180px; }
+  .operation-dock .confirmation-box { max-width: 320px; }
+}
+@media (max-width: 600px) {
+  .live-control-page header { padding: 8px 10px; min-height: 56px; gap: 6px; }
+  .live-control-page h1 { font-size: 16px; }
+  .live-control-page .badges { gap: 4px; }
+  .live-control-page .badge { font-size: 9px; padding: 4px 6px; }
+  .live-main .map-tools > span { display: none; }
+  .live-main .coordinate-legend { display: none; }
+}
+
+/* Selected-unit controls stay at the top of the right rail, off the map. */
+.region-controls { display: flex; gap: 6px; justify-content: flex-end; }
+.region-controls button { padding: 6px 8px; font-size: 12px; }
+#overlay-status { color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }

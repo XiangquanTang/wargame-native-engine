@@ -7,11 +7,14 @@ current legal targets remain a separate annotation from ``valid_actions``.
 
 from __future__ import annotations
 
+from wargame_native_engine.weapon_names import weapon_display_name
+
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from typing import Any
 
 from wargame_native_engine.gateway.models import ControllerView
+from wargame_native_engine.visibility.line_of_sight import hex_distance
 from wargame_native_engine.operations.commands import (
     _FrozenActionRecords,
     frozen_action_records,
@@ -37,6 +40,7 @@ _CAPABILITY_ORDER = (
     ("STOP_MOVE", "STOP_MOVE"),
     ("WEAPON_UNFOLD", "WEAPON_UNFOLD"),
     ("WEAPON_LOCK", "WEAPON_LOCK"),
+    ("WEAPON_UNLOCK", "WEAPON_UNLOCK"),
     ("WAIT", "WAIT"),
 )
 
@@ -86,6 +90,12 @@ def build_human_capabilities(
     requested = set(actors)
     controlled = requested.intersection(friendlies)
     visible_enemy_ids = _visible_enemy_ids(view)
+    selectable_enemy_ids = _selectable_enemy_ids(view)
+    enemy_positions = {
+        value["operator_id"]: _observed_hex(value.get("position"))
+        for value in view.observation["visible_enemies"]
+        if isinstance(value, Mapping) and value.get("operator_id") in selectable_enemy_ids
+    }
     source_units = _source_units(view, controlled)
     inventories = _own_weapon_inventories(view, controlled)
     action_records = frozen_action_records(view)
@@ -132,6 +142,14 @@ def build_human_capabilities(
             if isinstance(resource, Mapping)
             and type(resource.get("weapon_id")) is int
         ]
+        actor_hex = source_unit.get("cur_hex")
+        distances = {
+            target_id: hex_distance(actor_hex, target_hex)
+            for target_id, target_hex in enemy_positions.items()
+            if type(actor_hex) is int and type(target_hex) is int
+        }
+        for weapon in weapons:
+            _annotate_target_ranges(weapon, distances)
         direct_fire_units.append({
             "unit_id": actor_id,
             "display_name": str(
@@ -140,6 +158,13 @@ def build_human_capabilities(
             ),
             "operator_key": identity.key,
             "weapons": weapons,
+            "locked_weapon_id": inventory.get("locked_weapon_id") if isinstance(inventory, Mapping) else None,
+            "weapon_locked": bool(inventory.get("weapon_locked")) if isinstance(inventory, Mapping) else False,
+            "lock_weapon_ids": sorted({
+                item["action"]["parameters"]["weapon_id"]
+                for item in action_records.query_records(actor_reference=actor_id, action_type="WEAPON_LOCK")
+                if type(item.get("action", {}).get("parameters", {}).get("weapon_id")) is int
+            }),
         })
 
     guided_fire_options = _legal_guided_fire_options(
@@ -225,7 +250,6 @@ def build_human_capabilities(
         and bool(direct_fire_units)
         and len(direct_fire_units) == len(controlled)
         and all(bool(value["weapons"]) for value in direct_fire_units)
-        and bool(visible_enemy_ids)
     )
     if direct_intent_available and not any(
         value["capability_type"] == "DIRECT_FIRE" for value in capabilities
@@ -263,7 +287,8 @@ def build_human_capabilities(
         "capabilities": capabilities,
         "direct_fire": {
             "semantics": "complete_carried_weapons_plus_legal_annotations",
-            "selectable_target_ids": sorted(visible_enemy_ids),
+            "selectable_target_ids": sorted(selectable_enemy_ids),
+            "selectable_target_semantics": "observed_living_enemy_intents_not_weapon_legality",
             "units": direct_fire_units,
         },
         "weapon_inventory": {
@@ -277,6 +302,7 @@ def build_human_capabilities(
         "indirect_fire": {
             "semantics": "server_validated_global_hex_target",
             "options": indirect_fire_options,
+            "blocked": _blocked_indirect_fire_options(summary, controlled),
         },
         "boarding": {
             "semantics": "current_frozen_engine_boarding_actions",
@@ -382,6 +408,25 @@ def _legal_boarding_options(
     )
 
 
+def _blocked_indirect_fire_options(
+    summary: Mapping[str, object], controlled: set[int],
+) -> list[dict[str, object]]:
+    """Expose only own selected platforms' authoritative rejection reasons."""
+    indirect = summary.get("indirect_fire")
+    values = indirect.get("capabilities", []) if isinstance(indirect, Mapping) else []
+    return [
+        {
+            "shooter_id": value.get("shooter_id"),
+            "weapon_id": value.get("weapon_id"),
+            "blockers": list(value.get("blockers", [])),
+        }
+        for value in values
+        if isinstance(value, Mapping)
+        and value.get("shooter_id") in controlled
+        and value.get("status") == "BLOCKED"
+    ]
+
+
 def _legal_indirect_fire_options(
     summary: Mapping[str, object],
     controlled: set[int],
@@ -470,6 +515,58 @@ def _visible_enemy_ids(view: ControllerView) -> set[int]:
         and type(value.get("operator_id")) is int
         and value["operator_id"] >= 0
     }
+
+
+
+def _selectable_enemy_ids(view: ControllerView) -> set[int]:
+    """Exclude explicitly destroyed contacts without consulting hidden state.
+
+    Older side snapshots may omit survival fields. Absence is not evidence of
+    destruction; their actual attack still goes through authoritative validation.
+    """
+    return {
+        value["operator_id"]
+        for value in view.observation["visible_enemies"]
+        if isinstance(value, Mapping)
+        and type(value.get("operator_id")) is int
+        and value["operator_id"] >= 0
+        and value.get("alive") is not False
+        and value.get("destroyed") is not True
+        and not any(type(value.get(field)) in (int, float) and value[field] <= 0
+                    for field in ("blood", "health"))
+    }
+
+
+def _observed_hex(position: object) -> int | None:
+    """Only exact, side-visible grid positions support range annotation."""
+    if not isinstance(position, (list, tuple)) or len(position) != 2:
+        return None
+    x, y = position
+    if any(type(value) not in (int, float) or not 0 <= value < 100
+           or value != int(value) for value in (x, y)):
+        return None
+    return int(y) * 100 + int(x)
+
+
+def _annotate_target_ranges(weapon: dict[str, Any], distances: Mapping[int, int]) -> None:
+    """Separate legal commands from in-range targets; never filter authority."""
+    maximum = weapon.get("maximum_range")
+    known = _nonnegative_number(maximum)
+    within, beyond, unknown = [], [], []
+    for target_id in weapon["legal_target_ids"]:
+        distance = distances.get(target_id)
+        if not known or distance is None:
+            unknown.append(target_id)
+        elif distance <= maximum:
+            within.append(target_id)
+        else:
+            beyond.append(target_id)
+    weapon.update({
+        "in_range_target_ids": within,
+        "out_of_range_target_ids": beyond,
+        "range_unknown_target_ids": unknown,
+        "range_annotation_semantics": "side_visible_hex_distance_not_damage_guarantee",
+    })
 
 
 def _source_units(
@@ -584,11 +681,7 @@ def _weapon_record(
     )
     return {
         "weapon_id": weapon_id,
-        "display_name": (
-            descriptor.name
-            if descriptor is not None and descriptor.name != "UNKNOWN"
-            else f"武器 {weapon_id}"
-        ),
+        "display_name": weapon_display_name(weapon_id, descriptor.name if descriptor is not None else None),
         "weapon_class": (
             descriptor.weapon_class if descriptor is not None else "UNKNOWN"
         ),
@@ -670,11 +763,7 @@ def _legal_guided_fire_options(
                     source_units[shooter_id], shooter_id, registry,
                 ),
                 "weapon_id": weapon_id,
-                "weapon_display_name": (
-                    descriptor.name
-                    if descriptor is not None and descriptor.name != "UNKNOWN"
-                    else f"武器 {weapon_id}"
-                ),
+                "weapon_display_name": weapon_display_name(weapon_id, descriptor.name if descriptor is not None else None),
                 "maximum_range": profile.get(
                     "maximum_range",
                     None if descriptor is None else descriptor.maximum_range,

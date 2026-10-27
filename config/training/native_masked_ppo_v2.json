@@ -10,11 +10,11 @@
   "observation_preprocessor_ref": {
     "id": "native-decision-weapon-aware-fixed-scaling",
     "version": "2.0.0",
-    "hash": "8f7e9555fc1a3ec0d25576981c77d348699c95edc31bf0d11ea26e6c670dcdf0"
+    "hash": "42cd92123687ca63df5f1e5ff5bce2d799df55ed5d0214be4d690bcecc56f5eb"
   },
   "action_encoder_ref": {
-    "schema_version": "native-decision-action-encoder/1.0",
-    "hash": "aa08ad27d84634f76d607d7890abe953a911b57b4043b311fdc85dd2813b83dc",
+    "schema_version": "native-decision-action-encoder/1.1",
+    "hash": "56ecf05e49a3632b108ffc1cdebc22852aba458392af1d6832be553d82ba136a",
     "capacity": 256
   },
   "discount_config_ref": {

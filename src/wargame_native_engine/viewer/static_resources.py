@@ -11,6 +11,15 @@ from wargame_native_engine.viewer.operator_registry import (
 )
 
 
+# Only the exact, reviewed mount bootstrap in the three HTML entrypoints may
+# execute inline. Regression tests bind this digest to their actual contents;
+# do not replace it with unsafe-inline when changing the bootstrap.
+VIEWER_CONTENT_SECURITY_POLICY = (
+    "default-src 'self'; "
+    "script-src 'self' 'sha256-9ai124sh/zCHKSnP2Lg0ShtB2mJMgU4h3IAq7idM9+U='; "
+    "style-src 'self'; img-src 'self' blob:; base-uri 'self'"
+)
+
 _SYMBOL_PATH = re.compile(
     r"^/static/assets/unit_symbols/(base|modifiers)/([a-z0-9_]+\.svg)$"
 )

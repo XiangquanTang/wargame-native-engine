@@ -5,7 +5,7 @@ from enum import IntEnum
 from typing import Any, Mapping, Sequence
 
 from wargame_native_engine.compat.source_frame.contract import (
-    CURRENT_SOURCE_CONTRACT, SOURCE_CONTRACT_KEY,
+    ANALYSIS_SOURCE_CONTRACT, SOURCE_CONTRACT_KEY, is_dynamic_source_contract,
 )
 from wargame_native_engine.core.observation import (
     SideObservation,
@@ -153,7 +153,7 @@ class PerspectiveProjector:
                 if source is None:
                     continue
                 projected = self._clean_relations(source, included_ids)
-                if context.public_metadata.get(SOURCE_CONTRACT_KEY) == CURRENT_SOURCE_CONTRACT:
+                if is_dynamic_source_contract(context.public_metadata.get(SOURCE_CONTRACT_KEY)):
                     # OWN inventory was detached by the session read model;
                     # never backfill inventory from GREEN or enemy attributes.
                     inventory = next((item for item in context.own_weapon_inventory
@@ -167,6 +167,18 @@ class PerspectiveProjector:
                             for key in ("status", "unmapped_source_slots") if key in status
                         },
                     }
+                    if isinstance(inventory, Mapping) and type(inventory.get("command_lost")) is bool:
+                        projected["extra"]["native"]["command_lost"] = inventory["command_lost"]
+                    if context.public_metadata.get(SOURCE_CONTRACT_KEY) == ANALYSIS_SOURCE_CONTRACT:
+                        facts = source.get("extra", {}).get("native", {}).get("analysis_facts")
+                        if isinstance(facts, Mapping):
+                            own_facts = json_clone(facts)
+                            boarding = own_facts.get("boarding")
+                            if isinstance(boarding, dict):
+                                for key in ("mounted_on", "passenger_id"):
+                                    if boarding.get(key) is not None and boarding[key] not in included_ids:
+                                        boarding.pop(key, None)
+                            projected["extra"]["native"]["analysis_facts"] = own_facts
             else:
                 projected = self._visible_enemy(visible_by_id[operator_id], perspective)
             if operator_id in friendly_ids and operator_id in passenger_ids:
@@ -424,7 +436,7 @@ class PerspectiveProjector:
             "session_id": context.session_id,
             **self.policy.to_provenance(),
         }
-        if candidates.get(SOURCE_CONTRACT_KEY) == CURRENT_SOURCE_CONTRACT:
+        if is_dynamic_source_contract(candidates.get(SOURCE_CONTRACT_KEY)):
             allowed = self.policy.side_extra_allowlist | {SOURCE_CONTRACT_KEY}
         else:
             allowed = self.policy.side_extra_allowlist

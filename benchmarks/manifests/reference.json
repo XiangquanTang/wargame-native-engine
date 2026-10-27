@@ -1,0 +1,35 @@
+{
+  "schema": "native-agent-benchmark/1.0",
+  "benchmark_id": "public-fixture-reference-v1",
+  "scenarios": [
+    {
+      "id": "movement-tiny",
+      "path": "../../examples/source_movement_scenario.json",
+      "sha256": "2c01e462121205018022b8aa0c82ea2a873305d334ec113d8aaf0f2793c760c6"
+    },
+    {
+      "id": "river-valley",
+      "path": "../../examples/public_river_valley_scenario.json",
+      "sha256": "9748c638a5ef558e0f53125dbf59d6499e872528411bf6dfb8944af276647bc6"
+    },
+    {
+      "id": "close-contact",
+      "path": "../../examples/public_close_combat_scenario.json",
+      "sha256": "16795b2447aed6a422aad3f20949eaf87ffc73c26a8ddd81b29b27465005f989"
+    }
+  ],
+  "seeds": [
+    0,
+    42,
+    100
+  ],
+  "sides": [
+    "red",
+    "blue"
+  ],
+  "max_decisions": 3,
+  "decision_interval_ms": 1000,
+  "training_interface": "decision-v2",
+  "decision_budget_ms": null,
+  "max_trace_bytes": 16777216
+}

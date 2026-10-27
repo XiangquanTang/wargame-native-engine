@@ -31,6 +31,7 @@ OBJECTIVE_CAPTURE_POLICY_ID = "native-objective-capture"
 _POLICY_VARIANTS = {
     "1.0.0": ("v1", LEGACY_CAPTURE_MODE),
     "2.0.0": ("v2", EXPLICIT_CAPTURE_MODE),
+    "3.0.0": ("v3", EXPLICIT_CAPTURE_MODE),
 }
 _POLICY_VERSION_ALIASES = {
     "1": "1.0.0",
@@ -40,6 +41,9 @@ _POLICY_VERSION_ALIASES = {
     "2": "2.0.0",
     "2.0.0": "2.0.0",
     "v2": "2.0.0",
+    "3": "3.0.0",
+    "3.0.0": "3.0.0",
+    "v3": "3.0.0",
 }
 
 
@@ -81,7 +85,7 @@ class ObjectiveCaptureService:
         policy: ObjectiveCapturePolicy,
     ) -> None:
         if policy.mode != EXPLICIT_CAPTURE_MODE:
-            raise ValueError("explicit capture service requires v2 policy")
+            raise ValueError("explicit capture service requires an explicit-region policy")
         self._map = map_reader
         self.policy = policy
         self._region_cache: dict[tuple[int, float, float], tuple[int, ...]] = {}
@@ -151,6 +155,13 @@ class ObjectiveCaptureService:
         actor_reason = ground_presence_error(actor)
         if actor_reason is not None:
             return CaptureAssessment(False, actor_reason, center, region)
+        # Readiness applies to the capturer only. Moving enemies still contest
+        # the region through ground_presence_error below. Keep v2 semantics
+        # intact for its recorded policy identity.
+        if self.policy.policy_version == "3.0.0":
+            readiness_reason = capture_readiness_error(actor)
+            if readiness_reason is not None:
+                return CaptureAssessment(False, readiness_reason, center, region)
         if actor.current_hex not in region:
             return CaptureAssessment(
                 False, "ACTOR_OUTSIDE_CAPTURE_REGION", center, region
@@ -202,8 +213,26 @@ def ground_presence_error(operator: Any) -> str | None:
     return None
 
 
+def capture_readiness_error(operator: Any) -> str | None:
+    """Require stationary, fully transitioned authority, not just a hex hit."""
+
+    state = str(getattr(operator, "state", "")).upper()
+    if bool(getattr(operator, "moving", False)) or state in {"MOVING", "MARCHING"}:
+        return "ACTOR_MOVING"
+    if (
+        getattr(operator, "transition_kind", None) is not None
+        or getattr(operator, "transition_remaining_ms", 0) > 0
+        or getattr(operator, "move_to_stop_remaining_ms", 0) > 0
+        or state in {"TRANSITIONING", "TRANSITIONING_TO_STOP"}
+    ):
+        return "ACTOR_TRANSITION_IN_PROGRESS"
+    if not bool(getattr(operator, "stopped", False)):
+        return "ACTOR_NOT_STOPPED"
+    return None
+
+
 def load_objective_capture_policy(
-    version: str = "2",
+    version: str = "3",
 ) -> ObjectiveCapturePolicy:
     normalized = _POLICY_VERSION_ALIASES.get(str(version))
     if normalized is None:
@@ -275,6 +304,7 @@ __all__ = [
     "ObjectiveCapturePolicy",
     "ObjectiveCaptureService",
     "ground_presence_error",
+    "capture_readiness_error",
     "load_objective_capture_policy",
     "resolve_objective_capture_policy_identity",
 ]

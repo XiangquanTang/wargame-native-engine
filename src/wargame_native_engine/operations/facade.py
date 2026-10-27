@@ -6,7 +6,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
+from wargame_native_engine.analysis.analyzer import EightFactorAnalyzer
+from wargame_native_engine.analysis.native_analyzer import NativeEightFactorAnalyzer
 from wargame_native_engine.backends.native import NativeEngineBackend
+from wargame_native_engine.compat.source_frame.contract import (
+    ANALYSIS_SOURCE_CONTRACT, CURRENT_SOURCE_CONTRACT,
+)
 from wargame_native_engine.compat.source_frame.template import (
     source_frame_template_for_scenario,
 )
@@ -95,6 +100,7 @@ class ScenarioMatchFactory:
     deadline_seconds: float | None = None
     clock: Any | None = None
     objective_capture_policy: str | Mapping[str, Any] | None = None
+    analysis_model: str = "source"
 
     def __post_init__(self) -> None:
         if not isinstance(self.bundle, ScenarioBundle):
@@ -108,6 +114,7 @@ class ScenarioMatchFactory:
             value = getattr(self, field_name)
             if type(value) is not int or value <= 0:
                 raise ValueError(f"{field_name} must be a positive int")
+        _validate_analysis_model(self.analysis_model)
         if type(self.record) is not bool:
             raise TypeError("record must be bool")
 
@@ -127,6 +134,7 @@ class ScenarioMatchFactory:
         deadline_seconds: float | None = None,
         clock: Any | None = None,
         objective_capture_policy: str | Mapping[str, Any] | None = None,
+        analysis_model: str = "source",
     ) -> "ScenarioMatchFactory":
         """Load one explicit public scenario and optional runtime-map asset."""
 
@@ -145,6 +153,7 @@ class ScenarioMatchFactory:
             deadline_seconds=deadline_seconds,
             clock=clock,
             objective_capture_policy=objective_capture_policy,
+            analysis_model=analysis_model,
         )
 
     def __call__(self, seed: int, episode_sequence: int) -> MatchHandle:
@@ -170,6 +179,7 @@ class ScenarioMatchFactory:
             deadline_seconds=self.deadline_seconds,
             clock=self.clock,
             objective_capture_policy=self.objective_capture_policy,
+            analysis_model=self.analysis_model,
         )
 
 
@@ -213,7 +223,9 @@ class WargameFacade:
         deadline_seconds: float | None = None,
         clock: Any | None = None,
         objective_capture_policy: str | Mapping[str, Any] | None = None,
+        analysis_model: str = "source",
     ) -> MatchHandle:
+        _validate_analysis_model(analysis_model)
         bundle = self.catalog.load_scenario(scenario_id)
 
         def environment_factory() -> SourceCompatibleEnvironment:
@@ -225,11 +237,15 @@ class WargameFacade:
                     objective_capture_policy=objective_capture_policy,
                 )),
                 template=source_frame_template_for_scenario(scenario),
+                source_contract=(ANALYSIS_SOURCE_CONTRACT if analysis_model == "native"
+                                 else CURRENT_SOURCE_CONTRACT),
             )
 
         manager = SessionManager(
             environment_factory,
             storage_root=self.storage_root / bundle.scenario_identity.scenario_id,
+            analyzer_factory=(NativeEightFactorAnalyzer if analysis_model == "native"
+                              else EightFactorAnalyzer),
         )
         gateway = CommandGateway(
             manager,
@@ -252,3 +268,8 @@ class WargameFacade:
             red_controller_id,
             blue_controller_id,
         )
+
+
+def _validate_analysis_model(value: str) -> None:
+    if value not in ("source", "native"):
+        raise ValueError("analysis_model must be source or native")

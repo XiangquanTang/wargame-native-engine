@@ -3,7 +3,7 @@
 The old benchmark map helpers persist two useful *data* products:
 
 * ``cost.pickle``: four movement cost-factor matrices;
-* ``*see.npz``: ten static line-of-sight matrices.
+* ``*see.npz``: one to ten static line-of-sight matrices.
 
 Those legacy serialization formats are accepted only by the explicit offline
 converter in this module.  Runtime code consumes the canonical files emitted
@@ -84,6 +84,40 @@ class MapRuntimeDataError(ValueError):
         super().__init__(f"{self.code}:{self.message}")
 
 
+def _visibility_modes(value: object, count: int) -> tuple[int, ...]:
+    """Map physical array channels to canonical height-pair IDs."""
+    if not 1 <= count <= len(VISIBILITY_MODE_RECORDS):
+        raise MapRuntimeDataError("visibility_channel_count", str(count))
+    modes = tuple(range(count)) if value is None else value
+    if (not isinstance(modes, (list, tuple)) or len(modes) != count
+            or any(type(mode) is not int or not 0 <= mode < 10 for mode in modes)
+            or len(set(modes)) != count):
+        raise MapRuntimeDataError("invalid_visibility_modes", repr(value))
+    return tuple(modes)
+
+
+def _mode_records(modes: tuple[int, ...]) -> list[dict[str, object]]:
+    return [{"mode": mode, "first_height_m": VISIBILITY_MODE_RECORDS[mode][1],
+             "second_height_m": VISIBILITY_MODE_RECORDS[mode][2],
+             "name": VISIBILITY_MODE_RECORDS[mode][3]} for mode in modes]
+
+
+def _manifest_modes(record: Mapping[str, Any], count: int | None = None) -> tuple[int, ...]:
+    records = record.get("mode_order")
+    if not isinstance(records, list) or any(not isinstance(row, dict) for row in records):
+        raise MapRuntimeDataError("visibility_manifest_mismatch", "mode_order")
+    modes = _visibility_modes([row.get("mode") for row in records], len(records) if count is None else count)
+    if records != _mode_records(modes):
+        raise MapRuntimeDataError("visibility_manifest_mismatch", "mode_order")
+    return modes
+
+
+def _validate_visibility_shape(shape: tuple[int, ...], rows: int, columns: int) -> None:
+    if (len(shape) != 5 or not 1 <= shape[0] <= 10
+            or shape[1:] != (rows, columns, rows, columns)):
+        raise MapRuntimeDataError("visibility_shape_mismatch", repr(shape))
+
+
 @dataclass(frozen=True, slots=True)
 class PublishedMapRuntimeData:
     output_dir: Path
@@ -148,12 +182,17 @@ class MovementCostLookup:
         return int(mode) in self._modes
 
     @property
+    def mode_order(self) -> tuple[int, ...]:
+        """Available movement channel IDs in stable display order."""
+        return tuple(sorted(self._modes))
+
+    @property
     def edge_count(self) -> int:
         return len(self._factors)
 
 
 class StaticVisibilityLookup:
-    """Disk-backed exact lookup for the ten source static LOS modes."""
+    """Disk-backed exact lookup for a declared subset of canonical LOS modes."""
 
     __slots__ = (
         "map_id",
@@ -164,6 +203,8 @@ class StaticVisibilityLookup:
         "path",
         "shape",
         "data_offset",
+        "mode_order",
+        "_channel_by_mode",
         "_stream",
         "_mapping",
         "_cache",
@@ -181,6 +222,7 @@ class StaticVisibilityLookup:
         path: Path,
         shape: tuple[int, ...],
         data_offset: int,
+        mode_order: tuple[int, ...] | None = None,
     ) -> None:
         self.map_id = str(map_id)
         self.rows = int(rows)
@@ -190,6 +232,9 @@ class StaticVisibilityLookup:
         self.path = Path(path)
         self.shape = tuple(int(item) for item in shape)
         self.data_offset = int(data_offset)
+        _validate_visibility_shape(self.shape, self.rows, self.columns)
+        self.mode_order = _visibility_modes(mode_order, self.shape[0])
+        self._channel_by_mode = MappingProxyType({mode: i for i, mode in enumerate(self.mode_order)})
         self._stream: BinaryIO | None = None
         self._mapping: mmap.mmap | None = None
         self._cache: dict[tuple[int, int, int], bool] = {}
@@ -257,6 +302,10 @@ class StaticVisibilityLookup:
         first_hex: int,
         second_hex: int,
     ) -> bool:
+        if mode not in self._channel_by_mode:
+            raise MapRuntimeDataError("missing_visibility_mode",
+                                      f"map {self.map_id} has no canonical channel {mode}")
+        channel = self._channel_by_mode[mode]
         key = (int(mode), int(first_hex), int(second_hex))
         with self._lock:
             cached = self._cache.get(key)
@@ -265,7 +314,7 @@ class StaticVisibilityLookup:
             first_row, first_col = self._row_col(first_hex)
             second_row, second_col = self._row_col(second_hex)
             flat = (
-                ((((mode * self.rows) + first_row) * self.columns + first_col)
+                ((((channel * self.rows) + first_row) * self.columns + first_col)
                  * self.rows + second_row)
                 * self.columns
                 + second_col
@@ -452,28 +501,18 @@ class MapRuntimeData:
                 "visibility_payload_hash_mismatch",
                 visibility_path.name,
             )
-        header = _read_npy_header(visibility_path.open("rb"))
-        expected_shape = (10, rows, columns, rows, columns)
-        if header.shape != expected_shape:
-            raise MapRuntimeDataError(
-                "visibility_shape_mismatch",
-                f"{header.shape} != {expected_shape}",
-            )
+        with visibility_path.open("rb") as stream:
+            header = _read_npy_header(stream)
+        _validate_visibility_shape(header.shape, rows, columns)
+        expected_shape = header.shape
+        modes = _manifest_modes(visibility_record, header.shape[0])
         expected_size = header.data_offset + math.prod(header.shape)
         if visibility_path.stat().st_size != expected_size:
             raise MapRuntimeDataError(
                 "visibility_payload_size_mismatch",
                 f"{visibility_path.stat().st_size} != {expected_size}",
             )
-        expected_modes = [
-            {
-                "mode": mode,
-                "first_height_m": first,
-                "second_height_m": second,
-                "name": name,
-            }
-            for mode, first, second, name in VISIBILITY_MODE_RECORDS
-        ]
+        expected_modes = _mode_records(modes)
         if (
             visibility_record.get("semantics") != "static_line_of_sight_only"
             or visibility_record.get("mode_order") != expected_modes
@@ -501,6 +540,7 @@ class MapRuntimeData:
             path=visibility_path,
             shape=header.shape,
             data_offset=header.data_offset,
+            mode_order=modes,
         )
         return cls(
             map_id=map_id,
@@ -530,6 +570,7 @@ def publish_map_runtime_data(
     movement_cost_path: str | Path,
     visibility_npz_path: str | Path,
     output_dir: str | Path,
+    visibility_modes: tuple[int, ...] | list[int] | None = None,
 ) -> PublishedMapRuntimeData:
     """Validate legacy data and publish a new canonical runtime directory.
 
@@ -598,9 +639,10 @@ def publish_map_runtime_data(
             _extract_visibility_npy(
                 visibility_source,
                 visibility_output,
-                expected_shape=(10, rows, columns, rows, columns),
+                expected_shape=(None, rows, columns, rows, columns),
             )
         )
+        modes = _visibility_modes(visibility_modes, npy_header.shape[0])
         source_map_sha = _file_sha256(source_map)
         manifest = {
             "schema": MAP_RUNTIME_SCHEMA,
@@ -652,15 +694,7 @@ def publish_map_runtime_data(
                     "data_offset": npy_header.data_offset,
                     "storage": "read_only_memory_mapped_npy",
                 },
-                "mode_order": [
-                    {
-                        "mode": mode,
-                        "first_height_m": first,
-                        "second_height_m": second,
-                        "name": name,
-                    }
-                    for mode, first, second, name in VISIBILITY_MODE_RECORDS
-                ],
+                "mode_order": _mode_records(modes),
                 "semantics": "static_line_of_sight_only",
             },
             "native_rules_equivalence": False,
@@ -669,6 +703,10 @@ def publish_map_runtime_data(
                 "it does not recover or claim old SDK adjudication equivalence"
             ],
         }
+        if visibility_modes is not None or len(modes) != 10:
+            manifest["visibility"]["mapping_provenance"] = (
+                "explicit_configuration" if visibility_modes is not None
+                else "canonical_prefix_convention")
         manifest_payload = _canonical_payload(manifest)
         manifest_path = staging / MANIFEST_FILENAME
         manifest_path.write_bytes(manifest_payload)
@@ -811,7 +849,7 @@ def prepare_map_runtime_data(
             header, source_sha, payload_sha = _extract_visibility_npy(
                 visibility_source,
                 visibility_output,
-                expected_shape=(10, rows, columns, rows, columns),
+                expected_shape=(len(_manifest_modes(visibility_record)), rows, columns, rows, columns),
             )
             expected_source_sha = _sha256_text(
                 visibility_source_record.get("sha256"),
@@ -1067,6 +1105,8 @@ def _load_canonical_movement_costs(
     if not isinstance(raw_edges, list):
         raise MapRuntimeDataError("invalid_movement_edges", "edges must be a list")
     factors: dict[tuple[int, int, int], Fraction] = {}
+    # Fraction is immutable; share equal source ratios within this load only.
+    factor_pool: dict[tuple[int, int], Fraction] = {}
     previous: tuple[int, int, int] | None = None
     for raw in raw_edges:
         if not isinstance(raw, list) or len(raw) != 5:
@@ -1089,7 +1129,11 @@ def _load_canonical_movement_costs(
             )
         if numerator <= 0 or denominator <= 0:
             raise MapRuntimeDataError("invalid_movement_factor", repr(raw))
-        factors[key] = Fraction(numerator, denominator)
+        ratio = (numerator, denominator)
+        factor = factor_pool.get(ratio)
+        if factor is None:
+            factor = factor_pool[ratio] = Fraction(numerator, denominator)
+        factors[key] = factor
         previous = key
     return factors
 
@@ -1121,7 +1165,7 @@ def _extract_visibility_npy(
     source: Path,
     output: Path,
     *,
-    expected_shape: tuple[int, ...],
+    expected_shape: tuple[int | None, ...],
 ) -> tuple[_NpyHeader, str, str]:
     source_hash = hashlib.sha256()
     with source.open("rb") as raw:
@@ -1144,12 +1188,15 @@ def _extract_visibility_npy(
                 )
             with archive.open(info) as probe:
                 header = _read_npy_header(probe)
-            if header.shape != expected_shape:
+            if (len(header.shape) != len(expected_shape)
+                    or any(expected is not None and actual != expected
+                           for actual, expected in zip(header.shape, expected_shape))
+                    or not 1 <= header.shape[0] <= 10):
                 raise MapRuntimeDataError(
                     "visibility_shape_mismatch",
                     f"{header.shape} != {expected_shape}",
                 )
-            expected_size = header.data_offset + math.prod(expected_shape)
+            expected_size = header.data_offset + math.prod(header.shape)
             if info.file_size != expected_size:
                 raise MapRuntimeDataError(
                     "visibility_uncompressed_size_mismatch",

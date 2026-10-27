@@ -16,7 +16,26 @@
   const SELECTED_UNIT_SCREEN_RADIUS = 19;
   const MAX_STACK_SCREEN_SPREAD = 30;
   const UNIT_SYMBOL_SCREEN_SIZE = 34;
-  const SELECTED_UNIT_SYMBOL_SCREEN_SIZE = 40;
+  const SELECTED_UNIT_SCALE = 1.12;
+
+  // Screen-space policy: a full glyph needs roughly one unobstructed cell.
+  // Selection preserves the current level of detail: a 4px overview dot must
+  // never jump to a full-size glyph. Labels use only already-projected identity.
+  function unitDisplayMetrics(hexSize, scale, focused = false) {
+    const spacing = Number.isFinite(hexSize) && hexSize > 0
+      && Number.isFinite(scale) && scale > 0 ? SQRT3 * hexSize * scale : Infinity;
+    const normalSize = Math.max(4, Math.min(UNIT_SYMBOL_SCREEN_SIZE, spacing * 0.72));
+    const symbolSize = normalSize * (focused ? SELECTED_UNIT_SCALE : 1);
+    const radius = symbolSize * 16 / UNIT_SYMBOL_SCREEN_SIZE;
+    return {
+      spacing, symbolSize, radius,
+      showDetails: spacing >= 44,
+      showLabel: focused || spacing >= 44,
+      showGlyph: normalSize >= 12,
+      hitRadius: Math.max(3, radius + Math.min(4, spacing * 0.1)),
+      stackScale: Math.min(1, spacing / 44),
+    };
+  }
 
   function hexToPixel(row, column, hexSize) {
     if (!Number.isInteger(row) || !Number.isInteger(column) || row < 0 || column < 0) {
@@ -123,10 +142,12 @@
     let elevationCount = 0;
     let roadEdgeCount = 0;
     let riverEdgeCount = 0;
+    let roadblockCellCount = 0;
     for (const cell of cells) {
       const semantic = typeof cell.terrain_semantic === "string"
         ? cell.terrain_semantic : "unknown";
       terrainCounts[semantic] = (terrainCounts[semantic] || 0) + 1;
+      if (semantic === "roadblock" || cell.roadblock === true) roadblockCellCount += 1;
       if (typeof cell.elevation === "number" && Number.isFinite(cell.elevation)) {
         elevationCount += 1;
       }
@@ -145,6 +166,7 @@
       terrain_counts: Object.fromEntries(Object.entries(terrainCounts).sort()),
       road_edge_count: roadEdgeCount,
       road_types: Array.from(roadTypes).sort((left, right) => left - right),
+      roadblock_cell_count: roadblockCellCount,
       river_edge_count: riverEdgeCount,
       river_types: Array.from(riverTypes).sort((left, right) => left - right),
     };
@@ -260,6 +282,65 @@
     return TERRAIN_COLORS[Math.round(index * (TERRAIN_COLORS.length - 1) / (levelCount - 1))];
   }
 
+  function elevationLegend(mapData) {
+    const elevation = mapData?.elevation;
+    const minimum = elevation?.minimum;
+    const maximum = elevation?.maximum;
+    const kind = mapData?.elevation_kind;
+    const step = mapData?.elevation_unit_m;
+    const knownStep = typeof step === "number" && Number.isFinite(step) && step > 0;
+    const available = elevation?.mode !== "unavailable"
+      && Number.isFinite(minimum) && Number.isFinite(maximum) && maximum >= minimum;
+    const suffix = kind === "METERS" ? " m" : kind === "LEVEL" ? " 级" : "";
+    const bands = [];
+    if (available) {
+      // Sample the actual map palette. Display bins are not elevation steps.
+      const count = maximum === minimum ? 1 : Number.isInteger(elevation.levels)
+        ? Math.max(2, Math.min(TERRAIN_COLORS.length, elevation.levels)) : 7;
+      for (let index = 0; index < count; index += 1) {
+        const value = minimum + (maximum - minimum) * (index + 0.5) / count;
+        bands.push({
+          color: elevationColor(value, mapData),
+          start: index * 100 / count,
+          end: (index + 1) * 100 / count,
+        });
+      }
+    }
+    return {
+      available,
+      title: suffix ? "高程" : "高程（单位 UNKNOWN）",
+      minimum: available ? `最低 ${minimum}${suffix}` : "高程 UNKNOWN",
+      maximum: available ? `最高 ${maximum}${suffix}` : "",
+      step: knownStep ? `步长 ${step} m${kind === "LEVEL" ? "/级" : ""}` : "步长 UNKNOWN",
+      bands,
+    };
+  }
+
+  function renderElevationLegend(element, mapData) {
+    if (!element) return;
+    const legend = elevationLegend(mapData);
+    const document = element.ownerDocument;
+    const text = (value, className = "") => {
+      const node = document.createElement("span");
+      node.className = className;
+      node.textContent = value;
+      return node;
+    };
+    const children = [text(legend.title), text(legend.minimum)];
+    if (legend.available) {
+      const bar = document.createElement("span");
+      bar.className = "elevation-colorbar";
+      bar.setAttribute("aria-hidden", "true");
+      bar.style.background = legend.bands.length === 1 ? legend.bands[0].color
+        : `linear-gradient(90deg, ${legend.bands.flatMap((band) => [
+          `${band.color} ${band.start}%`, `${band.color} ${band.end}%`,
+        ]).join(", ")})`;
+      children.push(bar, text(legend.maximum));
+    }
+    children.push(text(legend.step), text("坐标：(横,纵)，横=列、纵=行", "coordinate-legend"));
+    element.replaceChildren(...children);
+  }
+
   class MapRenderer {
     constructor(canvas, {
       onUnitSelected = null,
@@ -267,6 +348,7 @@
       onHexHovered = null,
       onHexSelected = null,
       onHexActivated = null,
+      onRender = null,
     } = {}) {
       this.canvas = canvas;
       this.context = canvas.getContext("2d");
@@ -275,6 +357,7 @@
       this.onHexHovered = onHexHovered;
       this.onHexSelected = onHexSelected;
       this.onHexActivated = onHexActivated;
+      this.onRender = onRender;
       this.map = null;
       this.frame = null;
       this.selectedUnitId = null;
@@ -442,6 +525,7 @@
       this._drawActionTargets(context);
       this._drawUnits(context, frame?.viewer_units || []);
       this._drawSelectedHex(context);
+      if (this.onRender) this.onRender(this);
     }
 
     resetView() {
@@ -601,6 +685,8 @@
         position_id: cell?.position_id ?? String(coordinate.row * 100 + coordinate.column),
         terrain_semantic: cell?.terrain_semantic ?? "unknown",
         terrain_code: cell?.terrain_code ?? null,
+        terrain_source: cell?.terrain_source ?? null,
+        roadblock: cell?.roadblock === true,
         terrain_level: cell?.terrain_level ?? null,
         elevation: cell?.elevation ?? null,
         roads: cell?.roads ?? [0, 0, 0, 0, 0, 0],
@@ -625,6 +711,7 @@
     }
 
     _drawMap(context) {
+      this._prepareCoordinateLabels();
       const cells = this.map.cells || [];
       if (cells.length) {
         for (const cell of cells) this._drawCell(context, cell, true);
@@ -670,7 +757,9 @@
       (cell.rivers || []).forEach((riverType, direction) => {
         if (riverType) this._drawRiver(context, cell, direction, riverType);
       });
-      this._drawElevationLabel(context, cell);
+      // Static obstacles remain separate from ground cover and above roads.
+      this._drawRoadblock(context, cell);
+      this._drawCoordinateLabel(context, cell);
     }
 
     _drawUnknownElevation(context, vertices) {
@@ -696,35 +785,189 @@
       context.restore();
     }
 
-    _drawElevationLabel(context, cell) {
-      if (typeof cell.elevation !== "number" || !Number.isFinite(cell.elevation)
-          || this.map.hex_size * this.scale < 24) return;
+    _prepareCoordinateLabels() {
+      // Rebuild for each map draw so frame changes, visibility and movement
+      // cannot leave stale keepouts. Overview rendering does no unit work.
+      this.coordinateLabelUnitBounds = [];
+      if (this.map.hex_size * this.scale < 24) return;
+      const units = (this.frame?.viewer_units || []).filter((unit) => (
+        unit.map_visible !== false && Number.isInteger(unit.row)
+        && Number.isInteger(unit.column) && unit.row >= 0 && unit.column >= 0
+      ));
+      const stackCounts = new Map();
+      for (const unit of units) {
+        const key = `${unit.row}:${unit.column}`;
+        stackCounts.set(key, (stackCounts.get(key) || 0) + 1);
+      }
+      this.coordinateLabelUnitBounds = units.map((unit) => ({
+        ...this._screen(unitDisplayPoint(unit, this.map.hex_size)),
+        clearance: SELECTED_UNIT_SCREEN_RADIUS + 10
+          + stackSpread(stackCounts.get(`${unit.row}:${unit.column}`)),
+      }));
+    }
+
+    _drawCoordinateLabel(context, cell) {
+      const screenRadius = this.map.hex_size * this.scale;
+      if (screenRadius < 24 || !Number.isInteger(cell.row)
+          || !Number.isInteger(cell.column) || cell.row < 0 || cell.column < 0) return;
       const center = this._screen(hexToPixel(cell.row, cell.column, this.map.hex_size));
-      context.fillStyle = "#101010cc";
+      if (this.canvas?.clientWidth > 0 && this.canvas?.clientHeight > 0
+          && (center.x + screenRadius < 0 || center.y + screenRadius < 0
+            || center.x - screenRadius > this.canvas.clientWidth
+            || center.y - screenRadius > this.canvas.clientHeight)) return;
+      // Display (x,y): horizontal x is the source column; vertical y is the
+      // source row. These are zero-based coordinates, not elevation or pos IDs.
+      const label = `(${cell.column},${cell.row})`;
+      // Keep the lower band clear of terrain and flags. Longer coordinates
+      // wait for enough zoom instead of spilling into neighboring hexes.
+      const offsetY = Math.max(14, screenRadius * 0.46);
+      context.save();
       context.font = "9px ui-monospace";
       context.textAlign = "center";
-      context.fillText(String(cell.elevation), center.x, center.y + 3);
+      context.textBaseline = "middle";
+      const halfWidth = context.measureText(label).width / 2 + 1;
+      const halfHeight = 6;
+      if (halfWidth > SQRT3 * screenRadius / 2 - 1
+          || offsetY + halfHeight + halfWidth / SQRT3 > screenRadius - 1) {
+        context.restore();
+        return;
+      }
+      // Units remain the authoritative foreground. Suppress only coordinates
+      // whose lower band intersects a visible unit/stack, including movement.
+      const overlapsUnit = (this.coordinateLabelUnitBounds || []).some((unit) => (
+        Math.abs(unit.x - center.x) <= unit.clearance + halfWidth
+          && Math.abs(unit.y - center.y - offsetY) <= unit.clearance + halfHeight
+      ));
+      if (overlapsUnit) {
+        context.restore();
+        return;
+      }
+      context.lineJoin = "round";
+      context.strokeStyle = "#fff0c2";
+      context.lineWidth = 2;
+      context.strokeText(label, center.x, center.y + offsetY);
+      context.fillStyle = "#101010";
+      context.fillText(label, center.x, center.y + offsetY);
+      context.restore();
     }
 
     _drawTerrainSymbol(context, cell) {
+      const semantic = cell.terrain_semantic;
+      if (!["forest", "settlement", "soft_ground", "small_river"].includes(semantic)) return;
       const center = this._screen(hexToPixel(cell.row, cell.column, this.map.hex_size));
-      const radius = Math.max(1.5, Math.min(5, this.map.hex_size * this.scale * 0.16));
-      if (cell.terrain_semantic === "forest") {
+      // The same compact, cell-relative envelope as the v10 town roofs. No
+      // minimum screen size or fixed offsets: dense overview glyphs never join.
+      const radius = Math.min(5, this.map.hex_size * this.scale * 0.28);
+      if (!(radius > 0)) return;
+      context.save();
+      if (semantic === "forest") {
+        // Restore the v10 three-circle canopy. Normalize its original 1px/2px
+        // offsets to the 5px close-up radius, without a fixed overview minimum.
+        const forestRadius = Math.min(5, this.map.hex_size * this.scale * 0.16);
         context.fillStyle = "#326b35";
-        for (const [dx, dy] of [[-radius, 1], [radius, 2], [0, -radius]]) {
-          context.beginPath(); context.arc(center.x + dx, center.y + dy, radius, 0, Math.PI * 2); context.fill();
+        for (const [dx, dy] of [[-1, 0.2], [1, 0.4], [0, -1]]) {
+          context.beginPath();
+          context.arc(center.x + dx * forestRadius, center.y + dy * forestRadius,
+            forestRadius, 0, Math.PI * 2);
+          context.fill();
         }
-      } else if (cell.terrain_semantic === "settlement") {
-        context.fillStyle = "#72564a";
-        context.fillRect(center.x - radius * 1.3, center.y - radius, radius * 1.2, radius * 1.5);
-        context.fillRect(center.x + radius * 0.2, center.y, radius * 1.2, radius * 1.5);
-      } else if (cell.terrain_semantic === "soft_ground") {
-        context.strokeStyle = "#665d3f";
-        for (const offset of [-radius, 0, radius]) {
-          context.beginPath(); context.moveTo(center.x - radius * 1.5, center.y + offset);
-          context.lineTo(center.x + radius * 1.5, center.y + offset + radius * 0.45); context.stroke();
+      } else if (semantic === "settlement") {
+        // Preserve the v10 compact roofs and palette exactly.
+        context.fillStyle = "#5d4135";
+        context.strokeStyle = "#fff0c2";
+        context.lineWidth = Math.min(1, radius * 0.35);
+        for (const [dx, dy] of [[-1.3, -1], [0.2, 0]]) {
+          const x = center.x + dx * radius;
+          const y = center.y + dy * radius;
+          context.beginPath();
+          context.moveTo(x, y + 1.5 * radius);
+          context.lineTo(x, y + 0.2 * radius);
+          context.lineTo(x + 0.6 * radius, y - 0.5 * radius);
+          context.lineTo(x + 1.2 * radius, y + 0.2 * radius);
+          context.lineTo(x + 1.2 * radius, y + 1.5 * radius);
+          context.closePath();
+          context.fill();
+          context.stroke();
         }
+      } else {
+        context.lineJoin = "round";
+        context.lineCap = "round";
+        context.beginPath();
+        if (semantic === "soft_ground") {
+          // Broken, staggered mud furrows differ from continuous water waves.
+          for (const [dx, dy] of [[-0.12, -0.8], [0.12, 0], [-0.12, 0.8]]) {
+            context.moveTo(center.x + (-1.05 + dx) * radius, center.y + dy * radius);
+            context.lineTo(center.x + (-0.55 + dx) * radius, center.y + (dy + 0.2) * radius);
+            context.lineTo(center.x + (-0.2 + dx) * radius, center.y + (dy + 0.2) * radius);
+            context.moveTo(center.x + (0.2 + dx) * radius, center.y + dy * radius);
+            context.lineTo(center.x + (0.55 + dx) * radius, center.y + (dy + 0.2) * radius);
+            context.lineTo(center.x + (1.05 + dx) * radius, center.y + (dy + 0.2) * radius);
+          }
+        } else {
+          for (const dy of [-0.6, 0.6]) {
+            for (const [index, dx] of [-1.2, -0.6, 0, 0.6, 1.2].entries()) {
+              const x = center.x + dx * radius;
+              const y = center.y + (dy + (index % 2 ? 0.18 : -0.18)) * radius;
+              if (index === 0) context.moveTo(x, y);
+              else context.lineTo(x, y);
+            }
+          }
+        }
+        context.strokeStyle = semantic === "soft_ground" ? "#fff0c2" : "#205b87";
+        context.lineWidth = Math.min(1.6, radius * 0.38);
+        context.stroke();
+        context.strokeStyle = semantic === "soft_ground" ? "#665d3f" : "#d9f1ff";
+        context.lineWidth = Math.min(0.8, radius * 0.2);
+        context.stroke();
       }
+      context.restore();
+    }
+
+    _drawRoadblock(context, cell) {
+      const terrainRoadblock = cell.terrain_semantic === "roadblock";
+      if (!terrainRoadblock && cell.roadblock !== true) return;
+      const center = this._screen(hexToPixel(cell.row, cell.column, this.map.hex_size));
+      const screenRadius = this.map.hex_size * this.scale;
+      // A separate static obstacle sits above the ground-cover glyph, retaining
+      // both facts. A roadblock terrain cell uses the normal central envelope.
+      const radius = terrainRoadblock ? Math.min(5, screenRadius * 0.28)
+        : Math.min(4, screenRadius * 0.14);
+      if (!(radius > 0)) return;
+      const y = center.y - (terrainRoadblock ? 0 : screenRadius * 0.6);
+      context.save();
+      context.lineJoin = "round";
+      context.lineCap = "round";
+      context.beginPath();
+      for (const dx of [-0.85, 0.85]) {
+        context.moveTo(center.x + dx * radius, y + 0.2 * radius);
+        context.lineTo(center.x + dx * radius, y + 1.1 * radius);
+      }
+      context.strokeStyle = "#ffe1a6";
+      context.lineWidth = Math.min(1.8, radius * 0.5);
+      context.stroke();
+      context.strokeStyle = "#70432c";
+      context.lineWidth = Math.min(0.9, radius * 0.25);
+      context.stroke();
+      context.beginPath();
+      context.moveTo(center.x - 1.3 * radius, y - 0.55 * radius);
+      context.lineTo(center.x + 1.3 * radius, y - 0.55 * radius);
+      context.lineTo(center.x + 1.3 * radius, y + 0.3 * radius);
+      context.lineTo(center.x - 1.3 * radius, y + 0.3 * radius);
+      context.closePath();
+      context.fillStyle = "#9b5b2d";
+      context.fill();
+      context.strokeStyle = "#ffe1a6";
+      context.lineWidth = Math.min(1, radius * 0.35);
+      context.stroke();
+      context.beginPath();
+      for (const dx of [-0.75, 0, 0.75]) {
+        context.moveTo(center.x + (dx - 0.15) * radius, y - 0.35 * radius);
+        context.lineTo(center.x + (dx + 0.15) * radius, y + 0.1 * radius);
+      }
+      context.strokeStyle = "#ffe1a6";
+      context.lineWidth = Math.min(0.8, radius * 0.2);
+      context.stroke();
+      context.restore();
     }
 
     _drawRoad(context, cell, direction, roadType) {
@@ -765,8 +1008,16 @@
         context.stroke();
         context.beginPath();
         context.moveTo(center.x - 3, center.y - 13);
-        context.lineTo(center.x + 10, center.y - 9);
-        context.lineTo(center.x - 3, center.y - 4);
+        // Map123 Source city.type: 0 = main, 1 = secondary. Unknown/native
+        // types retain the existing small triangle, never inferred from value.
+        if (city.type === 0) {
+          context.lineTo(center.x + 10, center.y - 13);
+          context.lineTo(center.x + 10, center.y);
+          context.lineTo(center.x - 3, center.y);
+        } else {
+          context.lineTo(center.x + 10, center.y - 9);
+          context.lineTo(center.x - 3, center.y - 4);
+        }
         context.closePath();
         context.fillStyle = color;
         context.fill();
@@ -985,24 +1236,31 @@
     }
 
     _drawUnits(context, units) {
+      const metrics = unitDisplayMetrics(this.map.hex_size, this.scale);
+      const focusedUnits = [];
       for (const stack of stackUnits(units)) {
         const center = this._screen(hexToPixel(stack[0].row, stack[0].column, this.map.hex_size));
-        const spread = stackSpread(stack.length);
+        const spread = stackSpread(stack.length) * metrics.stackScale;
         stack.forEach((unit, index) => {
           const angle = stack.length > 1 ? Math.PI * 2 * index / stack.length - Math.PI / 2 : 0;
           const moving = unitDisplayPoint(unit, this.map.hex_size);
           const display = this._screen(moving);
           const x = display.x + Math.cos(angle) * spread;
           const y = display.y + Math.sin(angle) * spread;
-          this._drawUnit(context, unit, x, y);
+          const focused = unit.operator_id === this.selectedUnitId
+            || this.selectedUnitIds.has(String(unit.operator_id))
+            || String(unit.operator_id) === this.actionTargets.previewShootTargetId;
+          if (focused) focusedUnits.push({ unit, x, y });
+          else this._drawUnit(context, unit, x, y);
         });
-        if (stack.length > 1) {
+        if (stack.length > 1 && metrics.showDetails) {
           context.beginPath(); context.arc(center.x + 10, center.y - 12, 9, 0, Math.PI * 2);
           context.fillStyle = "#222"; context.fill(); context.strokeStyle = "#fff"; context.stroke();
           context.fillStyle = "#fff"; context.font = "11px ui-monospace";
           context.textAlign = "center"; context.fillText(String(stack.length), center.x + 10, center.y - 8);
         }
       }
+      for (const { unit, x, y } of focusedUnits) this._drawUnit(context, unit, x, y);
     }
 
     _drawUnit(context, unit, x, y) {
@@ -1011,13 +1269,19 @@
       const shootTarget = this.actionTargets.shootTargetIds.has(String(unit.operator_id));
       const previewShoot = String(unit.operator_id)
         === this.actionTargets.previewShootTargetId;
-      const radius = selected ? 12 : 9;
+      const metrics = unitDisplayMetrics(this.map?.hex_size, this.scale, selected || previewShoot);
+      const { radius, showDetails, showGlyph } = metrics;
       const color = unit.destroyed ? "#777777" : unitSideColor(unit.side);
       context.save(); context.translate(x, y);
       context.fillStyle = color; context.strokeStyle = selected ? "#ffe15a" : "#ffffff";
       context.lineWidth = selected ? 3 : 1.5;
+      // A neutral plate separates the glyph from both light and dark terrain.
+      // Side remains encoded by the symbol; selection is a separate gold ring.
+      context.beginPath(); context.arc(0, 0, radius, 0, Math.PI * 2);
+      context.fillStyle = "rgba(15,23,42,0.92)"; context.fill();
+      context.fillStyle = color;
       const symbol = this._resolveUnitSymbol(unit);
-      const svgDrawn = Boolean(symbol && this.unitSymbolRenderer
+      const svgDrawn = Boolean(showGlyph && symbol && this.unitSymbolRenderer
         && this.unitSymbolRenderer.drawUnitSymbol(
           context,
           0,
@@ -1025,13 +1289,14 @@
           {
             ...symbol,
             side: unit.side,
-            status: unit.destroyed ? "destroyed" : "alive",
+            unit_state: unit.destroyed ? "destroyed" : "alive",
           },
-          selected
-            ? SELECTED_UNIT_SYMBOL_SCREEN_SIZE
-            : UNIT_SYMBOL_SCREEN_SIZE,
+          metrics.symbolSize,
         ));
-      if (!svgDrawn) {
+      if (!showGlyph) {
+        context.beginPath(); context.arc(0, 0, radius, 0, Math.PI * 2);
+        context.fillStyle = color; context.fill();
+      } else if (!svgDrawn) {
         const fallbackKind = symbol?.status === "UNKNOWN"
           ? symbol.base_symbol === "unknown_vehicle"
             ? "armored_vehicle"
@@ -1039,11 +1304,15 @@
           : unit.icon_key;
         this._unitShape(context, fallbackKind, radius);
         context.fill(); context.stroke();
-      } else if (selected) {
-        context.beginPath(); context.arc(0, 0, radius + 2, 0, Math.PI * 2);
-        context.strokeStyle = "#ffe15a"; context.lineWidth = 3; context.stroke();
       }
-      if (unit.category === "passenger") {
+      if (selected) {
+        const gap = Math.min(2, radius * 0.15);
+        context.beginPath(); context.arc(0, 0, radius + gap, 0, Math.PI * 2);
+        context.strokeStyle = "#ffe15a";
+        context.lineWidth = Math.min(3, Math.max(1, radius * 0.2));
+        context.stroke();
+      }
+      if (showDetails && unit.category === "passenger") {
         context.beginPath(); context.arc(0, 0, radius + 3, 0, Math.PI * 2);
         context.strokeStyle = "#ffc857"; context.lineWidth = 2.5; context.stroke();
       }
@@ -1052,29 +1321,32 @@
         context.moveTo(radius, -radius); context.lineTo(-radius, radius);
         context.strokeStyle = "#dddddd"; context.lineWidth = 2; context.stroke();
       }
-      if (unit.lose_control || unit.can_to_move === false) {
+      if (showDetails && (unit.lose_control || unit.can_to_move === false)) {
         context.beginPath(); context.arc(0, 0, radius + 5, Math.PI * 0.15, Math.PI * 0.85);
         context.strokeStyle = "#ffc857"; context.lineWidth = 2; context.stroke();
       }
-      if (unit.stopped) {
-        context.fillStyle = "#ffffff"; context.fillRect(-2, -2, 4, 4);
+      if (showDetails && unit.stopped) {
+        context.fillStyle = "#ffffff"; context.fillRect(radius - 5, -radius + 2, 4, 4);
       }
       if (shootTarget) {
-        context.beginPath(); context.arc(0, 0, radius + 8, 0, Math.PI * 2);
+        context.beginPath(); context.arc(0, 0, radius + (showDetails ? 8 : 2), 0, Math.PI * 2);
         context.strokeStyle = previewShoot ? "#ffc857" : "#ff5b62";
         context.lineWidth = previewShoot ? 4 : 2;
         context.setLineDash(previewShoot ? [] : [4, 3]);
         context.stroke(); context.setLineDash([]);
       }
       const health = typeof unit.health_ratio === "number" ? Math.max(0, Math.min(1, unit.health_ratio)) : null;
-      if (health !== null) {
+      if (showDetails && health !== null) {
         context.fillStyle = "#222"; context.fillRect(-radius, radius + 3, radius * 2, 3);
         context.fillStyle = health >= 0.6 ? "#39d353" : health >= 0.3 ? "#e6a23c" : "#d9363e";
         context.fillRect(-radius, radius + 3, radius * 2 * health, 3);
       }
       context.fillStyle = "#f5f5f5"; context.font = "11px ui-monospace";
-      context.textAlign = "left"; context.fillText(String(unit.operator_id), radius + 4, 4);
-      if (Number.isInteger(unit.transport_display_count)
+      context.textAlign = "left";
+      const identityLabel = (selected || previewShoot) && symbol?.display_name
+        ? `${unit.operator_id} · ${symbol.display_name}` : String(unit.operator_id);
+      if (metrics.showLabel) context.fillText(identityLabel, radius + 4, 4);
+      if (showDetails && Number.isInteger(unit.transport_display_count)
           && unit.transport_display_count > 1) {
         context.beginPath(); context.arc(-radius - 2, -radius - 2, 8, 0, Math.PI * 2);
         context.fillStyle = "#222"; context.fill();
@@ -1084,7 +1356,7 @@
         context.fillText(String(unit.transport_display_count), -radius - 2, -radius + 2);
       }
       context.restore();
-      this.hitTargets.push({ x, y, radius: radius + 7, operatorId: unit.operator_id });
+      this.hitTargets.push({ x, y, radius: metrics.hitRadius, operatorId: unit.operator_id });
     }
 
     _resolveUnitSymbol(unit) {
@@ -1154,12 +1426,16 @@
     MapRenderer,
     computeWorldBounds,
     directionalSegment,
+    elevationColor,
+    elevationLegend,
     edgeFacts,
     formatEdgeFacts,
     hexToPixel,
     hexVertices,
     unitDisplayPoint,
+    unitDisplayMetrics,
     pixelToHex,
+    renderElevationLegend,
     riverEdgeSegment,
     summarizeMapLayers,
     stackSpread,

@@ -3,20 +3,34 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Native 本地兵棋控制</title>
-  <link rel="stylesheet" href="/static/styles.css">
-  <link rel="stylesheet" href="/static/live_styles.css">
+  <title>Native 兵棋控制</title>
+  <!-- Derive the mount from the page URL, never from untrusted forwarded headers. -->
+  <script>
+    (() => {
+      const url = new URL(window.location.href);
+      url.pathname = url.pathname.replace(/\/(?:red|blue|index\.html)\/?$/, "/");
+      if (!url.pathname.endsWith("/")) url.pathname += "/";
+      url.search = "";
+      url.hash = "";
+      const base = document.createElement("base");
+      base.href = url.href;
+      document.head.appendChild(base);
+    })();
+  </script>
+  <script src="static/viewer_urls.js"></script>
+  <link rel="stylesheet" href="static/styles.css">
+  <link rel="stylesheet" href="static/live_styles.css">
 </head>
-<body>
+<body class="live-control-page">
   <header>
     <div>
-      <p class="eyebrow">LOCAL · SIDE CONTROL</p>
-      <h1>Native 本地兵棋控制</h1>
+      <p class="eyebrow">LOCAL</p>
+      <h1>Native 兵棋控制</h1>
     </div>
     <div class="badges">
       <span id="side-badge" class="badge"></span>
       <span id="product-state-badge" class="badge warn">正在连接</span>
-      <span class="badge no">仅显示本方可见态势</span>
+      <span class="badge no">本方视角</span>
     </div>
   </header>
 
@@ -31,16 +45,24 @@
       </div>
       <div class="map-tools">
         <button id="reset-map-view" type="button">适配地图</button>
-        <button id="toggle-visibility-overlay" type="button" disabled title="未隐蔽地面目标的可能发现空间">显示观察范围</button>
-        <button id="toggle-weapon-envelope" type="button" disabled title="当前武器的理论直射影响空间">显示火力覆盖</button>
-        <span>滚轮缩放 · 拖动平移 · 单击选择 · Ctrl/Cmd或Shift多选</span>
+        <button id="wait-side" type="button">等待</button>
+        <span>滚轮缩放 · 拖动平移</span>
       </div>
-      <canvas id="battlefield" aria-label="当前阵营可见六角地图"></canvas>
-      <p id="hex-info" class="hex-info">移动鼠标查看六边形坐标</p>
+      <div class="map-stage">
+        <canvas id="battlefield" aria-label="当前阵营可见六角地图"></canvas>
+      </div>
+      <p id="hex-info" class="hex-info">坐标 —</p>
+      <div id="elevation-legend" class="elevation-legend" aria-label="高程颜色与地图坐标图例"></div>
     </section>
 
-    <aside class="panel command-panel product-command-panel">
-      <section class="product-section match-summary">
+    <section id="operation-dock" class="operation-dock product-command-panel" aria-label="操作确认">
+      <div id="capability-panel" class="unit-radial-actions docked-actions" role="toolbar" aria-label="单位合法动作" hidden></div>
+      <div class="region-controls" role="group" aria-label="区域显示">
+        <button id="toggle-visibility-overlay" type="button" disabled title="地面未隐蔽人员/车辆的可见位置；不代表发现所有目标类型">可见区域</button>
+        <button id="toggle-weapon-envelope" type="button" disabled title="所选武器对地射程与通视覆盖；射击仍需校验状态和目标">打击范围</button>
+      </div>
+      <small id="overlay-status" role="status" hidden></small>
+      <section class="product-section match-summary" hidden>
         <h2>当前阵营与对局状态</h2>
         <p><strong id="side-summary">正在加载</strong></p>
         <p id="time-summary">仿真时间 0 ms</p>
@@ -52,14 +74,13 @@
       </section>
 
       <section class="product-section">
-        <h2>可用能力</h2>
-        <div id="capability-panel" class="operation-toolbar" role="toolbar" aria-label="单位可用能力"></div>
-        <p id="tool-instruction" class="tool-instruction">请选择一个或多个己方单位。</p>
+        <h2>操作</h2>
+        <p id="tool-instruction" class="tool-instruction">选择算子</p>
       </section>
 
       <section id="direct-fire-panel" class="product-section direct-fire-panel" hidden>
         <div class="preview-heading">
-          <h2>Direct Fire · 武器选择</h2>
+          <h2>选择武器</h2>
           <span id="direct-fire-unit" class="preview-counts"></span>
         </div>
         <div id="weapon-choices" class="weapon-choices"></div>
@@ -67,37 +88,39 @@
 
       <section id="guided-fire-panel" class="product-section direct-fire-panel" hidden>
         <div class="preview-heading">
-          <h2>Guided Fire · 发射平台</h2>
+          <h2>选择平台</h2>
         </div>
         <div id="guided-fire-choices" class="weapon-choices"></div>
       </section>
 
       <section id="indirect-fire-panel" class="product-section direct-fire-panel" hidden>
         <div class="preview-heading">
-          <h2>Indirect Fire · 火力平台</h2>
+          <h2>选择武器</h2>
         </div>
         <div id="indirect-fire-choices" class="weapon-choices"></div>
       </section>
 
       <section class="product-section operation-preview-section">
+        <div id="confirmation-controls" class="execute-row confirmation-box" role="group" aria-label="确认或取消指令">
+          <button id="execute-operation" type="button" class="primary" aria-label="下达指令" title="下达指令" disabled>√</button>
+          <button id="cancel-operation" type="button" class="secondary" aria-label="取消指令" title="取消指令">×</button>
+        </div>
         <div class="preview-heading">
-          <h2>当前操作预览</h2>
+          <h2>指令</h2>
           <span id="preview-counts" class="preview-counts">尚无预览</span>
         </div>
         <div id="operation-preview" class="operation-preview empty">
-          选择功能和目标后，这里会显示逐单位的路径、时间或失败原因。
+          选择目标
         </div>
         <label id="partial-confirmation" class="partial-confirmation" hidden>
           <input id="confirm-partial" type="checkbox">
-          我确认仅执行可执行单位，跳过其余单位
+          仅执行可用单位
         </label>
-        <div class="execute-row">
-          <button id="cancel-operation" type="button" class="secondary">取消</button>
-          <button id="execute-operation" type="button" class="primary" disabled>执行</button>
-        </div>
+
       </section>
 
-      <details id="advanced-debug" class="advanced-debug">
+
+      <details id="advanced-debug" class="advanced-debug" hidden>
         <summary>高级调试</summary>
         <dl>
           <div><dt>会话</dt><dd id="debug-session">—</dd></div>
@@ -107,18 +130,19 @@
           <div><dt>最近请求</dt><dd id="debug-request">—</dd></div>
         </dl>
       </details>
-    </aside>
+    </section>
   </main>
 
   <footer id="status-bar" class="product-status-bar" aria-live="polite">
     <strong id="status-label">正在连接</strong>
-    <span id="status-message">正在读取本方地图态势。</span>
+    <span id="status-message">加载中</span>
   </footer>
   <div id="error-banner" role="alert" hidden></div>
-  <script src="/static/unit_symbol_resolver.js"></script>
-  <script src="/static/unit_symbol_renderer.js"></script>
-  <script src="/static/map_renderer.js"></script>
-  <script src="/static/capability_ui.js"></script>
-  <script src="/static/dual_control.js"></script>
+  <script src="static/unit_symbol_resolver.js"></script>
+  <script src="static/unit_symbol_renderer.js"></script>
+  <script src="static/map_renderer.js"></script>
+  <script src="static/capability_ui.js"></script>
+  <script src="static/unit_radial_actions.js"></script>
+  <script src="static/dual_control.js"></script>
 </body>
 </html>

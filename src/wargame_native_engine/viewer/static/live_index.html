@@ -3,69 +3,88 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Native 本地人工控制</title>
-  <link rel="stylesheet" href="/static/styles.css">
-  <link rel="stylesheet" href="/static/live_styles.css">
+  <title>Native 人工控制</title>
+  <!-- Derive the mount from the page URL, never from untrusted forwarded headers. -->
+  <script>
+    (() => {
+      const url = new URL(window.location.href);
+      url.pathname = url.pathname.replace(/\/(?:red|blue|index\.html)\/?$/, "/");
+      if (!url.pathname.endsWith("/")) url.pathname += "/";
+      url.search = "";
+      url.hash = "";
+      const base = document.createElement("base");
+      base.href = url.href;
+      document.head.appendChild(base);
+    })();
+  </script>
+  <script src="static/viewer_urls.js"></script>
+  <link rel="stylesheet" href="static/styles.css">
+  <link rel="stylesheet" href="static/live_styles.css">
 </head>
-<body>
+<body class="live-control-page">
   <header>
     <div>
-      <p class="eyebrow">LOCAL · SIDE OBSERVATION · COMMAND GATEWAY</p>
-      <h1>Native 本地人工控制</h1>
+      <p class="eyebrow">LOCAL</p>
+      <h1>Native 人工控制</h1>
     </div>
     <div class="badges">
       <span id="perspective-badge" class="badge"></span>
       <span class="badge warn">对手：NoOp</span>
-      <span class="badge no">GREEN / 八因子不暴露给控制端</span>
+      <span class="badge no">阵营视角</span>
     </div>
   </header>
 
   <main class="live-main">
     <section class="battle-panel panel">
       <div class="section-title">
-        <div><h2>当前方可见态势</h2><p id="map-mode">正在加载…</p><p id="map-layer-summary"></p></div>
+        <div><h2>地图态势</h2><p id="map-mode">正在加载…</p><p id="map-layer-summary"></p></div>
         <div class="frame-readout">Step <strong id="step-index">0</strong></div>
       </div>
       <div class="map-tools">
         <button id="reset-map-view" type="button">适配地图</button>
-        <span>滚轮缩放 · 拖动平移 · 点击己方单位 · 双击合法目标提交</span>
+        <span>滚轮缩放 · 拖动平移</span>
       </div>
-      <canvas id="battlefield" aria-label="当前方可见六角地图"></canvas>
-      <p id="hex-info" class="hex-info">移动鼠标查看六边形坐标</p>
+      <div class="map-stage">
+        <canvas id="battlefield" aria-label="当前方可见六角地图"></canvas>
+        <div id="unit-actions" class="unit-radial-actions" aria-label="算子合法动作" hidden></div>
+      </div>
+      <p id="hex-info" class="hex-info">坐标 —</p>
+      <div id="elevation-legend" class="elevation-legend" aria-label="高程颜色与地图坐标图例"></div>
       <div class="legend map-fact-legend">
-        <span><i class="elevation-swatch"></i>低→高海拔</span>
         <span><i class="road-swatch"></i>道路</span>
         <span><i class="river-swatch"></i>河流</span>
         <span><i class="unknown-elevation-swatch"></i>未知海拔</span>
       </div>
     </section>
 
-    <aside class="panel command-panel">
-      <div class="section-title"><h2>当前 Native valid_actions</h2></div>
-      <p id="selected-unit">未选择单位</p>
-      <pre id="selected-unit-detail" class="unit-detail">请选择己方可操作单位</pre>
-      <div id="action-groups" class="action-groups"></div>
-      <label for="action-select">精确动作（安全回退选择器）</label>
-      <select id="action-select"></select>
-      <pre id="action-preview" class="action-preview">尚未预选动作</pre>
-      <button id="submit-action" type="button">确认提交所选 action_id</button>
-      <p class="boundary-note">动作由 CommandGateway 按当前 action_id 解析；不补路、不猜目标、不直接修改 WorldState。</p>
-      <p class="boundary-note">当前模式：人工一方 vs NoOp。MOVE仅显示规则引擎返回的显式相邻路径；SHOOT仅显示当前可见合法目标。</p>
-      <div class="section-title status-title"><h2>状态</h2></div>
-      <pre id="command-status">等待操作</pre>
-      <button id="publish-match" type="button">发布 replay 与 analysis</button>
-    </aside>
+      <section class="operation-dock" aria-label="操作确认">
+        <div class="operation-row"><span id="selected-unit">选择算子</span>
+          <button id="wait-step" type="button">等待</button><span id="global-actions"></span>
+        </div>
+        <div class="operation-row">
+          <select id="action-select" aria-label="武器或动作参数" hidden></select>
+          <div id="confirmation-controls" class="execute-row confirmation-box" role="group" aria-label="确认或取消指令">
+            <button id="submit-action" type="button" aria-label="下达指令" title="下达指令" disabled>√</button>
+            <button id="cancel-action" type="button" aria-label="取消指令" title="取消指令" disabled>×</button>
+          </div>
+          <button id="publish-match" type="button">保存复盘</button>
+        </div>
+        <p id="action-preview"></p><p id="command-status" role="status" aria-live="polite">选择动作</p>
+      </section>
 
-    <section class="panel observation-panel">
-      <div class="section-title"><h2>当前方 Observation</h2></div>
-      <pre id="observation">{}</pre>
+    <section class="panel observation-panel" hidden>
+      <details class="operation-debug"><summary>详细信息</summary>
+        <pre id="selected-unit-detail"></pre><pre id="command-detail"></pre>
+        <pre id="observation">{}</pre>
+      </details>
     </section>
   </main>
   <div id="error-banner" role="alert" hidden></div>
-  <script src="/static/unit_symbol_resolver.js"></script>
-  <script src="/static/unit_symbol_renderer.js"></script>
-  <script src="/static/map_renderer.js"></script>
-  <script src="/static/live_actions.js"></script>
-  <script src="/static/live_app.js"></script>
+  <script src="static/unit_symbol_resolver.js"></script>
+  <script src="static/unit_symbol_renderer.js"></script>
+  <script src="static/map_renderer.js"></script>
+  <script src="static/live_actions.js"></script>
+  <script src="static/unit_radial_actions.js"></script>
+  <script src="static/live_app.js"></script>
 </body>
 </html>

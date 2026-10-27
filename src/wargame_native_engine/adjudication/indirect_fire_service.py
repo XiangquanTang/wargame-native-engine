@@ -106,6 +106,20 @@ class IndirectFireLifecycleService:
             and not self._is_confirmed_drone(operator)
         ))
 
+    def mission_target_ids(
+        self, world: WorldState, impact_hex: int, mission: FireMission,
+        *, excluded_operator_ids: Sequence[int] = (),
+    ) -> tuple[int, ...]:
+        """Never turn an aimed map cell into an implicit gameplay target."""
+        candidates = self.applicable_target_ids(
+            world, impact_hex, excluded_operator_ids=excluded_operator_ids,
+        )
+        if not mission.action_stream_bound:
+            return candidates
+        if not mission.damage_allowed:
+            return ()
+        return tuple(value for value in candidates if value == mission.damage_target_id)
+
     def _is_confirmed_drone(self, operator: Any) -> bool:
         if _unit_domain(operator.operator_type) is not UnitDomain.AIR:
             return False
@@ -178,6 +192,9 @@ class IndirectFireLifecycleService:
             ammunition_key=mapping.ammunition_key,
             cancelable=False,
             action_stream_bound=action_stream_bound,
+            launch_side=shooter.side if action_stream_bound else None,
+            launch_hex=shooter.current_hex if action_stream_bound else None,
+            launch_strength=int(shooter.blood) if action_stream_bound else None,
             active_duration_seconds=profile.active_duration_seconds,
         )
 
@@ -225,6 +242,8 @@ class IndirectFireLifecycleService:
                 "execution_policy_hash": mission.execution_policy_hash,
                 "ammunition_key": mission.ammunition_key,
                 "ammo_consumed": mission.ammo_consumed,
+                "damage_target_id": mission.damage_target_id,
+                "damage_allowed": mission.damage_allowed,
                 "authority_hash": replay_identity[
                     "indirect_fire_authority_hash"
                 ],
@@ -422,7 +441,13 @@ class IndirectFireLifecycleService:
         if observation_policy is IndirectFireObservationPolicy.UNRESOLVED:
             return _impact_failure("UNRESOLVED", "observation_policy")
         shooter = pre_state.operators.get(mission.shooter_id)
-        if shooter is None or shooter.current_hex is None:
+        launch_hex = mission.launch_hex if mission.action_stream_bound else (
+            None if shooter is None else shooter.current_hex
+        )
+        firing_side = mission.launch_side if mission.action_stream_bound else (
+            None if shooter is None else shooter.side
+        )
+        if launch_hex is None or firing_side is None:
             return _impact_failure(
                 "SHOOTER_EVIDENCE_UNAVAILABLE", "shooter_position"
             )
@@ -433,7 +458,7 @@ class IndirectFireLifecycleService:
             or observation_evidence.state_time_ms != pre_state.elapsed_time_ms
             or observation_evidence.planned_hex != mission.planned_hex
             or observation_evidence.firing_side
-            != shooter.side
+            != firing_side
             or observation_evidence.policy_id
             != observation_authority.policy_id
             or observation_evidence.policy_hash
@@ -464,7 +489,7 @@ class IndirectFireLifecycleService:
         )
         distance_roll = sum(distance_dice)
         distance_band, band_index = _distance_band(hex_distance(
-            int(shooter.current_hex), mission.planned_hex,
+            launch_hex, mission.planned_hex,
         ))
         table_name = {
             IndirectFireObservationPolicy.UNOBSERVED: "unobserved_dispersion",
@@ -559,7 +584,7 @@ class IndirectFireLifecycleService:
             spotter_evidence=spotter_evidence,
             observation_policy=observation_policy,
         )
-        affected = self.applicable_target_ids(pre_state, impact_hex)
+        affected = self.mission_target_ids(pre_state, impact_hex, mission)
         resolution = IndirectFireResolution(
             mission_id=mission.mission_id,
             shooter_id=mission.shooter_id,
@@ -626,9 +651,15 @@ class IndirectFireLifecycleService:
         if profile is None or profile.weapon_id != mission.weapon_id:
             return _effect_failure("artillery_profile")
         shooter = pre_state.operators.get(mission.shooter_id)
-        if shooter is None or not shooter.alive or not shooter.deployed:
-            return _effect_failure("shooter")
-        occupants = self.applicable_target_ids(pre_state, impact.impact_hex)
+        if mission.action_stream_bound:
+            shooter_strength = mission.launch_strength
+            if shooter_strength is None:
+                return _effect_failure("launch_strength")
+        else:
+            if shooter is None or not shooter.alive or not shooter.deployed:
+                return _effect_failure("shooter")
+            shooter_strength = int(shooter.blood)
+        occupants = self.mission_target_ids(pre_state, impact.impact_hex, mission)
         actual = occupants if affected_operator_ids is None else affected_operator_ids
         if (
             affected_operator_ids is not None
@@ -669,7 +700,7 @@ class IndirectFireLifecycleService:
             shooter_id=mission.shooter_id,
             weapon_id=mission.weapon_id,
             artillery_class=profile.artillery_class,
-            shooter_strength=int(shooter.blood),
+            shooter_strength=shooter_strength,
             targets=tuple(targets),
             table_document=self.adjudication_tables.document,
             table_content_hash=self.adjudication_tables.content_hash,
@@ -981,7 +1012,8 @@ class IndirectFireLifecycleService:
         return EngineEvent(
             tick=working.tick,
             event_type=EventType.INDIRECT_FIRE_ACTIVE_STARTED,
-            side=None if shooter is None else shooter.side,
+            side=(mission.launch_side if mission.action_stream_bound else
+                  (None if shooter is None else shooter.side)),
             actor_id=mission.shooter_id,
             data={
                 "mission_id": mission.mission_id,
@@ -1014,7 +1046,8 @@ class IndirectFireLifecycleService:
         return EngineEvent(
             tick=working.tick,
             event_type=EventType.INDIRECT_FIRE_AREA_TRIGGERED,
-            side=None if shooter is None else shooter.side,
+            side=(mission.launch_side if mission.action_stream_bound else
+                  (None if shooter is None else shooter.side)),
             actor_id=mission.shooter_id,
             target_id=effect.operator_id,
             data={
@@ -1084,7 +1117,8 @@ class IndirectFireLifecycleService:
         return EngineEvent(
             tick=working.tick,
             event_type=EventType.INDIRECT_FIRE_RESOLVED,
-            side=None if shooter is None else shooter.side,
+            side=(mission.launch_side if mission.action_stream_bound else
+                  (None if shooter is None else shooter.side)),
             actor_id=mission.shooter_id,
             data=data,
         )
@@ -1104,7 +1138,8 @@ class IndirectFireLifecycleService:
         return EngineEvent(
             tick=working.tick,
             event_type=event_type,
-            side=None if shooter is None else shooter.side,
+            side=(mission.launch_side if mission.action_stream_bound else
+                  (None if shooter is None else shooter.side)),
             actor_id=mission.shooter_id,
             data={
                 **data,

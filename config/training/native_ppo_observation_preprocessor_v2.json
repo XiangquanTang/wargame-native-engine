@@ -4,9 +4,11 @@
   "preprocessor_version": "2.0.0",
   "strategy": "DETERMINISTIC_FIXED_SCALING",
   "input_encoder": {
-    "schema_version": "native-decision-observation-encoder/2.0",
-    "contract_hash": "46a7ad89a82842b2ed5a34bf664b2e70be8fea55549961b71fbbbde895953aea",
-    "shape": [20718],
+    "schema_version": "native-decision-observation-encoder/2.1",
+    "contract_hash": "3b4a4f093c413fdef57d27d9a9e7a82e2a371f6fb078f557338076e61a4dbd81",
+    "shape": [
+      21038
+    ],
     "dtype": "float64",
     "max_objectives": 32,
     "max_own_operators": 64,
@@ -16,7 +18,9 @@
     "max_ammunition_pools": 128
   },
   "output": {
-    "shape": [20718],
+    "shape": [
+      21038
+    ],
     "dtype": "float32",
     "default_device": "cpu"
   },

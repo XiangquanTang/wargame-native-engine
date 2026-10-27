@@ -64,14 +64,24 @@ def evaluate_visibility(profile: HexMapProfile, *, observer_hex: int,
                        else observer_elevation)
     target_height = (profile.cell(target_hex).elevation if target_elevation is None
                      else target_elevation)
-    concealment_ignored = (target_domain is UnitDomain.VEHICLE
-                           and target_height < observer_height)
+    airborne_observer = observer_domain is UnitDomain.AIR or observer_is_drone
+    # Rules 10b, 11b and 12b exempt concealed vehicles observed from the air.
+    # Ground elevation is irrelevant to that exemption; it still controls the
+    # separate higher-ground exemption for ground observers.
+    concealment_ignored = (
+        target_domain is UnitDomain.VEHICLE
+        and (airborne_observer or target_height < observer_height)
+    )
     if target_concealed and not concealment_ignored:
         limit /= 2.0
         modifiers.append({"rule": "concealment_halves_observation", "factor": 0.5})
     elif target_concealed:
-        modifiers.append({"rule": "vehicle_concealment_ignored_from_higher_observer",
-                          "factor": 1.0})
+        rule = (
+            "vehicle_concealment_ignored_from_air_observer"
+            if airborne_observer
+            else "vehicle_concealment_ignored_from_higher_observer"
+        )
+        modifiers.append({"rule": rule, "factor": 1.0})
     terrain = (target_terrain or profile.cell(target_hex).terrain).upper()
     if terrain in {"SETTLEMENT", "FOREST"}:
         limit /= 2.0

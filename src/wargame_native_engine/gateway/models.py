@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
+from wargame_native_engine.io.detached import detached_record
 from wargame_native_engine.io.serialization import json_clone
 from wargame_native_engine.io.serialization import canonical_hash
 from wargame_native_engine.projection.decision_capability import (
@@ -58,6 +59,7 @@ class SessionDescriptor:
         }
 
 
+@detached_record
 @dataclass(frozen=True, slots=True)
 class DecisionWindowView:
     session_id: str
@@ -90,6 +92,7 @@ class DecisionWindowView:
         }
 
 
+@detached_record
 @dataclass(frozen=True, slots=True)
 class ControllerView:
     session_id: str
@@ -209,6 +212,7 @@ class ControllerView:
         }
 
 
+@detached_record
 @dataclass(frozen=True, slots=True)
 class CommandResult:
     request_id: str

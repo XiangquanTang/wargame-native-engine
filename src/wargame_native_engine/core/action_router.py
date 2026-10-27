@@ -32,7 +32,7 @@ class ActionRouter:
         ActionType.STOP_MOVE, ActionType.BOARD, ActionType.UNLOAD,
         ActionType.CAPTURE,
         ActionType.ENTER_CONCEALMENT,
-        ActionType.CHANGE_STATE, ActionType.WEAPON_LOCK,
+        ActionType.CHANGE_STATE, ActionType.WEAPON_LOCK, ActionType.WEAPON_UNLOCK,
         ActionType.WEAPON_UNFOLD, ActionType.WAIT,
     })
 
@@ -160,8 +160,10 @@ class ActionRouter:
     def _indirect_fire_intent(action: EngineAction) -> FireIntent:
         if action.actor_id is None:
             raise ValueError("SHOOTER_REQUIRED")
-        if action.target_id is not None or action.target_position is not None:
+        if action.target_position is not None:
             raise ValueError("INDIRECT_FIRE_REQUIRES_HEX_TARGET_ONLY")
+        if action.target_id is not None:
+            _exact_identifier(action.target_id, "target_id")
         return FireIntent(
             mode=FireMode.INDIRECT,
             shooter_id=_exact_identifier(action.actor_id, "shooter_id"),

@@ -24,6 +24,7 @@ COMMAND_ORDER = (
     "ENTER_CONCEALMENT",
     "STOP_MOVE",
     "WEAPON_LOCK",
+    "WEAPON_UNLOCK",
     "WEAPON_UNFOLD",
     "WAIT",
 )

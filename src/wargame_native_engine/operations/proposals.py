@@ -134,7 +134,8 @@ class ActionProposal:
         decision_window_index: int,
         side: str,
         actor_id: int,
-        target_id: int,
+        target_id: int | None,
+        target_hex: int | None = None,
         state_hash: str,
         action: EngineAction,
     ) -> "ActionProposal":
@@ -150,6 +151,8 @@ class ActionProposal:
             "action_id": action.action_id,
             "created_from_state_hash": state_hash,
         }
+        if target_hex is not None:
+            identity["target_hex"] = target_hex
         return cls(
             proposal_id="proposal-" + canonical_hash(identity)[:24],
             session_id=str(session_id),
@@ -157,7 +160,7 @@ class ActionProposal:
             side=side,
             unit_id=actor_id,
             source_hex=None,
-            destination_hex=target_id,
+            destination_hex=target_id if target_id is not None else target_hex,
             movement_mode="DIRECT_FIRE_INTENT",
             ordered_path=(),
             estimated_duration_ms=None,

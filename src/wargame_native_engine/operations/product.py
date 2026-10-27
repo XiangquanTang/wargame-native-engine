@@ -48,6 +48,7 @@ PRODUCT_OPERATION_TYPES = (
     "STOP_MOVE",
     "WEAPON_UNFOLD",
     "WEAPON_LOCK",
+    "WEAPON_UNLOCK",
     "WAIT",
 )
 
@@ -459,10 +460,17 @@ class ProductOperationService:
             raise CommandGatewayError(
                 "destination_required", "MOVE requires an exact destination hex"
             )
-        if operation == "SHOOT" and type(target_id) is not int:
-            raise CommandGatewayError(
-                "target_required", "SHOOT requires an exact visible target id"
-            )
+        if operation == "SHOOT":
+            if (target_id is None) == (target_hex is None):
+                raise CommandGatewayError(
+                    "target_required",
+                    "SHOOT requires exactly one visible target id or map hex"
+                )
+            for name, value in (("target_id", target_id), ("target_hex", target_hex)):
+                if value is not None and (type(value) is not int or value < 0):
+                    raise CommandGatewayError(
+                        f"invalid_{name}", f"{name} must be a non-negative exact int"
+                    )
         if operation in {"BOARD", "UNLOAD", "CAPTURE"} and type(target_id) is not int:
             raise CommandGatewayError(
                 "target_required",
@@ -512,7 +520,7 @@ class ProductOperationService:
                         f"{name} must be a non-negative exact int",
                     )
         choices = _weapon_choices(weapon_choices)
-        if operation == "SHOOT":
+        if operation in {"SHOOT", "WEAPON_LOCK"}:
             unexpected = set(choices) - set(actors)
             if unexpected:
                 raise CommandGatewayError(
@@ -1082,6 +1090,7 @@ class ProductOperationService:
                     unit_id,
                     int(guided_weapon_id),
                     int(target_hex),
+                    target_id=target_id,
                     request_id=f"{request_id}:indirect:{unit_id}",
                     expected_window=menu.decision_window_index,
                 )
@@ -1113,7 +1122,8 @@ class ProductOperationService:
                 proposal = self.controller.plan_direct_fire_intent(
                     unit_id,
                     weapon_choice,
-                    int(target_id),
+                    target_id,
+                    target_hex=target_hex,
                     request_id=f"{request_id}:direct:{unit_id}",
                     expected_window=menu.decision_window_index,
                 )
@@ -1125,16 +1135,29 @@ class ProductOperationService:
                 unit_id,
                 name,
                 True,
-                f"向目标{target_id}提交武器{weapon_choice}攻击意图，等待引擎裁决",
+                (
+                    f"向目标{target_id}提交武器{weapon_choice}攻击意图。"
+                    if target_id is not None
+                    else f"向格{target_hex}提交武器{weapon_choice}空炮意图，不计算伤害。"
+                )
+                + "正常消耗弹药并进入冷却；仅显式选择且在射程内的目标可受伤害，等待引擎裁决。",
                 weapon_options=({
                     "weapon_id": weapon_choice,
                     "target_id": target_id,
+                    "target_hex": target_hex,
                     "summary": f"武器{weapon_choice}",
                 },),
             ), proposal.action_id
 
         candidates = _operation_candidates(action_records, unit_id, operation)
-        if operation in {"BOARD", "UNLOAD", "CAPTURE"}:
+        if operation == "WEAPON_LOCK":
+            if weapon_choice is None:
+                return _rejected(unit_id, name, "weapon_choice_required", "请选择要锁定的武器"), None
+            candidates = tuple(
+                item for item in candidates
+                if item.get("action", {}).get("parameters", {}).get("weapon_id") == weapon_choice
+            )
+        elif operation in {"BOARD", "UNLOAD", "CAPTURE"}:
             candidates = tuple(
                 item
                 for item in candidates
@@ -1341,6 +1364,8 @@ def _operation_summary(operation: str, item: Mapping[str, Any]) -> str:
     if operation == "SHOOT":
         weapon = action.get("parameters", {}).get("weapon_id")
         return f"射击目标{action.get('target_id')}，武器{weapon}"
+    if operation == "WEAPON_LOCK":
+        return f"锁定武器 {action.get('parameters', {}).get('weapon_id')}"
     if operation == "GUIDED_FIRE":
         parameters = action.get("parameters", {})
         return (
@@ -1360,6 +1385,7 @@ def _operation_summary(operation: str, item: Mapping[str, Any]) -> str:
         "STOP_MOVE": "停止当前移动",
         "WEAPON_UNFOLD": "展开武器",
         "WEAPON_LOCK": "锁定武器",
+        "WEAPON_UNLOCK": "解除锁定",
         "WAIT": "本轮不下达新动作",
     }.get(operation, operation)
 
@@ -1393,6 +1419,7 @@ def _unavailable_message(operation: str) -> str:
         "STOP_MOVE": "当前未在移动或不能停止",
         "WEAPON_UNFOLD": "当前不能展开武器",
         "WEAPON_LOCK": "当前不能锁定武器",
+        "WEAPON_UNLOCK": "停止机动并完成状态转换后才能解除锁定",
         "WAIT": "当前不能等待",
     }.get(operation, "当前不能执行该操作")
 
@@ -1466,7 +1493,10 @@ def _capability_unavailable(
         if not visible:
             return "no_visible_enemy", "当前未发现可见敌军"
         if moving:
-            return "actor_moving", "单位正在移动；当前武器不能移动射击"
+            return (
+                "actor_moving",
+                "单位正在移动；机动射击须武器支持且已锁定，仍需满足弹药、冷却及目标条件",
+            )
         if transitioning:
             return "actor_transitioning", "单位正在进行状态转换"
         if "WEAPON_UNFOLD" in available:
@@ -1480,13 +1510,13 @@ def _capability_unavailable(
             "no_guided_fire_capability",
             "当前权威状态没有合法的引导单位、发射平台、武器和目标组合",
         )
-    if operation in {"WEAPON_LOCK", "WEAPON_UNFOLD"}:
-        label = "锁定" if operation == "WEAPON_LOCK" else "展开"
+    if operation in {"WEAPON_LOCK", "WEAPON_UNFOLD", "WEAPON_UNLOCK"}:
+        label = {"WEAPON_LOCK": "锁定", "WEAPON_UNFOLD": "展开", "WEAPON_UNLOCK": "解除锁定"}[operation]
         if moving:
             return "actor_must_be_stopped", f"单位移动中；停止后才能{label}武器"
         if transitioning:
             return "transition_in_progress", "武器状态转换正在进行"
-        if operation == "WEAPON_LOCK" and "WEAPON_UNFOLD" in available:
+        if operation == "WEAPON_LOCK" and "WEAPON_UNLOCK" in available:
             return "weapon_already_locked", "武器已经锁定"
         if operation == "WEAPON_UNFOLD" and "WEAPON_LOCK" in available:
             return "weapon_already_unfolded", "武器已经展开"

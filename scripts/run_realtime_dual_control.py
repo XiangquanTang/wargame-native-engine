@@ -7,7 +7,7 @@ import argparse
 import json
 from pathlib import Path
 import sys
-import tempfile
+from scripts.realtime_run_storage import realtime_run_storage
 
 from wargame_native_engine.operations import ScenarioMatchFactory
 
@@ -40,6 +40,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--port", type=int, default=8003)
     parser.add_argument("--red-token", default="local-red-seat")
     parser.add_argument("--blue-token", default="local-blue-seat")
+    parser.add_argument("--analysis-model", choices=("source", "native"), default="source",
+                        help="Source-compatible factors or explicit Native fact adaptation")
+    parser.add_argument("--json", action="store_true", help="print full startup and publication metadata as JSON")
     parser.add_argument("--overwrite", action="store_true")
     return parser
 
@@ -51,9 +54,7 @@ def main(argv: list[str] | None = None) -> int:
     bundle = ScenarioBundle.from_path(args.scenario_bundle)
     if args.map_runtime_data is not None:
         bundle = bundle.with_map_runtime_data(args.map_runtime_data)
-    with tempfile.TemporaryDirectory(
-        prefix="wargame-realtime-web.",
-    ) as storage:
+    with realtime_run_storage(args.output_dir, overwrite=args.overwrite) as storage:
         session = RealtimeAgentSession(
             ScenarioMatchFactory(
                 bundle=bundle,
@@ -62,53 +63,40 @@ def main(argv: list[str] | None = None) -> int:
                 blue_controller_id="realtime-local-blue",
                 decision_interval_ms=args.tick_interval_ms,
                 frame_interval_ms=args.tick_interval_ms,
+                analysis_model=args.analysis_model,
             ),
             run_namespace=args.run_namespace,
             tick_interval_ms=args.tick_interval_ms,
             execution_mode=RealtimeExecutionMode.BACKGROUND,
             max_catch_up_ticks_per_batch=args.max_catch_up_ticks_per_batch,
         )
-        reset = session.reset(seed=args.seed)
-        server = create_realtime_dual_control_server(
-            session,
-            red_binding=reset.red_binding,
-            blue_binding=reset.blue_binding,
-            red_token=args.red_token,
-            blue_token=args.blue_token,
-            map_data=bundle.render_map_record(),
-            weapon_profiles=source_weapon_profiles(bundle.scenario.metadata),
-            host=args.host,
-            port=args.port,
-        )
-        host, port = server.server_address[:2]
-        print(
-            f"SCENARIO: {bundle.scenario_identity.scenario_id} "
-            f"sha256={bundle.scenario_identity.sha256}",
-            flush=True,
-        )
-        print(
-            f"MAP: {bundle.map_identity.map_id} sha256={bundle.map_identity.sha256}",
-            flush=True,
-        )
-        print(f"CONTROL_MODE: realtime-fixed-tick", flush=True)
-        print(f"TICK_INTERVAL_MS: {args.tick_interval_ms}", flush=True)
-        print(f"RED:  http://{host}:{port}/red?token={args.red_token}", flush=True)
-        print(f"BLUE: http://{host}:{port}/blue?token={args.blue_token}", flush=True)
-        print("按 Ctrl+C 停止并发布 Replay、分析与实时命令事件。", flush=True)
-        session.start_realtime()
+        server = None
         try:
+            reset = session.reset(seed=args.seed)
+            scenario = bundle.scenario
+            server = create_realtime_dual_control_server(
+                session,
+                red_binding=reset.red_binding,
+                blue_binding=reset.blue_binding,
+                red_token=args.red_token,
+                blue_token=args.blue_token,
+                map_data=bundle.render_map_record(),
+                weapon_profiles=source_weapon_profiles(scenario.metadata),
+                host=args.host,
+                port=args.port,
+            )
+            host, port = server.server_address[:2]
+            from scripts.startup_report import print_startup
+            print_startup(bundle, scenario, args, host, port)
+            session.start_realtime()
             try:
                 server.serve_forever()
             except KeyboardInterrupt:
-                server.server_close()
-            except BaseException as primary_error:
-                try:
-                    server.server_close()
-                except BaseException as cleanup_error:
-                    _note_cleanup_error(primary_error, "server", cleanup_error)
-                raise
-            else:
-                server.server_close()
+                pass
+            # Mark the server consumed before close: a failed close must not be
+            # retried, but the session still needs its own cleanup attempt.
+            closing_server, server = server, None
+            closing_server.server_close()
             publication = session.publish(
                 args.output_dir,
                 truncated=None,
@@ -119,6 +107,11 @@ def main(argv: list[str] | None = None) -> int:
         except BaseException as primary_error:
             # Cleanup is best-effort on the failure path.  It must never hide
             # the publication/background exception and its causal chain.
+            if server is not None:
+                try:
+                    server.server_close()
+                except BaseException as cleanup_error:
+                    _note_cleanup_error(primary_error, "server", cleanup_error)
             try:
                 session.close(timeout_seconds=args.shutdown_timeout_seconds)
             except BaseException as cleanup_error:
@@ -126,7 +119,7 @@ def main(argv: list[str] | None = None) -> int:
             raise
         else:
             session.close(timeout_seconds=args.shutdown_timeout_seconds)
-        print(json.dumps({
+        publication_record = {
             "run_namespace": publication.run_namespace,
             "episode_id": publication.episode_id,
             "tick_count": publication.tick_count,
@@ -140,7 +133,13 @@ def main(argv: list[str] | None = None) -> int:
             "analysis": str(publication.analysis_path),
             "seat_commands": str(publication.command_path),
             "realtime_ticks": str(publication.tick_path),
-        }, ensure_ascii=False, sort_keys=True), flush=True)
+        }
+        if args.json:
+            print(json.dumps(publication_record, ensure_ascii=False, sort_keys=True), flush=True)
+        else:
+            print(f"SAVED: ticks={publication.tick_count} commands={publication.applied_command_count}", flush=True)
+            print(f"REPLAY: {publication.replay_path}", flush=True)
+            print(f"OUTPUT: {publication.output_dir}", flush=True)
     return 0
 
 
@@ -149,11 +148,15 @@ def _note_cleanup_error(
     component: str,
     cleanup_error: BaseException,
 ) -> None:
-    note = (
-        f"realtime {component} cleanup also failed: "
-        f"{type(cleanup_error).__name__}: {cleanup_error}"
-    )
     try:
+        try:
+            message = str(cleanup_error)[:2048]
+        except BaseException:
+            message = "<exception message unavailable>"
+        note = (
+            f"realtime {component} cleanup also failed: "
+            f"{type(cleanup_error).__name__}: {message}"
+        )
         add_note = getattr(primary_error, "add_note", None)
         if callable(add_note):
             add_note(note)

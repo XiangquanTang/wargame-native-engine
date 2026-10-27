@@ -15,6 +15,7 @@ from zipfile import ZipFile
 from wargame_native_engine.analysis.analyzer import (
     EightFactorAnalyzer,
     GreenFrameAnalysisInput,
+    ReplayAnalyzer,
 )
 from wargame_native_engine.analysis.jsonl import analysis_frames_to_jsonl
 from wargame_native_engine.analysis.legacy_replay_adapter import (
@@ -109,7 +110,7 @@ def analyze_replay_to_jsonl(
     output_path: str | Path,
     *,
     source_format: str = "auto",
-    analyzer: EightFactorAnalyzer | None = None,
+    analyzer: ReplayAnalyzer | None = None,
     overwrite: bool = False,
 ) -> ReplayAnalysisResult:
     """Analyze one Native or historical replay into an independent JSONL file.
@@ -355,7 +356,7 @@ def _native_analysis_inputs(
 
 def _native_frame_analyses(
     source: Path,
-    analyzer: EightFactorAnalyzer,
+    analyzer: ReplayAnalyzer,
 ) -> tuple:
     archive = SourceReplayArchiveReader(source)
     scenario_hash = archive.manifest.get("scenario_hash")
@@ -379,7 +380,7 @@ def _native_frame_analyses(
 def _write_native_analysis_jsonl(
     source: Path,
     output: Path,
-    analyzer: EightFactorAnalyzer,
+    analyzer: ReplayAnalyzer,
     *,
     overwrite: bool,
 ) -> int:

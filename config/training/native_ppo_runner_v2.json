@@ -14,7 +14,7 @@
   "ppo_config_ref": {
     "id": "native-masked-ppo",
     "version": "1.0.0",
-    "hash": "d6a4d4744564fd7bfc4d9f1a16b0dc967e0c78d5a4682bea00208b2e46a9ddbc"
+    "hash": "b4965b3d5d95fbe25c455de24a2382c3aa00ba29e29b2b6d5ea5969732f093a7"
   },
   "seed_config_ref": {
     "id": "native-training-seeds",

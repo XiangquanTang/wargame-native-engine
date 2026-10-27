@@ -22,3 +22,9 @@ outputs/
 output/
 artifacts/
 *.log
+
+# Keep developer-only material local in the streamlined GitHub release.
+/checks/
+/devtools/
+/.github/
+/benchmarks/*.py

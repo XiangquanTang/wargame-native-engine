@@ -1,0 +1,24 @@
+{
+  "schema": "native-agent-benchmark/1.0",
+  "benchmark_id": "synthetic-pipeline-smoke-v1",
+  "scenarios": [
+    {
+      "id": "movement-tiny",
+      "path": "../../examples/source_movement_scenario.json",
+      "sha256": "2c01e462121205018022b8aa0c82ea2a873305d334ec113d8aaf0f2793c760c6"
+    }
+  ],
+  "seeds": [
+    42,
+    43
+  ],
+  "sides": [
+    "red",
+    "blue"
+  ],
+  "max_decisions": 3,
+  "decision_interval_ms": 1000,
+  "training_interface": "decision-v2",
+  "decision_budget_ms": null,
+  "max_trace_bytes": 16777216
+}

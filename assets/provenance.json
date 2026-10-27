@@ -1,0 +1,43 @@
+{
+  "source_replay": "Map123 v22 scripted two-seat recording",
+  "software_version": "0.4.22",
+  "adjudication_semantics": "native-joint-prestate/1.10",
+  "source_replay_sha256": "8b2c9448cfb4f99f304d6848aad3df15ee78233ad6630ded77d4b2765ac68082",
+  "source_scenario_sha256": "b75191e59c9e592f058d423709eb61b6cb3633da10a62c977b041c274ed810b4",
+  "first_source_frame": 80,
+  "last_source_frame": 130,
+  "source_frames": 51,
+  "duration_seconds": 25.5,
+  "view": "GREEN referee, both sides visible",
+  "presentation": "rendered from recorded facts, not browser capture",
+  "moving_unit_ids": {
+    "red": [
+      27
+    ],
+    "blue": [
+      1
+    ]
+  },
+  "validated_fire_frames": [
+    96
+  ],
+  "codec": "H.264 AVC / MP4; minih264 and minimp4 (CC0), build tools excluded from release",
+  "outputs": {
+    "map123-v22-overview.png": {
+      "bytes": 69476,
+      "sha256": "52814f1a4b22acb93177ea030d3bd1edc99e02a77f66ed36f35aab46413e07e4"
+    },
+    "map123-v22-poster.png": {
+      "bytes": 74926,
+      "sha256": "671049004a33cd4b75f75c7938c2e7c38e577174b245e6355132041b10acee5d"
+    },
+    "map123-v22-preview.gif": {
+      "bytes": 209439,
+      "sha256": "b79ae1d3d1a17852e127375e3d01006c18a589fd394520b61c3f35eaf3354f39"
+    },
+    "map123-v22.mp4": {
+      "bytes": 926018,
+      "sha256": "5943be9ace4910cd5c5c48c67555bb04d7436a810b73f1db8ffdd00dd6ce48ee"
+    }
+  }
+}

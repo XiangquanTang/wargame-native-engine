@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
 from dataclasses import dataclass, field
 from enum import Enum
 from types import MappingProxyType
 from typing import Mapping, Sequence
 
+from wargame_native_engine.io.detached import detached_copy
 from wargame_native_engine.core.action import (
     ACTION_PRIORITY,
     ActionType,
@@ -155,7 +155,7 @@ class DecisionWindow:
             intents = self.authorized_intents[side]
             for action_id in submission.ordered_action_ids:
                 value = snapshot.get(action_id)
-                actions.append(deepcopy(
+                actions.append(detached_copy(
                     value.action if value is not None else intents[action_id]
                 ))
         self.merged_action_batch = tuple(sorted(actions, key=canonical_action_order_key))
@@ -186,13 +186,20 @@ class DecisionWindow:
 
     def action_records(self, side: str) -> tuple[Mapping[str, object], ...]:
         snapshot = self.valid_action_snapshots[side]
-        return tuple(deepcopy(value.to_dict()) for value in snapshot.values())
+        # Built-in action records already detach parameters. Keep the defensive
+        # copy for custom subclasses whose serialization contract may differ.
+        return tuple(
+            value.to_dict()
+            if type(value) is ValidAction and type(value.action) is EngineAction
+            else detached_copy(value.to_dict())
+            for value in snapshot.values()
+        )
 
     def frozen_valid_actions(self, side: str) -> tuple[ValidAction, ...]:
         """Return a detached copy in the exact catalog/index order."""
 
         return tuple(
-            deepcopy(value) for value in self.valid_action_snapshots[side].values()
+            detached_copy(value) for value in self.valid_action_snapshots[side].values()
         )
 
     def action_revision(self, side: str) -> int:
@@ -221,7 +228,7 @@ class DecisionWindow:
             raise CommandGatewayError(
                 "decision_window_closed", "cannot authorize a closed proposal"
             )
-        detached = deepcopy(value)
+        detached = detached_copy(value)
         action = detached.action
         if action.side != side:
             raise CommandGatewayError(
@@ -285,12 +292,14 @@ class DecisionWindow:
             raise CommandGatewayError(
                 "decision_window_closed", "cannot authorize a closed intent"
             )
-        detached = deepcopy(action)
+        detached = detached_copy(action)
+        target_hex = detached.parameters.get("target_hex")
         if (
             detached.side != side
             or detached.action_type is not ActionType.SHOOT
             or detached.actor_id is None
-            or detached.target_id is None
+            or ((detached.target_id is None) == (target_hex is None))
+            or (target_hex is not None and type(target_hex) is not int)
             or type(detached.parameters.get("weapon_id")) is not int
         ):
             raise CommandGatewayError(
@@ -318,9 +327,9 @@ class DecisionWindow:
 
         value = self.valid_action_snapshots[side].get(str(action_id))
         if value is not None:
-            return deepcopy(value.action)
+            return detached_copy(value.action)
         intent = self.authorized_intents[side].get(str(action_id))
-        return None if intent is None else deepcopy(intent)
+        return None if intent is None else detached_copy(intent)
 
 
 def canonical_action_order_key(action: EngineAction) -> tuple[object, ...]:
@@ -348,7 +357,7 @@ def _freeze_side_actions(
 ) -> Mapping[str, ValidAction]:
     frozen: dict[str, ValidAction] = {}
     for source in values:
-        value = deepcopy(source)
+        value = detached_copy(source)
         if value.action.side != side:
             raise ValueError(f"valid_action_side_mismatch:{side}")
         action_id = value.action_id

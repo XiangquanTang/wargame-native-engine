@@ -38,11 +38,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--scenario",
         choices=tuple(SCENARIO_FILES),
-        default="artillery-ammo2",
+        default="original",
         help="original scenario or the explicitly labelled 12-artillery ammo=2 demo",
     )
     parser.add_argument("--assets-dir", type=Path, default=DEFAULT_ASSETS_DIR)
     parser.add_argument("--cache-root", type=Path, default=DEFAULT_CACHE_ROOT)
+    parser.add_argument("--json", action="store_true", help="print full preparation and launcher metadata as JSON")
     parser.add_argument("--prepare-only", action="store_true")
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--run-namespace")
@@ -73,7 +74,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"MAP123_PREPARE_ERROR: {code}: {exc}", file=sys.stderr)
         return 2
 
-    print(json.dumps({
+    report = {
         "cache": "hit" if prepared.cache_hit else "prepared",
         "cache_dir": str(prepared.cache_dir),
         "manifest_sha256": prepared.manifest_sha256,
@@ -81,7 +82,13 @@ def main(argv: list[str] | None = None) -> int:
         "scenario": args.scenario,
         "scenario_id": bundle.scenario_identity.scenario_id,
         "scenario_sha256": bundle.scenario_identity.sha256,
-    }, ensure_ascii=False, sort_keys=True), flush=True)
+    }
+    if args.json:
+        print(json.dumps(report, ensure_ascii=False, sort_keys=True), flush=True)
+    else:
+        print(f"PREPARED: map=123 scenario={bundle.scenario_identity.scenario_id} cache={report['cache']}", flush=True)
+        print(f"SCENARIO_INPUT: {scenario_path.resolve()}", flush=True)
+        print("RUNTIME: 机动/视线缓存已校验（详细路径使用 --json）", flush=True)
     if args.prepare_only:
         return 0
 
@@ -103,6 +110,8 @@ def main(argv: list[str] | None = None) -> int:
         "--red-token", args.red_token,
         "--blue-token", args.blue_token,
     ]
+    if args.json:
+        forwarded.append("--json")
     if args.overwrite:
         forwarded.append("--overwrite")
     return realtime_launcher.main(forwarded)

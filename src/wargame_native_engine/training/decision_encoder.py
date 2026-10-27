@@ -40,12 +40,12 @@ from wargame_native_engine.projection.operator_perspective import (
 
 
 DECISION_OBSERVATION_ENCODER_SCHEMA_VERSION = (
-    "native-decision-observation-encoder/1.0"
+    "native-decision-observation-encoder/1.1"
 )
 DECISION_OBSERVATION_ENCODER_V2_SCHEMA_VERSION = (
-    "native-decision-observation-encoder/2.0"
+    "native-decision-observation-encoder/2.1"
 )
-DECISION_ACTION_ENCODER_SCHEMA_VERSION = "native-decision-action-encoder/1.0"
+DECISION_ACTION_ENCODER_SCHEMA_VERSION = "native-decision-action-encoder/1.1"
 
 SNAPSHOT_FEATURES = (
     "side",
@@ -167,6 +167,7 @@ CAPABILITY_FAMILY_ORDER = (
     DecisionCapabilityFamily.BOARD,
     DecisionCapabilityFamily.UNLOAD,
     DecisionCapabilityFamily.ENTER_CONCEALMENT,
+    DecisionCapabilityFamily.WEAPON_UNLOCK,
     DecisionCapabilityFamily.WEAPON_LOCK,
     DecisionCapabilityFamily.WEAPON_UNFOLD,
     DecisionCapabilityFamily.CHANGE_STATE,
@@ -185,6 +186,8 @@ INVENTORY_UNIT_FEATURES = (
     "ammunition_pool_count",
     "weapon_cooldown_present",
     "weapon_cooldown_remaining_ms",
+    "locked_weapon_present",
+    "locked_weapon_reference",
 )
 WEAPON_INVENTORY_FEATURES = (
     "owner_reference",
@@ -297,7 +300,7 @@ _ACTION_TYPE = {
     for index, value in enumerate((
         "DEPLOY", "END_DEPLOYMENT", "MOVE", "CHANGE_STATE", "ATTACK",
         "SHOOT", "FIRE", "STOP_MOVE", "BOARD", "UNLOAD", "CAPTURE",
-        "ENTER_CONCEALMENT", "WEAPON_LOCK", "WEAPON_UNFOLD", "WAIT",
+        "ENTER_CONCEALMENT", "WEAPON_LOCK", "WEAPON_UNFOLD", "WAIT", "WEAPON_UNLOCK",
     ))
 }
 _CAPABILITY_FAMILY = {
@@ -1200,9 +1203,14 @@ def _encode_weapon_inventory(
         cooldown_present, cooldown_value = _optional_nonnegative_number(
             cooldown, "weapon cooldown"
         )
+        locked_id = raw.get("locked_weapon_id")
+        if locked_id is not None:
+            locked_id = _nonnegative_exact_int(locked_id, "locked weapon_id")
+            if locked_id not in {value[0] for value in weapon_values}:
+                raise DecisionEncodingError("locked weapon_id must belong to carried inventory")
         unit_rows.append(tuple(float(item) for item in (
             owner, len(weapon_values), len(pool_keys), cooldown_present,
-            cooldown_value,
+            cooldown_value, locked_id is not None, locked_id if locked_id is not None else 0,
         )))
         for key in pool_keys:
             present = key in explicit_pools

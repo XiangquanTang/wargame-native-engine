@@ -14,6 +14,7 @@ import re
 from typing import Iterable
 
 from wargame_native_engine.core.world import Stage
+from wargame_native_engine.io.detached import detached_record
 from wargame_native_engine.io.serialization import canonical_hash
 from wargame_native_engine.projection.operator_lifecycle import (
     BoardingView,
@@ -118,12 +119,14 @@ class DecisionCapabilityFamily(str, Enum):
     BOARD = "BOARD"
     UNLOAD = "UNLOAD"
     ENTER_CONCEALMENT = "ENTER_CONCEALMENT"
+    WEAPON_UNLOCK = "WEAPON_UNLOCK"
     WEAPON_LOCK = "WEAPON_LOCK"
     WEAPON_UNFOLD = "WEAPON_UNFOLD"
     CHANGE_STATE = "CHANGE_STATE"
     CAPTURE = "CAPTURE"
 
 
+@detached_record
 @dataclass(frozen=True, slots=True)
 class AuthorityMetadata:
     engine_version: str
@@ -171,6 +174,7 @@ class AuthorityMetadata:
             )
 
 
+@detached_record
 @dataclass(frozen=True, slots=True)
 class DecisionSnapshotIdentity:
     side: DecisionSide
@@ -196,6 +200,7 @@ class DecisionSnapshotIdentity:
             )
 
 
+@detached_record
 @dataclass(frozen=True, slots=True)
 class DecisionObjective:
     objective_id: int
@@ -228,6 +233,7 @@ class DecisionObjective:
             )
 
 
+@detached_record
 @dataclass(frozen=True, slots=True)
 class DecisionTerminalRules:
     elimination: bool
@@ -242,6 +248,7 @@ class DecisionTerminalRules:
                 _nonnegative_int(value, name)
 
 
+@detached_record
 @dataclass(frozen=True, slots=True)
 class DecisionMissionContext:
     terminal_rules: DecisionTerminalRules
@@ -251,6 +258,7 @@ class DecisionMissionContext:
             raise TypeError("terminal_rules must be DecisionTerminalRules")
 
 
+@detached_record
 @dataclass(frozen=True, slots=True)
 class SideDecisionContext:
     side: DecisionSide
@@ -287,6 +295,7 @@ class SideDecisionContext:
         object.__setattr__(self, "observed_contact_references", contacts)
 
 
+@detached_record
 @dataclass(frozen=True, slots=True)
 class CapabilityBlockerCode:
     producer_namespace: str
@@ -297,6 +306,7 @@ class CapabilityBlockerCode:
         _token(self.code, "blocker code")
 
 
+@detached_record
 @dataclass(frozen=True, slots=True)
 class CapabilityFamilyStatus:
     family: DecisionCapabilityFamily
@@ -387,6 +397,7 @@ class CapabilityFamilyStatus:
             )
 
 
+@detached_record
 @dataclass(frozen=True, slots=True)
 class OperatorCapabilitySummary:
     operator_reference: int
@@ -403,6 +414,7 @@ class OperatorCapabilitySummary:
         object.__setattr__(self, "families", families)
 
 
+@detached_record
 @dataclass(frozen=True, slots=True)
 class DecisionCapabilitySnapshot:
     schema_version: str
@@ -444,6 +456,7 @@ class DecisionCapabilitySnapshot:
         return _capability_snapshot_record(self)
 
 
+@detached_record
 @dataclass(frozen=True, slots=True)
 class ActionCatalogReference:
     schema_version: str
@@ -503,6 +516,7 @@ class ActionCatalogReference:
         object.__setattr__(self, "actor_references", actors)
 
 
+@detached_record
 @dataclass(frozen=True, slots=True)
 class SideDecisionSemanticProjection:
     schema_version: str

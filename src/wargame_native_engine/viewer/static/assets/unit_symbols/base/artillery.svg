@@ -1,4 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
-  <circle cx="52" cy="72" r="22" />
-  <path d="M24 96 L74 46 H61 L61 34 H94 V67 H82 V54 L32 104 Z" />
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" fill="none" stroke="currentColor" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
+  <circle cx="43" cy="82" r="17"/>
+  <path d="M43 64 L88 27 L99 41 L57 79 Z" fill="currentColor" fill-opacity=".3"/>
+  <path d="M57 85 L96 100 M30 95 L19 104"/>
 </svg>

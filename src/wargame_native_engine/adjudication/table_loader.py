@@ -46,6 +46,11 @@ class AdjudicationTableSet:
         "RAPID_FIRE_CANNON_GROUND": "rapid_fire_gun_ground",
         "INFANTRY_LIGHT_WEAPON": "infantry_light_weapon",
         "VEHICLE_LIGHT_WEAPON": "vehicle_light_weapon",
+        # Source ID 69 names the vehicle-missile half of this grouped table.
+        "vehicle_missile": "vehicle_missile_gun_launched",
+        # Source ID 5 is the ground-target variant of the portable-missile row.
+        # Keep its canonical identity distinct; only reuse the vehicle lookup.
+        "portable_missile_ground": "portable_missile",
     }
 
     def __init__(self, path: str | Path) -> None:
@@ -154,7 +159,9 @@ class AdjudicationTableSet:
 
     def elevation_modifier(self, target_minus_shooter: int,
                            distance: int) -> TableLookup:
-        difference = int(target_minus_shooter)
+        if isinstance(target_minus_shooter, bool) or not isinstance(target_minus_shooter, int):
+            raise ValueError("elevation_difference must be an integer elevation-level difference")
+        difference = target_minus_shooter
         distance = _index(distance, "distance")
         table = self.document["direct_fire"]["elevation_attack_level_modifiers"]
         if difference <= 0:

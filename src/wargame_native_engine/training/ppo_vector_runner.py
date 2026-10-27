@@ -17,6 +17,7 @@ import time
 from typing import Mapping, Sequence
 
 from wargame_native_engine.agents.baselines import NoOpAgent
+from wargame_native_engine.training.decision_encoder import DECISION_OBSERVATION_ENCODER_SCHEMA_VERSION
 from wargame_native_engine.io.serialization import canonical_hash, file_sha256
 from wargame_native_engine.training.env import (
     NativeTrainingEnv,
@@ -344,7 +345,7 @@ class NativeSynchronousVectorPPORunner:
         self.core = core
         self.preprocessor = preprocessor or LearnerObservationPreprocessor()
         if self.core.preprocessor_spec.input_encoder_schema != (
-            "native-decision-observation-encoder/1.0"
+            DECISION_OBSERVATION_ENCODER_SCHEMA_VERSION
         ):
             raise PPOVectorRunnerError(
                 "vector runner does not support Decision-v2 observations"

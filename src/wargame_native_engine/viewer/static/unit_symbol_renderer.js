@@ -6,8 +6,8 @@
   const CACHE_SCHEMA = "unit-symbol-cache/v1";
   const SAFE_LAYER_PATH = /^assets\/unit_symbols\/(base|modifiers)\/[a-z0-9_]+\.svg$/;
   const SIDE_COLORS = Object.freeze({
-    RED: "#d33",
-    BLUE: "#36f",
+    RED: "#ff747b",
+    BLUE: "#7db7ff",
     UNKNOWN: "#777777",
     DESTROYED: "#777777",
   });
@@ -18,7 +18,9 @@
   }
 
   function renderPalette(descriptor) {
-    if (descriptor?.status === "destroyed") return "DESTROYED";
+    if (descriptor?.unit_state === "destroyed" || descriptor?.status === "destroyed") {
+      return "DESTROYED";
+    }
     return normalizeSide(descriptor?.side);
   }
 
@@ -90,7 +92,9 @@
           || !this.URLApi || typeof this.URLApi.createObjectURL !== "function") {
         return Promise.reject(new Error("SVG image loading is unavailable"));
       }
-      return this.fetchImpl(`/static/${path}`, { cache: "force-cache" })
+      return this.fetchImpl(globalThis.ViewerUrls
+        ? globalThis.ViewerUrls.resolve(`/static/${path}`)
+        : `/static/${path}`, { cache: "force-cache" })
         .then((response) => {
           if (!response.ok) throw new Error(`SVG request failed: ${response.status}`);
           return response.text();

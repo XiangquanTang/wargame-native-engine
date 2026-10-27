@@ -46,6 +46,7 @@ from wargame_native_engine.training.ppo_vector_runner import (
 )
 from wargame_native_engine.training.ppo_vector_runner_config import PPOVectorRunnerConfig
 from wargame_native_engine.training.training_seed import TrainingSeedStream
+from wargame_native_engine.training.decision_encoder import DECISION_OBSERVATION_ENCODER_SCHEMA_VERSION
 from wargame_native_engine.io.serialization import canonical_hash
 
 
@@ -192,7 +193,7 @@ class NativeParallelPPORunner:
         self.base_runner_config = base_runner_config
         self.core = core
         if self.core.preprocessor_spec.input_encoder_schema != (
-            "native-decision-observation-encoder/1.0"
+            DECISION_OBSERVATION_ENCODER_SCHEMA_VERSION
         ):
             raise PPOParallelRunnerError(
                 "parallel runner does not support Decision-v2 observations"

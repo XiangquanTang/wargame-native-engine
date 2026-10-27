@@ -915,14 +915,16 @@ class NativeTrainingEnv:
         target_hex: int,
         *,
         request_id: str,
+        target_id: int | None = None,
     ) -> ActionProposal:
         """Authorize one area-target intent into the current frozen catalog.
 
         The adapter mirrors :meth:`plan_move`: validation and action creation
         remain in the public Controller/Gateway/Engine route, after which the
         Decision-v1 observation/catalog pair is rebound atomically.  In
-        particular, ``target_hex`` is not converted to or inferred from an
-        enemy ``target_id``.
+        particular, ``target_hex`` is never converted to an enemy identity.
+        Optional ``target_id`` explicitly binds a visible enemy; without it
+        the fire operation consumes resources but has no damage effect.
         """
 
         self._require_active()
@@ -931,6 +933,7 @@ class NativeTrainingEnv:
             weapon_id,
             target_hex,
             request_id=request_id,
+            target_id=target_id,
         )
         if self.training_interface_version in _DECISION_INTERFACES:
             self._bind_training_view(self._controlled_view())
@@ -1342,6 +1345,8 @@ class NativeTrainingEnv:
             "sim_time_ms": view.sim_time_ms,
             "winner": view.winner,
             "outcome": view.outcome,
+            "terminated": view.terminated,
+            "truncated": view.truncated or training_truncated,
             "truncation_source": (
                 "native"
                 if view.truncated

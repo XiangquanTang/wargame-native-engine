@@ -33,6 +33,7 @@ from wargame_native_engine.core.fire_capability import (
     IndirectFireCapability,
     IndirectFireCapabilityStatus,
 )
+from wargame_native_engine.io.detached import detached_record
 from wargame_native_engine.io.serialization import (
     canonical_hash,
     canonical_json,
@@ -88,6 +89,7 @@ _ACTION_FAMILY = {
     ActionType.CAPTURE: DecisionCapabilityFamily.CAPTURE,
     ActionType.ENTER_CONCEALMENT: DecisionCapabilityFamily.ENTER_CONCEALMENT,
     ActionType.WEAPON_LOCK: DecisionCapabilityFamily.WEAPON_LOCK,
+    ActionType.WEAPON_UNLOCK: DecisionCapabilityFamily.WEAPON_UNLOCK,
     ActionType.WEAPON_UNFOLD: DecisionCapabilityFamily.WEAPON_UNFOLD,
     ActionType.WAIT: DecisionCapabilityFamily.WAIT,
 }
@@ -153,6 +155,7 @@ class ExplicitCapabilityEvidence:
             )
 
 
+@detached_record
 @dataclass(frozen=True, slots=True)
 class ActionCatalogEntry:
     action_id: str
@@ -226,6 +229,7 @@ class ActionCatalogEntry:
         }
 
 
+@detached_record
 @dataclass(frozen=True, slots=True)
 class ActionCatalogSnapshot:
     schema_version: str

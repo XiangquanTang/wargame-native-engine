@@ -23,14 +23,17 @@ from wargame_native_engine.viewer.human_capabilities import (
     build_human_capabilities,
 )
 from wargame_native_engine.viewer.static_resources import (
+    VIEWER_CONTENT_SECURITY_POLICY,
     load_symbol_static_resource,
 )
 
 
 _STATIC_ROOT = Path(__file__).with_name("static")
 _STATIC_FILES = {
+    "/static/viewer_urls.js": ("viewer_urls.js", "text/javascript; charset=utf-8"),
     "/static/dual_control.js": ("dual_control.js", "text/javascript; charset=utf-8"),
     "/static/capability_ui.js": ("capability_ui.js", "text/javascript; charset=utf-8"),
+    "/static/unit_radial_actions.js": ("unit_radial_actions.js", "text/javascript; charset=utf-8"),
     "/static/map_renderer.js": ("map_renderer.js", "text/javascript; charset=utf-8"),
     "/static/unit_symbol_renderer.js": ("unit_symbol_renderer.js", "text/javascript; charset=utf-8"),
     "/static/unit_symbol_resolver.js": ("unit_symbol_resolver.js", "text/javascript; charset=utf-8"),
@@ -568,7 +571,7 @@ class DualSideControlRequestHandler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header(
             "Content-Security-Policy",
-            "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' blob:",
+            VIEWER_CONTENT_SECURITY_POLICY,
         )
         self.end_headers()
         self.wfile.write(payload)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from fractions import Fraction
 import math
 from typing import Mapping
 
@@ -22,14 +23,62 @@ class HexCell:
 
 @dataclass(frozen=True, slots=True)
 class HexMapProfile:
+    """Terrain heights and their declared units for Native fallback LOS.
+
+    Direct profile callers historically supply elevation levels. Native maps
+    must pass their metadata explicitly; meter heights need a known grade size
+    before the rule's one-level bonuses can be applied. Cached source LOS does
+    not use this conversion and remains a separate authority.
+    """
+
     cells: Mapping[int, HexCell]
     float_tolerance: float = 1e-9
+    elevation_kind: str | None = "LEVEL"
+    elevation_unit_m: float | None = None
 
     def cell(self, hex_id: int) -> HexCell:
         try:
             return self.cells[int(hex_id)]
         except KeyError as exc:
             raise ValueError(f"missing terrain/elevation data for hex {hex_id}") from exc
+
+    def elevation_units_per_level(self) -> float:
+        """Return the scale for grade-based LOS, never guess unknown units."""
+
+        if self.elevation_kind == "LEVEL":
+            return 1.0
+        if self.elevation_kind != "METERS":
+            raise ValueError("fallback LOS requires elevation_kind LEVEL or METERS")
+        unit = self.elevation_unit_m
+        if (isinstance(unit, bool) or not isinstance(unit, (int, float))
+                or not math.isfinite(unit) or unit <= 0):
+            raise ValueError(
+                "fallback LOS for METERS requires positive finite elevation_unit_m"
+            )
+        return float(unit)
+
+
+    def elevation_level_difference(self, shooter_hex: int, target_hex: int) -> int:
+        """Signed target-minus-shooter grades for the discrete firing table.
+
+        Keep raw map heights unchanged. Only declared METERS scales are divided;
+        LEVEL values already are grades. Fractional grades are unsupported, not
+        rounded, truncated, clamped or interpolated into a different rule cell.
+        """
+        scale = Fraction(str(self.elevation_units_per_level()))
+        shooter = self.cell(shooter_hex).elevation
+        target = self.cell(target_hex).elevation
+        for value in (shooter, target):
+            if (isinstance(value, bool) or not isinstance(value, (int, float))
+                    or not math.isfinite(value)):
+                raise ValueError("fire elevation requires finite numeric map heights")
+        difference = (Fraction(str(target)) - Fraction(str(shooter))) / scale
+        if difference.denominator != 1:
+            raise ValueError(
+                "fire elevation difference is not an integral elevation level: "
+                f"difference={difference}"
+            )
+        return int(difference)
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,7 +99,11 @@ def evaluate_line_of_sight(profile: HexMapProfile, observer_hex: int,
     if distance <= 1:
         return LineOfSightEvidence(True, distance, (), (),
                                    ({"rule": "adjacent_hex_always_visible"},))
-    start_height, end_height = start.elevation, end.elevation
+    level_size = profile.elevation_units_per_level()
+    # Perform every LOS height comparison in levels, including the evidence.
+    # A +1 bonus is one elevation grade, not one meter on a METERS map.
+    start_height = start.elevation / level_size
+    end_height = end.elevation / level_size
     modifiers: list[dict[str, float | int | str]] = []
     if start.elevation > end.elevation:
         start_height += 1.0
@@ -67,11 +120,12 @@ def evaluate_line_of_sight(profile: HexMapProfile, observer_hex: int,
         cell = profile.cell(hex_id)
         ratio = index / distance
         line_height = start_height + (end_height - start_height) * ratio
-        modified_height = cell.elevation + cell.intervening_height_bonus
+        terrain_height = cell.elevation / level_size
+        modified_height = terrain_height + cell.intervening_height_bonus
         sample = {"hex_id": hex_id, "ratio": ratio,
                   "line_height": line_height,
                   "terrain": cell.terrain,
-                  "terrain_elevation": cell.elevation,
+                  "terrain_elevation": terrain_height,
                   "modified_elevation": modified_height}
         samples.append(sample)
         if cell.intervening_height_bonus:

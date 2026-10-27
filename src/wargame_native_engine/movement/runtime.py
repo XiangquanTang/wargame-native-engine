@@ -260,7 +260,6 @@ class MovementRuntime:
                     event_type = EventType.WEAPON_LOCKED
                 elif kind == "WEAPON_UNFOLD":
                     operator.weapon_unfolded = True
-                    operator.weapon_locked = False
                     event_type = EventType.WEAPON_UNFOLDED
                 elif kind == "ENTER_MARCHING":
                     operator.movement_mode = MovementMode.MARCHING.value
@@ -275,6 +274,7 @@ class MovementRuntime:
                 events.append(self._event(world, event_type, operator,
                                           action_sequence,
                                           {"transition_kind": kind,
+                                           "locked_weapon_id": operator.locked_weapon_id,
                                            "reason_code": "COMPLETED"}))
             while (operator.stopped and operator.fatigue_level > 0
                    and operator.fatigue_recovery_elapsed_ms >=

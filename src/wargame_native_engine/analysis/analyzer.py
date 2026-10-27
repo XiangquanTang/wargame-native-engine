@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from inspect import signature
-from typing import Any, cast
+from typing import Any, Protocol, cast
 
 from wargame_native_engine.analysis.green_frame_contract import (
     build_green_frame_analysis,
@@ -45,6 +45,16 @@ class GreenFrameAnalysisInput:
 
     def __post_init__(self) -> None:
         _validate_frame_index(self.frame_index)
+
+
+class ReplayAnalyzer(Protocol):
+    """Shared stateless interface for explicitly selected analysis contracts."""
+
+    def analyze_green_frame(self, item: GreenFrameAnalysisInput) -> FrameAnalysis: ...
+
+    def analyze_green_frames(
+        self, inputs: Sequence[GreenFrameAnalysisInput],
+    ) -> AnalysisTimeline: ...
 
 
 @dataclass(frozen=True, slots=True)

@@ -8,6 +8,7 @@ from pathlib import Path
 from queue import Empty, Full, Queue
 from threading import Event, RLock, Thread
 from time import monotonic, monotonic_ns
+from wargame_native_engine.agents._timeouts import validated_timeout
 from wargame_native_engine.agents.realtime import (
     RealtimeCancellationReason,
     RealtimeAgentSession,
@@ -95,13 +96,12 @@ class RealtimeLocalAgentRunner:
     ) -> RealtimeLocalAgentResult:
         if type(max_ticks) is not int or max_ticks <= 0:
             raise ValueError("max_ticks must be a positive exact int")
-        if isinstance(timeout_seconds, bool) or timeout_seconds <= 0:
-            raise ValueError("timeout_seconds must be positive")
-        if shutdown_timeout_seconds is not None and (
-            isinstance(shutdown_timeout_seconds, bool)
-            or shutdown_timeout_seconds <= 0
-        ):
-            raise ValueError("shutdown_timeout_seconds must be positive or None")
+        timeout_seconds = validated_timeout(timeout_seconds)
+        shutdown_timeout_seconds = validated_timeout(
+            shutdown_timeout_seconds,
+            name="shutdown_timeout_seconds",
+            allow_none=True,
+        )
         if self._ran:
             raise RuntimeError("realtime_local_agent_runner_is_single_use")
         self._ran = True

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "wargame-native-engine"
-version = "0.4.4"
+version = "0.4.22"
 description = "A transparent, deterministic, SDK-independent native wargame engine"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -13,9 +13,11 @@ authors = [{name = "wargame_native_engine contributors"}]
 dependencies = []
 
 [project.optional-dependencies]
+dev = ["tomli>=2,<3; python_version < '3.11'"]
 learner = ["torch>=2.2,<3"]
 
 [project.scripts]
+wargame-native-analyze = "wargame_native_engine.cli.generate_analysis:main"
 wargame-native-run = "wargame_native_engine.cli.run_game:main"
 wargame-native-fairness = "wargame_native_engine.cli.evaluate_fairness:main"
 wargame-native-import = "wargame_native_engine.cli.import_scenario:main"
@@ -26,6 +28,7 @@ wargame-native-evaluate-calibrated = "wargame_native_engine.cli.evaluate_calibra
 wargame-native-inspect-source-frame = "wargame_native_engine.cli.inspect_source_frame:main"
 wargame-native-direct-fire = "wargame_native_engine.cli.resolve_direct_fire:main"
 wargame-native-source-compatible = "wargame_native_engine.cli.run_source_compatible_game:main"
+wargame-native-benchmark = "wargame_native_engine.evaluation.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

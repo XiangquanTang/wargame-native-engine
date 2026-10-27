@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Mapping
 
+from wargame_native_engine.io.detached import detached_record
 from wargame_native_engine.io.serialization import canonical_hash, json_clone
 
 
@@ -20,11 +21,13 @@ class ActionType(str, Enum):
     UNLOAD = "UNLOAD"
     CAPTURE = "CAPTURE"
     ENTER_CONCEALMENT = "ENTER_CONCEALMENT"
+    WEAPON_UNLOCK = "WEAPON_UNLOCK"
     WEAPON_LOCK = "WEAPON_LOCK"
     WEAPON_UNFOLD = "WEAPON_UNFOLD"
     WAIT = "WAIT"
 
 
+@detached_record
 @dataclass(frozen=True, slots=True)
 class EngineAction:
     side: str
@@ -61,6 +64,7 @@ class EngineAction:
         )
 
 
+@detached_record
 @dataclass(frozen=True, slots=True)
 class ValidAction:
     action: EngineAction
@@ -72,8 +76,14 @@ class ValidAction:
         return self.action.action_id
 
     def to_dict(self) -> dict[str, Any]:
-        return {"action_id": self.action_id, "priority": self.priority,
-                "source": self.source, "action": self.action.to_dict()}
+        if type(self.action) is not EngineAction or type(self) is not ValidAction:
+            return {"action_id": self.action_id, "priority": self.priority,
+                    "source": self.source, "action": self.action.to_dict()}
+        # Serialize once, but do not cache: nested parameters remain mutable.
+        action_record = self.action.to_dict()
+        action_id = "action-" + canonical_hash(action_record)[:24]
+        return {"action_id": action_id, "priority": self.priority,
+                "source": self.source, "action": action_record}
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +109,7 @@ ACTION_PRIORITY = {
     ActionType.UNLOAD: 2,
     ActionType.CAPTURE: 2,
     ActionType.ENTER_CONCEALMENT: 2,
+    ActionType.WEAPON_UNLOCK: 2,
     ActionType.WEAPON_LOCK: 2,
     ActionType.WEAPON_UNFOLD: 2,
     ActionType.MOVE: 1,

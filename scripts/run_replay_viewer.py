@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 from collections.abc import Sequence
 import sys
+from time import perf_counter
 
 from wargame_native_engine.viewer import (
     create_replay_viewer_server,
@@ -18,9 +19,14 @@ def build_parser() -> argparse.ArgumentParser:
         description="View one local replay and its external eight-factor analysis.",
     )
     parser.add_argument("--replay-dir", required=True)
-    parser.add_argument(
+    map_options = parser.add_mutually_exclusive_group()
+    map_options.add_argument(
         "--map-config",
         help="optional explicit odd-r basic-map JSON; no filename inference",
+    )
+    map_options.add_argument(
+        "--native-scenario-map",
+        help="Native scenario JSON supplying replay terrain and static objectives",
     )
     parser.add_argument(
         "--map-coordinate-system",
@@ -41,10 +47,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    started = perf_counter()
+    print("Validating replay frames and analysis…", flush=True)
     try:
         view = load_replay_view(
             args.replay_dir,
             map_config=args.map_config,
+            native_scenario_map=args.native_scenario_map,
             map_coordinate_system=args.map_coordinate_system,
             scenario_config=args.scenario_config,
         )
@@ -60,7 +69,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     host, port = server.server_address[:2]
     print(
         f"Replay viewer: http://{host}:{port}/ "
-        f"({view.frame_count} frames, read-only)",
+        f"({view.frame_count} frames, read-only; loaded in {perf_counter() - started:.2f}s)",
         flush=True,
     )
     try:

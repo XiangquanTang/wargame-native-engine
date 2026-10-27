@@ -28,7 +28,7 @@
       "type": "object", "additionalProperties": false,
       "required": ["schema_version", "hash", "capacity"],
       "properties": {
-        "schema_version": {"const": "native-decision-action-encoder/1.0"},
+        "schema_version": {"const": "native-decision-action-encoder/1.1"},
         "hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "capacity": {"const": 256}
       }

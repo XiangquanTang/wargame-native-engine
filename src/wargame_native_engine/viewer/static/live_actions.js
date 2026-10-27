@@ -7,7 +7,7 @@
  */
 (function installLiveActionIndex(globalObject) {
   const GROUP_ORDER = [
-    "MOVE", "SHOOT", "STOP_MOVE", "WEAPON_LOCK", "WEAPON_UNFOLD",
+    "MOVE", "SHOOT", "STOP_MOVE", "WEAPON_LOCK", "WEAPON_UNLOCK", "WEAPON_UNFOLD",
     "WAIT", "DEPLOY", "END_DEPLOYMENT", "CHANGE_STATE", "ATTACK",
   ];
 

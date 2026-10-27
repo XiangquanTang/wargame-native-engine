@@ -65,7 +65,7 @@
       "ammunition_key": "0",
       "cooldown_seconds": null,
       "requires_unfolded": true,
-      "can_fire_while_moving": false,
+      "can_fire_while_moving": true,
       "native_basis": "Native curated direct-fire table personnel range"
     },
     "5": {
@@ -85,7 +85,7 @@
       "ammunition_key": "0",
       "cooldown_seconds": null,
       "requires_unfolded": false,
-      "can_fire_while_moving": false,
+      "can_fire_while_moving": true,
       "native_basis": "Native curated direct-fire personnel and infantry-vs-vehicle tables"
     },
     "35": {
@@ -95,7 +95,7 @@
       "ammunition_key": "100",
       "cooldown_seconds": null,
       "requires_unfolded": false,
-      "can_fire_while_moving": false,
+      "can_fire_while_moving": true,
       "native_basis": "Native curated direct-fire vehicle table"
     },
     "36": {
@@ -105,7 +105,7 @@
       "ammunition_key": "0",
       "cooldown_seconds": null,
       "requires_unfolded": true,
-      "can_fire_while_moving": false,
+      "can_fire_while_moving": true,
       "native_basis": "Conservative shared range across Native curated personnel and vehicle tables"
     },
     "43": {
@@ -115,7 +115,7 @@
       "ammunition_key": "0",
       "cooldown_seconds": null,
       "requires_unfolded": true,
-      "can_fire_while_moving": false,
+      "can_fire_while_moving": true,
       "native_basis": "Native curated direct-fire personnel table; no vehicle table is asserted"
     },
     "54": {
@@ -125,7 +125,7 @@
       "ammunition_key": "0",
       "cooldown_seconds": null,
       "requires_unfolded": true,
-      "can_fire_while_moving": false,
+      "can_fire_while_moving": true,
       "native_basis": "Conservative shared range across Native curated personnel and vehicle tables"
     },
     "72": {

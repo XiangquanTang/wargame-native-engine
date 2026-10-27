@@ -7,7 +7,7 @@ from typing import Any, Mapping, Sequence
 from wargame_native_engine.compat.source_frame.exporter import SourceFrameExporter
 from wargame_native_engine.compat.source_frame.contract import (
     CURRENT_SOURCE_CONTRACT, LEGACY_SOURCE_CONTRACT, SOURCE_CONTRACT_KEY,
-    require_source_contract,
+    is_dynamic_source_contract, require_source_contract,
 )
 from wargame_native_engine.compat.source_frame.models import SourceFrame
 from wargame_native_engine.core.action import EngineAction
@@ -176,7 +176,8 @@ class SourceCompatibleEnvironment:
                 world, actions=action_records, judge_info=judge,
                 snapshot=snapshot,
             )
-            bundle = self._project(green, snapshot=snapshot)
+            state_hash = canonical_hash(snapshot["world"])
+            bundle = self._project(green, snapshot=snapshot, state_hash=state_hash)
             step_record = {
                 "schema_version": "native-step/1.0",
                 "step_index": int(result.tick_after),
@@ -187,7 +188,7 @@ class SourceCompatibleEnvironment:
                 "ordered_actions": [item.to_dict() for item in result.actions],
                 "action_sequences": list(result.action_sequences),
                 "ordered_action_input": bool(result.ordered_action_input),
-                "expected_state_hash": canonical_hash(snapshot["world"]),
+                "expected_state_hash": state_hash,
             }
             detached_results = tuple(json_clone(action_results))
             detached_events = tuple(deepcopy(result.events))
@@ -318,7 +319,7 @@ class SourceCompatibleEnvironment:
             weapon_inventory=(tuple(
                 value for side in self.session.scenario.side_order
                 for value in self.session.own_weapon_inventory(side)
-            ) if self.source_contract == CURRENT_SOURCE_CONTRACT else ()),
+            ) if is_dynamic_source_contract(self.source_contract) else ()),
             project_objective_control=(
                 isinstance(capture_policy, Mapping)
                 and capture_policy.get("mode") == EXPLICIT_CAPTURE_MODE
@@ -327,21 +328,23 @@ class SourceCompatibleEnvironment:
 
     def _project(self, green: Mapping[str, Any], *,
                  snapshot: Mapping[str, Any] | None = None,
+                 state_hash: str | None = None,
                  ) -> ObservationBundle:
         if snapshot is None:
             snapshot = self.session.snapshot()
         return self.projector.project(green, PerspectiveContext(
             red=self.session.observe("red"), blue=self.session.observe("blue"),
             session_id=self.session.session_id,
-            public_metadata=self._public_metadata(snapshot),
+            public_metadata=self._public_metadata(snapshot, state_hash=state_hash),
             own_weapon_inventory=(tuple(
                 item for side in self.session.scenario.side_order
                 for item in self.session.own_weapon_inventory(side)
-            ) if self.source_contract == CURRENT_SOURCE_CONTRACT else ()),
+            ) if is_dynamic_source_contract(self.source_contract) else ()),
         ))
 
     def _public_metadata(
         self, snapshot: Mapping[str, Any] | None = None,
+        *, state_hash: str | None = None,
     ) -> Mapping[str, Any]:
         if snapshot is None:
             snapshot = self.session.snapshot()
@@ -356,7 +359,8 @@ class SourceCompatibleEnvironment:
             **json_clone(snapshot.get("movement_policy", {})),
             **json_clone(snapshot.get("adjudication_table_set", {})),
             "episode_seed": int(snapshot["seed"]),
-            "state_hash": canonical_hash(snapshot["world"]),
+            "state_hash": (canonical_hash(snapshot["world"])
+                           if state_hash is None else state_hash),
         }
         if self.source_contract != LEGACY_SOURCE_CONTRACT:
             value[SOURCE_CONTRACT_KEY] = self.source_contract

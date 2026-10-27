@@ -61,7 +61,9 @@ class OperatorState:
     segment_event_id: str | None = None
     transition_kind: str | None = None
     transition_remaining_ms: int = 0
+    locked_weapon_id: int | None = None
     weapon_locked: bool = False
+    command_lost: bool | None = None
     weapon_unfolded: bool = True
     weapon_cooldown_remaining_ms: int = 0
     suppression_remaining_ms: int = 0
@@ -79,6 +81,7 @@ class OperatorState:
     lifecycle_remaining_ms: int | None = None
 
     def __post_init__(self) -> None:
+        _locked_weapon_id(self.locked_weapon_id)
         if self.operator_id < 0:
             raise ValueError("operator_id must be non-negative")
         if self.max_health <= 0 or not 0 <= self.health <= self.max_health:
@@ -187,6 +190,12 @@ class OperatorState:
                 "lifecycle profile and remaining time must be specified together"
             )
         self.raw_attributes = json_clone(self.raw_attributes)
+        # Migrate only the explicit Source command-loss flag. Suppression/keep
+        # is a separate state and never implies loss of command authority.
+        if self.command_lost is None:
+            self.command_lost = _legacy_command_lost(self.raw_attributes)
+        elif type(self.command_lost) is not bool:
+            raise TypeError("command_lost must be boolean")
         if self.concealment_posture is None:
             # Explicit compatibility migration at the construction boundary.
             # Rule code never reads the legacy raw flag after this point.
@@ -335,6 +344,10 @@ class OperatorState:
                 for name, item in runtime_state.items()
                 if item != runtime_defaults[name]
             })
+        if self.command_lost or _legacy_command_lost(self.raw_attributes):
+            value["command_lost"] = self.command_lost
+        if self.locked_weapon_id is not None:
+            value["locked_weapon_id"] = self.locked_weapon_id
         if self.movement_task_pause_reason is not None:
             value["movement_task_pause_reason"] = (
                 self.movement_task_pause_reason.value
@@ -438,7 +451,9 @@ class OperatorState:
             segment_event_id=value.get("segment_event_id"),
             transition_kind=value.get("transition_kind"),
             transition_remaining_ms=int(value.get("transition_remaining_ms", 0)),
+            locked_weapon_id=_locked_weapon_id(value.get("locked_weapon_id")),
             weapon_locked=bool(value.get("weapon_locked", False)),
+            command_lost=value.get("command_lost"),
             weapon_unfolded=bool(value.get("weapon_unfolded", True)),
             weapon_cooldown_remaining_ms=int(
                 value.get("weapon_cooldown_remaining_ms", 0)),
@@ -501,3 +516,27 @@ class OperatorState:
                 else int(value["lifecycle_remaining_ms"])
             ),
         )
+
+
+def _locked_weapon_id(value: Any) -> int | None:
+    if value is None:
+        return None
+    if type(value) is not int or value < 0:
+        raise ValueError("locked_weapon_id must be a non-negative integer or null")
+    return value
+
+
+def _legacy_command_lost(raw: Mapping[str, Any]) -> bool:
+    """Exact legacy flag migration: top-level wins over source_frame.
+
+    No recovery timer or dynamic cause is inferred from unrelated fields.
+    Canonical command_lost, when supplied, is authoritative over these aliases.
+    """
+    frame = raw.get("source_frame", {})
+    source_value = frame.get("lose_control", False) if isinstance(frame, Mapping) else False
+    value = raw.get("lose_control", source_value)
+    if type(value) is bool:
+        return value
+    if type(value) is int and value in (0, 1):
+        return bool(value)
+    raise ValueError("lose_control must be boolean or exact integer 0/1")

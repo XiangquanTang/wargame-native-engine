@@ -4,8 +4,8 @@ from typing import Any, Mapping
 
 from wargame_native_engine.compat.source_frame.models import SourceFrame
 from wargame_native_engine.compat.source_frame.contract import (
-    CURRENT_SOURCE_CONTRACT, LEGACY_SOURCE_CONTRACT, SOURCE_CONTRACT_KEY,
-    require_source_contract,
+    LEGACY_SOURCE_CONTRACT, ANALYSIS_SOURCE_CONTRACT, SOURCE_CONTRACT_KEY,
+    require_source_contract, is_dynamic_source_contract,
 )
 from wargame_native_engine.core.world import WorldState
 from wargame_native_engine.io.serialization import json_clone
@@ -24,7 +24,12 @@ class SourceFrameExporter:
         if type(project_objective_control) is not bool:
             raise TypeError("project_objective_control must be an exact bool")
         require_source_contract(source_contract)
-        dynamic = source_contract == CURRENT_SOURCE_CONTRACT
+        dynamic = is_dynamic_source_contract(source_contract)
+        if source_contract == ANALYSIS_SOURCE_CONTRACT:
+            # Lazy import avoids projection facade / observation startup cycle.
+            from wargame_native_engine.projection.analysis_facts import (
+                project_native_analysis_facts,
+            )
         inventories = {value["operator_id"]: value for value in weapon_inventory}
         root = json_clone(template.raw)
         source_units = {item.obj_id: item for item in template.all_units}
@@ -93,6 +98,11 @@ class SourceFrameExporter:
                 "cur_pos_millionths": state.cur_pos_millionths,
             }
             if dynamic:
+                if state.command_lost or raw.get("lose_control"):
+                    extra["native"]["command_lost"] = state.command_lost
+                if state.weapon_locked or state.locked_weapon_id is not None:
+                    extra["native"]["weapon_locked"] = state.weapon_locked
+                    extra["native"]["locked_weapon_id"] = state.locked_weapon_id
                 raw["passenger_ids"] = ([] if state.passenger_id is None
                                         else [state.passenger_id])
                 raw["car"] = state.mounted_on
@@ -153,6 +163,8 @@ class SourceFrameExporter:
                     "passenger_id": state.passenger_id,
                     "movement_locked": state.movement_locked,
                 })
+            if source_contract == ANALYSIS_SOURCE_CONTRACT:
+                extra["native"]["analysis_facts"] = project_native_analysis_facts(state)
             if state.lifecycle_profile_id is not None:
                 extra["native"].update({
                     "lifecycle_profile_id": state.lifecycle_profile_id,

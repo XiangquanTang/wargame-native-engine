@@ -14,6 +14,7 @@ from wargame_native_engine._framed_history import (
     read_compact_private_record as read_private_record,
 )
 
+from wargame_native_engine.io.detached import detached_copy
 from wargame_native_engine.core.action import (
     ACTION_PRIORITY,
     ActionType,
@@ -263,6 +264,7 @@ class CommandGateway:
         controller_id: str,
         *,
         request_id: str,
+        target_id: int | None = None,
         expected_window: int,
         shooter_id: int,
         weapon_id: int,
@@ -284,6 +286,10 @@ class CommandGateway:
                 raise CommandGatewayError(
                     f"invalid_{name}", f"{name} must be a non-negative exact int"
                 )
+        if target_id is not None and (type(target_id) is not int or target_id < 0):
+            raise CommandGatewayError(
+                "invalid_target_id", "target_id must be a non-negative exact int"
+            )
         gateway_session = self._gateway_session(session_id)
         with gateway_session.lock:
             side = _bound_side(gateway_session, controller_id)
@@ -300,7 +306,7 @@ class CommandGateway:
                 )
             signature = (
                 str(controller_id), expected_window, "INDIRECT_FIRE",
-                shooter_id, weapon_id, target_hex,
+                shooter_id, weapon_id, target_hex, target_id,
             )
             registry = gateway_session.proposals
             if registry is None:
@@ -313,7 +319,8 @@ class CommandGateway:
                 return cached
             try:
                 action, state_hash = self.manager.plan_indirect_fire(
-                    session_id, side, shooter_id, weapon_id, target_hex
+                    session_id, side, shooter_id, weapon_id, target_hex,
+                    target_id=target_id
                 )
             except (TypeError, ValueError) as exc:
                 code = str(exc) or "CAPABILITY_BLOCKED"
@@ -357,7 +364,8 @@ class CommandGateway:
         expected_window: int,
         actor_id: int,
         weapon_id: int,
-        target_id: int,
+        target_id: int | None = None,
+        target_hex: int | None = None,
     ) -> ActionProposal:
         """Admit a carried-weapon intent; NativeEngine later decides legality."""
 
@@ -369,9 +377,17 @@ class CommandGateway:
             ("expected_window", expected_window),
             ("actor_id", actor_id),
             ("weapon_id", weapon_id),
-            ("target_id", target_id),
         ):
             if type(value) is not int or value < 0:
+                raise CommandGatewayError(
+                    f"invalid_{name}", f"{name} must be a non-negative exact int"
+                )
+        if (target_id is None) == (target_hex is None):
+            raise CommandGatewayError(
+                "fire_target_required", "provide exactly one target_id or target_hex"
+            )
+        for name, value in (("target_id", target_id), ("target_hex", target_hex)):
+            if value is not None and (type(value) is not int or value < 0):
                 raise CommandGatewayError(
                     f"invalid_{name}", f"{name} must be a non-negative exact int"
                 )
@@ -391,7 +407,7 @@ class CommandGateway:
                 )
             signature = (
                 str(controller_id), expected_window, "DIRECT_FIRE_INTENT",
-                actor_id, weapon_id, target_id,
+                actor_id, weapon_id, target_id, target_hex,
             )
             registry = gateway_session.proposals
             if registry is None:
@@ -405,6 +421,7 @@ class CommandGateway:
             try:
                 action, state_hash = self.manager.plan_direct_fire_intent(
                     session_id, side, actor_id, weapon_id, target_id,
+                    target_hex=target_hex,
                 )
             except (TypeError, ValueError) as exc:
                 code = str(exc) or "DIRECT_FIRE_INTENT_REJECTED"
@@ -422,6 +439,7 @@ class CommandGateway:
                 side=side,
                 actor_id=actor_id,
                 target_id=target_id,
+                target_hex=target_hex,
                 state_hash=state_hash,
                 action=action,
             )
@@ -655,7 +673,7 @@ class CommandGateway:
                 gateway_session.history_failure = exc
                 raise
             gateway_session.requests[request] = (signature, offset)
-            return deepcopy(result)
+            return detached_copy(result)
 
     def publish_session(
         self,

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 from wargame_native_engine.analysis.jsonl import analysis_sidecar_from_jsonl
@@ -26,14 +27,22 @@ from wargame_native_engine.io.importers.source_replay_archive import (
     SourceReplayArchiveReader,
 )
 from wargame_native_engine.io.serialization import json_clone
+from wargame_native_engine.io.scenario import load_scenario
 from wargame_native_engine.viewer.map_config import (
     ViewerMapConfig,
     coordinate_fallback_record,
+    load_native_scenario_map_record,
     load_viewer_map_config,
 )
 from wargame_native_engine.viewer.scenario_config import (
     ViewerScenarioConfig,
     load_viewer_scenario_config,
+)
+from wargame_native_engine.viewer.recorded_visibility import (
+    ReplayPerspectiveUnavailable,
+    recorded_side_frame,
+    validate_recorded_visibility,
+    published_contact_identities,
 )
 
 
@@ -70,6 +79,19 @@ class ReplayView:
     model_id: str
     model_version: str
     model_hash: str | None
+    perspective_errors: Mapping[str, str] = field(default_factory=dict)
+    contact_identities: Mapping[int, Mapping[str, Any]] = field(default_factory=dict, repr=False)
+    _events_by_frame: Mapping[int, tuple[AnalysisEvent, ...]] = field(
+        init=False, repr=False, compare=False,
+    )
+
+    def __post_init__(self) -> None:
+        grouped: dict[int, list[AnalysisEvent]] = {}
+        for event in self.analysis.events:
+            grouped.setdefault(event.frame_index, []).append(event)
+        object.__setattr__(self, "_events_by_frame", MappingProxyType({
+            index: tuple(events) for index, events in grouped.items()
+        }))
 
     @property
     def frame_count(self) -> int:
@@ -84,9 +106,7 @@ class ReplayView:
             "perspective": "GREEN",
             "playback_compatibility": self.playback_compatibility,
             "strict_replay_evidence_status": self.strict_replay_evidence_status,
-            "strict_replay_evidence_note": (
-                "Evidence availability does not mean replay verified."
-            ),
+            "strict_replay_evidence_note": "",
             "model_provenance": {
                 "model_id": self.model_id,
                 "model_version": self.model_version,
@@ -104,19 +124,50 @@ class ReplayView:
     def map_record(self) -> dict[str, object]:
         return json_clone(self.map_data)
 
-    def frame_record(self, frame_index: int) -> dict[str, object]:
+    def perspectives_record(self) -> dict[str, object]:
+        return {
+            "GREEN": {"status": "available", "reason": None},
+            **{
+                side: {
+                    "status": "unavailable" if side in self.perspective_errors else "available",
+                    "reason": self.perspective_errors.get(side),
+                    "source": "derived_from_recorded_visibility",
+                }
+                for side in ("RED", "BLUE")
+            },
+        }
+
+    def frame_record(self, frame_index: int, perspective: str = "GREEN") -> dict[str, object]:
         index = self._checked_index(frame_index)
+        if perspective not in {"GREEN", "RED", "BLUE"}:
+            raise ValueError("perspective must be GREEN, RED or BLUE")
+        if perspective in self.perspective_errors:
+            raise ReplayPerspectiveUnavailable(self.perspective_errors[perspective])
         frame = self.archive.frames[index]
+        if perspective != "GREEN":
+            return recorded_side_frame(index, self.archive.frame_names[index], frame,
+                                       self.archive.manifest, perspective, self.contact_identities)
         return _frame_record(index, self.archive.frame_names[index], frame)
 
     def analysis_record(self, frame_index: int) -> dict[str, object]:
         index = self._checked_index(frame_index)
         frame = self.analysis.timeline.frame_analyses[index]
-        events = tuple(
-            event for event in self.analysis.events
-            if event.frame_index == index
-        )
+        events = self._events_by_frame.get(index, ())
         return frame_analysis_to_record(frame, events=events)
+
+    def frame_bundle_record(self, frame_index: int, perspective: str = "GREEN") -> dict[str, object]:
+        frame = self.frame_record(frame_index, perspective)
+        analysis = self.analysis_record(frame_index)
+        if perspective == "GREEN":
+            return {"frame": frame, "analysis": analysis}
+        side = perspective.lower()
+        own_ids = {unit["operator_id"] for unit in frame["viewer_units"] if unit["side"] == side}
+        return {
+            "frame": frame, "analysis": None,
+            "own_unit_analyses": [unit for unit in analysis["unit_analyses"]
+                                  if unit["operator_id"] in own_ids and unit["side"] == side],
+            "own_analysis_source": "GLOBAL_MODEL_DERIVED_OWN_FACTORS",
+        }
 
     def timeline_record(self) -> dict[str, object]:
         timeline = self.analysis.timeline
@@ -156,11 +207,20 @@ def load_replay_view(
     replay_dir: str | Path,
     *,
     map_config: str | Path | None = None,
+    native_scenario_map: str | Path | None = None,
     map_coordinate_system: str | None = None,
     scenario_config: str | Path | None = None,
 ) -> ReplayView:
     """Load and strictly align a replay ZIP with its external analysis JSONL."""
 
+    if native_scenario_map is not None and any(
+        value is not None
+        for value in (map_config, map_coordinate_system, scenario_config)
+    ):
+        raise ReplayViewerLoadError(
+            "native_scenario_map cannot be combined with map_config, "
+            "map_coordinate_system, or scenario_config"
+        )
     root = Path(replay_dir)
     replay_path = root / REPLAY_ARCHIVE_NAME
     analysis_path = root / ANALYSIS_SIDECAR_NAME
@@ -207,9 +267,28 @@ def load_replay_view(
         )
 
     model_identity: tuple[str, str, str | None] | None = None
+    replay_scenario_ids: set[str] = set()
+    replay_map_ids: set[str] = set()
+    # Four extrema retain enough evidence for bounds validation without keeping
+    # every unit/frame resident or decompressing the archive a second time.
+    extrema: dict[str, tuple[int, int, object, int, int]] = {}
+    perspective_errors: dict[str, str] = {}
     for index, (frame, frame_analysis) in enumerate(
         zip(archive.frames, analysis_frames)
     ):
+        if frame.scenario_id is not None:
+            replay_scenario_ids.add(str(frame.scenario_id))
+        if frame.terrain_id is not None:
+            replay_map_ids.add(str(frame.terrain_id))
+        for unit in (*frame.operators, *frame.passengers):
+            row, column = unit.row_col
+            for name, value, minimize in (
+                ("min_row", row, True), ("max_row", row, False),
+                ("min_column", column, True), ("max_column", column, False),
+            ):
+                current = extrema.get(name)
+                if current is None or (value < current[0] if minimize else value > current[0]):
+                    extrema[name] = (value, index, unit.obj_id, row, column)
         provenance = frame_analysis.provenance
         if provenance.frame_index != index:
             raise ReplayViewerLoadError(
@@ -226,6 +305,12 @@ def load_replay_view(
                 f"analysis perspective at frame {index} must be GREEN"
             )
         _validate_explicit_frame_perspective(frame, index)
+        for perspective in ("RED", "BLUE"):
+            if perspective not in perspective_errors:
+                try:
+                    validate_recorded_visibility(frame, archive.manifest, perspective)
+                except ReplayPerspectiveUnavailable as exc:
+                    perspective_errors[perspective] = f"Frame {index}：{exc}"
         identity = (
             provenance.model_id,
             provenance.model_version,
@@ -256,29 +341,46 @@ def load_replay_view(
     except (OSError, ValueError) as exc:
         raise ReplayViewerLoadError(f"failed to load map config: {exc}") from exc
     map_data: dict[str, object] = (
-        coordinate_fallback_record(archive.frames)
+        coordinate_fallback_record(())
         if loaded_map is None
         else loaded_map.to_record()
     )
-    replay_scenario_ids = {
-        str(frame.scenario_id)
-        for frame in archive.frames
-        if frame.scenario_id is not None
-    }
+    if loaded_map is None and extrema:
+        bounds = {name: item[0] for name, item in extrema.items()}
+        map_data["bounds"] = bounds
+        map_data["rows"] = bounds["max_row"] - bounds["min_row"] + 1
+        map_data["columns"] = bounds["max_column"] - bounds["min_column"] + 1
     if len(replay_scenario_ids) > 1:
         raise ReplayViewerLoadError(
             "replay frames contain multiple scenario identities: "
             f"{sorted(replay_scenario_ids)!r}"
         )
     replay_scenario_id = next(iter(replay_scenario_ids), None)
-    replay_map_ids = {
-        str(frame.terrain_id)
-        for frame in archive.frames
-        if frame.terrain_id is not None
-    }
     replay_map_id = (
         next(iter(replay_map_ids)) if len(replay_map_ids) == 1 else None
     )
+    contact_identities: Mapping[int, Mapping[str, Any]] = {}
+    if native_scenario_map is not None:
+        if replay_scenario_id is None or replay_map_id is None:
+            raise ReplayViewerLoadError(
+                "native scenario map requires unique replay scenario_id "
+                "and terrain_id evidence"
+            )
+        try:
+            native_scenario = load_scenario(native_scenario_map)
+            map_data = load_native_scenario_map_record(
+                native_scenario_map,
+                expected_scenario_id=replay_scenario_id,
+                expected_map_id=replay_map_id,
+                expected_scenario_hash=manifest.get("scenario_hash"),
+                expected_map_hash=manifest.get("map_hash"),
+                loaded_scenario=native_scenario,
+            )
+            contact_identities = published_contact_identities(root, archive, native_scenario)
+        except (OSError, ValueError) as exc:
+            raise ReplayViewerLoadError(
+                f"failed to load native scenario map: {exc}"
+            ) from exc
     if scenario_config is not None:
         if replay_scenario_id is None:
             raise ReplayViewerLoadError(
@@ -295,7 +397,7 @@ def load_replay_view(
                 f"failed to load scenario config: {exc}"
             ) from exc
         map_data["scenario"] = loaded_scenario.to_record()
-    else:
+    elif native_scenario_map is None:
         map_data["scenario"] = None
     if loaded_map is not None and loaded_map.map_id is not None:
         if replay_map_ids and replay_map_ids != {loaded_map.map_id}:
@@ -303,7 +405,8 @@ def load_replay_view(
                 "map config map_id does not match replay terrain_id: "
                 f"config={loaded_map.map_id!r}, replay={sorted(replay_map_ids)!r}"
             )
-    if loaded_map is not None:
+    if loaded_map is not None or native_scenario_map is not None:
+        bounds = map_data["bounds"]
         scenario_record = map_data.get("scenario")
         if isinstance(scenario_record, Mapping):
             for feature in scenario_record.get("features", []):
@@ -314,26 +417,23 @@ def load_replay_view(
                 if not (
                     type(row) is int
                     and type(column) is int
-                    and 0 <= row < loaded_map.rows
-                    and 0 <= column < loaded_map.columns
+                    and bounds["min_row"] <= row <= bounds["max_row"]
+                    and bounds["min_column"] <= column <= bounds["max_column"]
                 ):
                     raise ReplayViewerLoadError(
                         "scenario feature is outside map config bounds: "
                         f"feature={feature.get('feature_id')!r}, "
                         f"row={row}, column={column}"
                     )
-        for frame_index, frame in enumerate(archive.frames):
-            for unit in (*frame.operators, *frame.passengers):
-                row, column = unit.row_col
-                if not (
-                    0 <= row < loaded_map.rows
-                    and 0 <= column < loaded_map.columns
-                ):
-                    raise ReplayViewerLoadError(
-                        "replay unit is outside map config bounds at frame "
-                        f"{frame_index}: unit={unit.obj_id}, row={row}, "
-                        f"column={column}"
-                    )
+        for _, frame_index, unit_id, row, column in extrema.values():
+            if not (
+                bounds["min_row"] <= row <= bounds["max_row"]
+                and bounds["min_column"] <= column <= bounds["max_column"]
+            ):
+                raise ReplayViewerLoadError(
+                    "replay unit is outside map config bounds at frame "
+                    f"{frame_index}: unit={unit_id}, row={row}, column={column}"
+                )
     playback_compatibility = str(
         manifest.get("source_frame_compatibility_version")
         or PLAYBACK_COMPATIBILITY
@@ -348,6 +448,8 @@ def load_replay_view(
         model_id=model_identity[0],
         model_version=model_identity[1],
         model_hash=model_identity[2],
+        perspective_errors=MappingProxyType(perspective_errors),
+        contact_identities=MappingProxyType(dict(contact_identities)),
     )
 
 
@@ -494,6 +596,9 @@ def _viewer_unit(
     row, column = unit.row_col
     state = mappings.unit_state(unit).value
     health_ratio = unit.blood / unit.max_blood
+    extra = unit.raw.get("extra")
+    native = extra.get("native", {}) if isinstance(extra, Mapping) else {}
+    native = native if isinstance(native, Mapping) else {}
     move_path = unit.raw.get("move_path")
     movement_target_hex = (
         move_path[0]
@@ -522,12 +627,16 @@ def _viewer_unit(
         "alive": unit.alive,
         "destroyed": not unit.alive,
         "state": state,
+        "weapon_locked": native.get("weapon_locked") if type(native.get("weapon_locked")) is bool else None,
+        "locked_weapon_id": native.get("locked_weapon_id") if type(native.get("locked_weapon_id")) is int else None,
         "stopped": unit.stopped,
         "marching": unit.marching,
         "suppressed": unit.suppressed,
         "move_state": json_clone(unit.raw.get("move_state")),
         "direction": json_clone(unit.raw.get("direction")),
-        "lose_control": bool(unit.raw.get("lose_control", False)),
+        "lose_control": (native["command_lost"]
+                         if type(native.get("command_lost")) is bool
+                         else bool(unit.raw.get("lose_control", False))),
         "can_to_move": json_clone(unit.raw.get("can_to_move")),
         "on_board": unit.on_board,
         "carrier_id": unit.car_id,

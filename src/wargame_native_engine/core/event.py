@@ -61,6 +61,7 @@ class EventType(str, Enum):
     FATIGUE_CHANGED = "fatigue_changed"
     WEAPON_LOCK_STARTED = "weapon_lock_started"
     WEAPON_LOCKED = "weapon_locked"
+    WEAPON_UNLOCKED = "weapon_unlocked"
     WEAPON_UNFOLD_STARTED = "weapon_unfold_started"
     WEAPON_UNFOLDED = "weapon_unfolded"
     MOVEMENT_MODE_CHANGE_STARTED = "movement_mode_change_started"
@@ -121,6 +122,7 @@ EVENT_PRIORITY = {
     EventType.FATIGUE_CHANGED: 19,
     EventType.WEAPON_LOCK_STARTED: 23,
     EventType.WEAPON_LOCKED: 24,
+    EventType.WEAPON_UNLOCKED: 24,
     EventType.WEAPON_UNFOLD_STARTED: 25,
     EventType.WEAPON_UNFOLDED: 26,
     EventType.MOVEMENT_MODE_CHANGE_STARTED: 27,

@@ -5,6 +5,7 @@ from typing import Any, Mapping
 
 from wargame_native_engine.adjudication.dice import DiceRecord, DiceSource
 from wargame_native_engine.adjudication.modifiers import roll_modifiers
+from wargame_native_engine.adjudication.fire_readiness import weapon_posture_failure, weapon_binding_failure
 from wargame_native_engine.adjudication.outcome import CombatOutcome
 from wargame_native_engine.adjudication.request import (
     ActionLegalityResult,
@@ -44,7 +45,17 @@ class DirectFireAdjudicator:
         self.dice = dice
 
     def validate(self, request: DirectFireRequest) -> ActionLegalityResult:
+        posture_failure = weapon_posture_failure(
+            moving=request.attacker_moving, locked=request.weapon_locked,
+            unfolded=request.weapon_unfolded,
+            requires_unfolded=request.weapon.requires_unfolded,
+            can_fire_while_moving=request.weapon.can_fire_while_moving,
+            ordinary_direct=request.permits_out_of_range_attempt,
+        )
+        binding_failure = weapon_binding_failure(weapon_id=request.weapon.weapon_id,
+            locked=request.weapon_locked, locked_weapon_id=request.locked_weapon_id)
         checks: list[tuple[str, bool, str]] = [
+            ("weapon_binding", binding_failure is None, "weapon must match the explicit lock"),
             ("units_alive", request.attacker.alive and request.target.alive,
              "attacker and target must exist and be alive"),
             ("enemy_target", request.attacker.side != request.target.side,
@@ -59,14 +70,15 @@ class DirectFireAdjudicator:
              "target must be observable under native rules"),
             ("within_weapon_range", request.distance <= request.weapon.maximum_range,
              "target must be within weapon range"),
-            ("weapon_unfolded", not request.weapon.requires_unfolded
-             or request.weapon_unfolded, "weapon must be unfolded"),
+            ("weapon_unfolded", posture_failure != "WEAPON_NOT_UNFOLDED",
+             "stationary weapon must be unfolded"),
+            ("moving_weapon_locked", posture_failure != "WEAPON_NOT_LOCKED",
+             "moving direct fire requires a locked weapon"),
             ("weapon_cooled", request.weapon_cooldown_before <= 0,
              "weapon cooldown must have ended"),
             ("attacker_not_transitioning", not request.attacker_transitioning,
              "attacker state does not allow firing"),
-            ("movement_allows_fire", not request.attacker_moving
-             or request.weapon.can_fire_while_moving,
+            ("movement_allows_fire", posture_failure != "ATTACKER_MUST_STOP",
              "weapon cannot fire while moving"),
             ("air_unit_hovering", request.attacker.operator_type != UnitDomain.AIR.value
              or request.attacker_hovering, "air unit must hover to fire"),
@@ -83,12 +95,15 @@ class DirectFireAdjudicator:
             "weapon_evidence": {"maximum_range": request.weapon.maximum_range,
                                 "ammunition_before": request.ammunition_before,
                                 "cooldown_before": request.weapon_cooldown_before,
-                                "unfolded": request.weapon_unfolded},
+                                "unfolded": request.weapon_unfolded,
+                                "locked": request.weapon_locked,
+                                "locked_weapon_id": request.locked_weapon_id},
             "state_evidence": {"attacker_state": request.attacker.state,
                                "target_state": request.target.state},
             "checks": {},
         }
         reason_codes = {
+            "weapon_binding": binding_failure or "WEAPON_LOCKED_TO_OTHER_WEAPON",
             "units_alive": "UNIT_NOT_ALIVE", "enemy_target": "SAME_SIDE_TARGET",
             "weapon_carried": "WEAPON_NOT_CARRIED",
             "ammunition_available": "AMMUNITION_UNAVAILABLE",
@@ -96,6 +111,7 @@ class DirectFireAdjudicator:
             "target_observed": "TARGET_NOT_OBSERVED",
             "within_weapon_range": "TARGET_OUT_OF_RANGE",
             "weapon_unfolded": "WEAPON_NOT_UNFOLDED",
+            "moving_weapon_locked": "WEAPON_NOT_LOCKED",
             "weapon_cooled": "WEAPON_ON_COOLDOWN",
             "attacker_not_transitioning": "ATTACKER_TRANSITIONING",
             "movement_allows_fire": "ATTACKER_MUST_STOP",
@@ -108,6 +124,12 @@ class DirectFireAdjudicator:
             )
         for name, passed, description in checks:
             evidence["checks"][name] = passed
+            if (name == "within_weapon_range"
+                    and request.permits_out_of_range_attempt):
+                evidence["range_effect"] = (
+                    "NORMAL" if passed else "OUT_OF_RANGE_NO_EFFECT"
+                )
+                continue
             if not passed:
                 evidence["failed_rule"] = description
                 return ActionLegalityResult(False, reason_codes[name], evidence)
@@ -151,29 +173,43 @@ class DirectFireAdjudicator:
                                         legality.reason_code)
         events.append(self._event(request, EventType.DIRECT_FIRE_VALIDATED,
                                   legality.to_dict()))
-        try:
-            base_level = self._attack_level(request)
-            events.append(self._event(request, EventType.ATTACK_LEVEL_SELECTED,
-                                      base_level.to_dict()))
-            elevation = self.tables.elevation_modifier(
-                request.elevation_difference, request.distance)
-            final_level = max(0, int(base_level.value) + int(elevation.value))
-            events.append(self._event(request, EventType.ATTACK_LEVEL_MODIFIED, {
-                "base_attack_level": base_level.value,
-                "elevation_modifier": elevation.value,
-                "final_attack_level": final_level,
-                "elevation_cell": elevation.to_dict(),
+        if request.distance > request.weapon.maximum_range:
+            # A legal ordinary DIRECT attempt still spends its shot, but never
+            # consults damage tables or consumes RNG outside the weapon range.
+            # In particular it cannot suppress or injure carried passengers.
+            outcome = CombatOutcome(no_effect=True)
+            events.append(self._event(request, EventType.COMBAT_RESULT_LOOKED_UP, {
+                "table_id": "direct_fire.out_of_range",
+                "distance": request.distance,
+                "maximum_range": request.weapon.maximum_range,
+                "reason_code": "OUT_OF_RANGE_NO_EFFECT",
+                "final_outcome": outcome.to_dict(),
+                "native_convention_flags": ["DIRECT_OUT_OF_RANGE_ZERO_EFFECT"],
             }))
-            outcome, resolution_events = self._resolve_tables(request, final_level)
-            events.extend(resolution_events)
-        except (ValueError, UnresolvedTableCellError) as exc:
-            return DirectFireResolution(adjudication_id, legality, None,
-                                        tuple(sorted(events, key=event_sort_key)),
-                                        request.ammunition_before,
-                                        request.weapon_cooldown_before, str(exc))
+        else:
+            try:
+                base_level = self._attack_level(request)
+                events.append(self._event(request, EventType.ATTACK_LEVEL_SELECTED,
+                                          base_level.to_dict()))
+                elevation = self.tables.elevation_modifier(
+                    request.elevation_difference, request.distance)
+                final_level = max(0, int(base_level.value) + int(elevation.value))
+                events.append(self._event(request, EventType.ATTACK_LEVEL_MODIFIED, {
+                    "base_attack_level": base_level.value,
+                    "elevation_modifier": elevation.value,
+                    "final_attack_level": final_level,
+                    "elevation_cell": elevation.to_dict(),
+                }))
+                outcome, resolution_events = self._resolve_tables(request, final_level)
+                events.extend(resolution_events)
+            except (ValueError, UnresolvedTableCellError) as exc:
+                return DirectFireResolution(adjudication_id, legality, None,
+                                            tuple(sorted(events, key=event_sort_key)),
+                                            request.ammunition_before,
+                                            request.weapon_cooldown_before, str(exc))
 
         outcome = self._normalize_outcome(request, outcome)
-        if apply_outcome:
+        if apply_outcome and request.distance <= request.weapon.maximum_range:
             outcome, application_events = self._apply_outcome(
                 request, outcome, adjudication_id)
             events.extend(application_events)

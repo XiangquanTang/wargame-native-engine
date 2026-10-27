@@ -3,7 +3,8 @@
 The accepted JSON shape is the bounded subset used by the mature benchmark
 PyQt renderer: an odd-r ``map_data`` grid with optional elevation, terrain,
 road and river facts. The viewer never imports the benchmark project or SDK
-resources at runtime.
+resources at runtime. Native scenario terrain is an explicit, separately
+validated input for GREEN replay presentation.
 """
 
 from __future__ import annotations
@@ -14,20 +15,17 @@ import hashlib
 import json
 import math
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from wargame_native_engine.io.scenario import NativeScenario
 
 from wargame_native_engine.compat.source_frame.models import SourceFrame
+from wargame_native_engine.viewer.terrain_display import terrain_display_semantic
 
 
 DEFAULT_HEX_SIZE = 18.0
 MAX_MAP_CELLS = 100_000
-
-_TERRAIN_NAMES = {
-    0: "open",
-    1: "forest",
-    2: "settlement",
-    3: "soft_ground",
-    4: "water",
-}
 
 
 class ViewerMapConfigError(ValueError):
@@ -74,6 +72,8 @@ class ViewerMapConfig:
     source_name: str
     source_sha256: str
     coordinate_system_source: str
+    elevation_kind: str | None = None
+    elevation_unit_m: float | None = None
 
     def to_record(self) -> dict[str, object]:
         return {
@@ -91,6 +91,8 @@ class ViewerMapConfig:
                 "max_column": self.columns - 1,
             },
             "hex_size": self.hex_size,
+            "elevation_kind": self.elevation_kind,
+            "elevation_unit_m": self.elevation_unit_m,
             "elevation": _elevation_record(self.cells),
             "cells": [cell.to_record() for cell in self.cells],
             "source": {
@@ -99,6 +101,60 @@ class ViewerMapConfig:
                 "coordinate_system": self.coordinate_system_source,
             },
         }
+
+
+def load_native_scenario_map_record(
+    path: str | Path,
+    *,
+    expected_scenario_id: str,
+    expected_map_id: str,
+    expected_scenario_hash: str | None = None,
+    expected_map_hash: str | None = None,
+    loaded_scenario: NativeScenario | None = None,
+) -> dict[str, object]:
+    """Load Native static terrain for a GREEN replay, never policy observations.
+
+    Use the shared Native projection: physical map width/height are metres,
+    not grid dimensions. Bind both identities before exposing static features.
+    Archived content hashes are checked when available; historical ID-only
+    bindings are explicitly marked unavailable rather than verified.
+    """
+    from wargame_native_engine.io.scenario import (
+        load_scenario,
+        native_map_identity_hash,
+    )
+    from wargame_native_engine.viewer.live_control import native_scenario_map_record
+
+    source = Path(path)
+    scenario = loaded_scenario if loaded_scenario is not None else load_scenario(source)
+    if str(scenario.scenario_id) != expected_scenario_id:
+        raise ViewerMapConfigError(
+            "native scenario_id does not match replay scenario_id: "
+            f"config={scenario.scenario_id!r}, replay={expected_scenario_id!r}"
+        )
+    if str(scenario.map.map_id) != expected_map_id:
+        raise ViewerMapConfigError(
+            "native map_id does not match replay terrain_id: "
+            f"config={scenario.map.map_id!r}, replay={expected_map_id!r}"
+        )
+    if len(scenario.map.hexes) > MAX_MAP_CELLS:
+        raise ViewerMapConfigError("native map exceeds viewer cell limit")
+    content_binding = {}
+    for field, expected, actual in (
+        ("scenario_hash", expected_scenario_hash, scenario.scenario_hash),
+        ("map_hash", expected_map_hash, native_map_identity_hash(scenario.map)),
+    ):
+        if expected is not None and expected != actual:
+            raise ViewerMapConfigError(
+                f"native {field} does not match replay manifest: "
+                f"config={actual!r}, replay={expected!r}"
+            )
+        content_binding[field] = "matched" if expected is not None else "unavailable"
+    record = native_scenario_map_record(scenario)
+    record["source"]["name"] = source.name
+    record["source"]["replay_content_binding"] = content_binding
+    record["scenario"]["dynamic_units_source"] = "green_replay_frames"
+    return record
 
 
 def load_viewer_map_config(
@@ -203,7 +259,7 @@ def load_viewer_map_config(
                     "terrain_level",
                 ),
                 terrain_code=terrain_code,
-                terrain_semantic=_TERRAIN_NAMES.get(terrain_code, "unknown"),
+                terrain_semantic=terrain_display_semantic(terrain_code),
                 neighbors=_optional_neighbor_values(
                     raw_cell.get("neighbors", raw_cell.get("nb")),
                 ),
@@ -216,6 +272,19 @@ def load_viewer_map_config(
     cells.sort(key=lambda cell: (cell.row, cell.column))
     raw_map_id = value.get("map_id")
     map_id = None if raw_map_id is None else str(raw_map_id)
+    # Legacy basic.json declares its metre step in ele_grade. Do not derive
+    # a physical step from the palette count or observed cell differences.
+    raw_step = value.get("elevation_unit_m", value.get("ele_grade"))
+    elevation_unit_m = (
+        float(raw_step) if type(raw_step) in (int, float)
+        and math.isfinite(raw_step) and raw_step > 0 else None
+    )
+    elevation_kind = value.get("elevation_kind")
+    if elevation_kind not in ("METERS", "LEVEL"):
+        elevation_kind = (
+            "METERS" if elevation_kind is None
+            and "ele_grade" in value and elevation_unit_m is not None else None
+        )
     return ViewerMapConfig(
         map_id=map_id,
         rows=rows,
@@ -225,6 +294,8 @@ def load_viewer_map_config(
         source_name=source.name,
         source_sha256=hashlib.sha256(payload).hexdigest(),
         coordinate_system_source=coordinate_system_source,
+        elevation_kind=elevation_kind,
+        elevation_unit_m=elevation_unit_m,
     )
 
 
@@ -260,6 +331,8 @@ def coordinate_fallback_record(
             "max_column": max_column,
         },
         "hex_size": DEFAULT_HEX_SIZE,
+        "elevation_kind": None,
+        "elevation_unit_m": None,
         "elevation": {
             "mode": "unavailable",
             "minimum": None,

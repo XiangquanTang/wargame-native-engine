@@ -1,5 +1,5 @@
 {
-  "data_bytes": 29064286,
+  "data_bytes": 29064274,
   "data_file_count": 25,
   "files": [
     {
@@ -21,15 +21,15 @@
       "source": "examples/map123/movement_costs.native.json"
     },
     {
-      "bytes": 1342078,
+      "bytes": 1342072,
       "path": "examples/map123/scenario-artillery-ammo2.json",
-      "sha256": "9a5c9185066f18280c9a193e83abcd92795161a9681a6909095febb54298f1fa",
+      "sha256": "b6683ac678cabe1d2c9676d81366c580677af6d3864bc630639cb57cd78fd1d7",
       "source": "examples/map123/scenario-artillery-ammo2.json"
     },
     {
-      "bytes": 1340161,
+      "bytes": 1340155,
       "path": "examples/map123/scenario.json",
-      "sha256": "fa21a063de9e46fc553ac777002d9207ea78a48d0628ebc1fb8a06efe66d2a5a",
+      "sha256": "b75191e59c9e592f058d423709eb61b6cb3633da10a62c977b041c274ed810b4",
       "source": "examples/map123/scenario.json"
     },
     {
@@ -273,7 +273,7 @@
         "height": 20000.0,
         "width": 20000.0
       },
-      "default_variant": "artillery-ammo2",
+      "default_variant": "original",
       "grid": {
         "column_extent": 100,
         "configured_hexes": 10000,
@@ -308,14 +308,14 @@
           "initial_units": 49,
           "path": "examples/map123/scenario.json",
           "scenario_id": "source-2201010105-native-v1",
-          "scenario_sha256": "fa21a063de9e46fc553ac777002d9207ea78a48d0628ebc1fb8a06efe66d2a5a",
+          "scenario_sha256": "b75191e59c9e592f058d423709eb61b6cb3633da10a62c977b041c274ed810b4",
           "variant": "original"
         },
         {
           "initial_units": 49,
           "path": "examples/map123/scenario-artillery-ammo2.json",
           "scenario_id": "human-map123-r3-12-artillery-ammo2",
-          "scenario_sha256": "9a5c9185066f18280c9a193e83abcd92795161a9681a6909095febb54298f1fa",
+          "scenario_sha256": "b6683ac678cabe1d2c9676d81366c580677af6d3864bc630639cb57cd78fd1d7",
           "variant": "artillery-ammo2"
         }
       ],

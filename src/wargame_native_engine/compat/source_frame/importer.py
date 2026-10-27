@@ -179,6 +179,16 @@ class SourceFrameImporter:
         if not item.get("carry_weapon_ids"):
             warnings.append(f"unit {item['obj_id']} has no weapon ids")
         bullets = _mapping(item.get("remain_bullet_nums", {}), "remain_bullet_nums")
+        observe_distance = item.get("observe_distance", [])
+        if isinstance(observe_distance, Mapping):
+            # Legacy dictionary indices are undocumented. Preserve the source
+            # in raw, but do not misrepresent its keys as normalized distances.
+            warnings.append(
+                f"unit {item['obj_id']} observe_distance mapping has unsupported "
+                "indices; preserved raw, normalized distances unknown")
+            normalized_observe_distance = ()
+        else:
+            normalized_observe_distance = tuple(float(value) for value in observe_distance)
         return SourceUnitState(
             obj_id=int(item["obj_id"]), color=int(item["color"]),
             type_code=int(item["type"]), sub_type_code=int(item["sub_type"]),
@@ -193,7 +203,7 @@ class SourceFrameImporter:
             close_combat=bool(item.get("close_combat", 0)), alive=blood > 0,
             carry_weapon_ids=tuple(int(value) for value in item.get("carry_weapon_ids", [])),
             remain_bullet_nums={str(key): int(value) for key, value in bullets.items()},
-            observe_distance=tuple(float(value) for value in item.get("observe_distance", [])),
+            observe_distance=normalized_observe_distance,
             passenger_ids=tuple(int(value) for value in item.get("passenger_ids", [])),
             car_id=_optional_int(item.get("car")), launcher_id=_optional_int(item.get("launcher")),
             launch_ids=tuple(int(value) for value in item.get("launch_ids", [])),

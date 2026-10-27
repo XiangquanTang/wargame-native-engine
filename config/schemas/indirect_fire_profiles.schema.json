@@ -107,7 +107,7 @@
         "artillery_class": {"enum": ["LIGHT", "MEDIUM", "HEAVY"]},
         "supported_fire_mode": {"const": "INDIRECT"},
         "target_domain": {"const": "AREA"},
-        "range_policy": {"const": "SCENARIO_DEFINED_GLOBAL_HEX"},
+        "range_policy": {"enum": ["SCENARIO_DEFINED_GLOBAL_HEX", "BOUNDED_HEX_DISTANCE"]},
         "minimum_range": {"$ref": "#/$defs/nullableRange"},
         "maximum_range": {"$ref": "#/$defs/nullableRange"},
         "flight_time_seconds": {"type": "integer", "minimum": 0},
@@ -117,7 +117,18 @@
         "effect_model_id": {"type": "string", "minLength": 1},
         "resource_policy_id": {"type": "string", "minLength": 1},
         "mission_policy_id": {"type": "string", "minLength": 1}
-      }
+      },
+      "allOf": [{
+        "if": {"properties": {"range_policy": {"const": "BOUNDED_HEX_DISTANCE"}}},
+        "then": {"properties": {
+          "minimum_range": {"type": "integer", "minimum": 0},
+          "maximum_range": {"type": "integer", "minimum": 0}
+        }},
+        "else": {"properties": {
+          "minimum_range": {"type": "null"},
+          "maximum_range": {"type": "null"}
+        }}
+      }]
     },
     "resourcePolicy": {
       "type": "object",

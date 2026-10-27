@@ -26,6 +26,8 @@ from wargame_native_engine.agents.realtime import (
     RealtimeLifecycleState,
     RealtimeSeatBinding,
     RealtimeSeatView,
+    RealtimeStatusSnapshot,
+    RealtimeCommandSummary,
     SeatCommandReceipt,
 )
 from wargame_native_engine.agents.seat import SeatDecision, SeatOperation
@@ -37,14 +39,17 @@ from wargame_native_engine.viewer.human_capabilities import (
     build_human_capabilities,
 )
 from wargame_native_engine.viewer.static_resources import (
+    VIEWER_CONTENT_SECURITY_POLICY,
     load_symbol_static_resource,
 )
 
 
 _STATIC_ROOT = Path(__file__).with_name("static")
 _STATIC_FILES = {
+    "/static/viewer_urls.js": ("viewer_urls.js", "text/javascript; charset=utf-8"),
     "/static/dual_control.js": ("dual_control.js", "text/javascript; charset=utf-8"),
     "/static/capability_ui.js": ("capability_ui.js", "text/javascript; charset=utf-8"),
+    "/static/unit_radial_actions.js": ("unit_radial_actions.js", "text/javascript; charset=utf-8"),
     "/static/map_renderer.js": ("map_renderer.js", "text/javascript; charset=utf-8"),
     "/static/unit_symbol_renderer.js": ("unit_symbol_renderer.js", "text/javascript; charset=utf-8"),
     "/static/unit_symbol_resolver.js": ("unit_symbol_resolver.js", "text/javascript; charset=utf-8"),
@@ -111,10 +116,13 @@ class RealtimeDualControlHTTPServer(ThreadingHTTPServer):
         return side, self.bindings[side]
 
     def status(self, side: str, binding: RealtimeSeatBinding) -> dict[str, object]:
-        seat_view, controller_view = self.realtime_session.controller_snapshot(
-            binding
+        snapshot = self.realtime_session.status_snapshot(binding)
+        if snapshot.seat != side:
+            raise CommandGatewayError("binding_side_mismatch", "seat does not match binding")
+        return self._status_record(
+            side, snapshot, snapshot, snapshot.lifecycle,
+            snapshot.pending_command_count, snapshot.last_command,
         )
-        return self.status_from_snapshot(side, seat_view, controller_view)
 
     def status_from_snapshot(
         self,
@@ -122,23 +130,29 @@ class RealtimeDualControlHTTPServer(ThreadingHTTPServer):
         seat_view: RealtimeSeatView,
         controller_view: ControllerView,
     ) -> dict[str, object]:
-        events = tuple(
-            value for value in self.realtime_session.command_events
-            if value.seat == side
+        summary = self.realtime_session.status_snapshot(self.bindings[side])
+        return self._status_record(
+            side, seat_view, controller_view, summary.lifecycle,
+            summary.pending_command_count, summary.last_command,
         )
-        pending = tuple(
-            value for value in events if value.status is CommandStatus.PENDING
-        )
-        last = events[-1] if events else None
+
+    @staticmethod
+    def _status_record(
+        side: str,
+        seat_view: RealtimeSeatView | RealtimeStatusSnapshot,
+        controller_view: ControllerView | RealtimeStatusSnapshot,
+        lifecycle: RealtimeLifecycleState,
+        pending_count: int,
+        last: RealtimeCommandSummary | None,
+    ) -> dict[str, object]:
         ended = seat_view.terminated or seat_view.truncated
         can_operate = (
             not ended
-            and self.realtime_session.lifecycle
-            is RealtimeLifecycleState.ACCEPTING
+            and lifecycle is RealtimeLifecycleState.ACCEPTING
         )
         if ended:
             state = "TERMINAL"
-        elif pending:
+        elif pending_count:
             state = "COMMAND_PENDING"
         elif last is not None and last.status is CommandStatus.REJECTED_AT_APPLY:
             state = "COMMAND_REJECTED"
@@ -157,7 +171,7 @@ class RealtimeDualControlHTTPServer(ThreadingHTTPServer):
             "winner": controller_view.winner,
             "outcome": controller_view.outcome,
             "can_operate": can_operate,
-            "pending_command_count": len(pending),
+            "pending_command_count": pending_count,
             "last_command": (
                 None
                 if last is None else {
@@ -609,7 +623,7 @@ class RealtimeDualControlRequestHandler(BaseHTTPRequestHandler):
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header(
                 "Content-Security-Policy",
-                "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' blob:",
+                VIEWER_CONTENT_SECURITY_POLICY,
             )
             self.end_headers()
             self.wfile.write(payload)

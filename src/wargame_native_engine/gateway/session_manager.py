@@ -15,17 +15,22 @@ from typing import Any
 from wargame_native_engine.analysis import (
     EightFactorAnalyzer,
     LiveAnalyzedSession,
+    ReplayAnalyzer,
 )
 from wargame_native_engine.analysis.models import FrameAnalysis
 from wargame_native_engine.agents.protocol import (
     AgentResetContext,
     AgentStepContext,
 )
+from wargame_native_engine.adjudication.fire_effect_query import FireEffectQuery
 from wargame_native_engine.core.action import EngineAction, ValidAction
 from wargame_native_engine.core.fire_capability import IndirectFireCapability
 from wargame_native_engine.core.observation import SideObservation
 from wargame_native_engine.core.result import GameResult
 from wargame_native_engine.core.tactical_overlay import UnitTacticalOverlay
+from wargame_native_engine.core.region_visibility import (
+    RegionVisibilityQuery, RegionVisibilityResult,
+)
 from wargame_native_engine.gateway.models import (
     CommandGatewayError,
     ControllerView,
@@ -35,6 +40,7 @@ from wargame_native_engine.gateway.models import (
 from wargame_native_engine.gateway.controller_decision import (
     build_controller_decision_core,
 )
+from wargame_native_engine.io.detached import detached_copy
 from wargame_native_engine.io.serialization import canonical_hash, json_clone
 from wargame_native_engine.io.scenario import native_map_identity_hash
 from wargame_native_engine.movement.models import MovementMode, RoutePlan
@@ -56,7 +62,7 @@ from wargame_native_engine.projection.decision_semantic import (
 
 
 EnvironmentFactory = Callable[[], SourceCompatibleEnvironment]
-AnalyzerFactory = Callable[[], EightFactorAnalyzer]
+AnalyzerFactory = Callable[[], ReplayAnalyzer]
 _STARTED_AT = "1970-01-01T00:00:00+00:00"
 
 
@@ -177,7 +183,7 @@ class SessionManager:
         managed = self._managed(session_id)
         with managed.lock:
             self._require_usable(managed)
-            native_result = managed.environment.session.result()
+            native_result = managed.environment.session.game_status()
             return SessionDescriptor(
                 session_id=managed.external_id,
                 step_index=managed.step_index,
@@ -323,6 +329,34 @@ class SessionManager:
         policy = getattr(managed.environment.session.backend, "mounted_position_policy", None)
         return {} if policy is None else {"mounted_position_policy": policy}
 
+    def get_weapon_catalog(self, session_id: str) -> Mapping[str, object]:
+        """Read static weapon authorities without waiting for the tick lock."""
+        managed = self._managed(session_id)
+        self._require_usable(managed)
+        return deepcopy(managed.environment.session.get_weapon_catalog())
+
+    def query_fire_effect_from_projection(
+        self, session_id: str, side: str, view: ControllerView,
+        *, query: FireEffectQuery,
+    ) -> Mapping[str, object]:
+        """Use only the authenticated frozen side projection and static rules.
+
+        As with tactical overlays, this never reads the mutable advancement
+        state and does not need the managed-session tick lock.
+        """
+        managed = self._managed(session_id)
+        self._require_usable(managed)
+        _require_side(managed, side)
+        if view.session_id != managed.external_id:
+            raise ValueError("controller view belongs to another session")
+        if view.perspective.lower() != side:
+            raise ValueError("controller view belongs to another side")
+        result = managed.environment.session.query_fire_effect_from_projection(
+            side, view.observation, view.source_frame, view.valid_actions,
+            view.own_weapon_inventory, query=query,
+        )
+        return deepcopy(result)
+
     def public_scenario_identity(self, session_id: str) -> Mapping[str, str]:
         """Return immutable scenario/map identity without exposing WorldState."""
 
@@ -394,7 +428,7 @@ class SessionManager:
             self._require_usable(managed)
             _require_side(managed, side)
             session = managed.environment.session
-            before = deepcopy(session.snapshot())
+            before = detached_copy(session.snapshot())
             result = session.query_unit_tactical_overlay(side, unit_id)
             if session.snapshot() != before:
                 raise RuntimeError("tactical_overlay_query_modified_engine_state")
@@ -412,7 +446,7 @@ class SessionManager:
             self._require_usable(managed)
             _require_side(managed, side)
             session = managed.environment.session
-            before = deepcopy(session.snapshot())
+            before = detached_copy(session.snapshot())
             result = session.get_indirect_fire_capabilities(side)
             if session.snapshot() != before:
                 raise RuntimeError(
@@ -432,7 +466,7 @@ class SessionManager:
             self._require_usable(managed)
             _require_side(managed, side)
             session = managed.environment.session
-            before = deepcopy(session.snapshot())
+            before = detached_copy(session.snapshot())
             result = session.get_indirect_fire_active_areas(side)
             if session.snapshot() != before:
                 raise RuntimeError(
@@ -452,7 +486,7 @@ class SessionManager:
             self._require_usable(managed)
             _require_side(managed, side)
             session = managed.environment.session
-            before = deepcopy(session.snapshot())
+            before = detached_copy(session.snapshot())
             result = session.get_indirect_fire_mission_areas(side)
             if session.snapshot() != before:
                 raise RuntimeError(
@@ -507,6 +541,7 @@ class SessionManager:
         shooter_id: int,
         weapon_id: int,
         target_hex: int,
+        *, target_id: int | None = None,
     ) -> tuple[EngineAction, str]:
         """Create one mutation-guarded, Engine-authorized INDIRECT action."""
 
@@ -515,18 +550,21 @@ class SessionManager:
             self._require_usable(managed)
             _require_side(managed, side)
             session = managed.environment.session
-            before = deepcopy(session.snapshot())
+            before = detached_copy(session.snapshot())
             state_hash = canonical_hash(before["world"])
             capability = next((
                 value
                 for value in session.get_indirect_fire_capabilities(side)
                 if value.shooter_id == shooter_id
                 and value.weapon_id == weapon_id
-                and value.status.value == "AVAILABLE"
             ), None)
             if capability is None:
                 raise ValueError("CAPABILITY_BLOCKED")
-            action = session.indirect_fire_action(capability, target_hex)
+            if capability.status.value != "AVAILABLE":
+                raise ValueError(
+                    "; ".join(capability.blockers) or "CAPABILITY_BLOCKED"
+                )
+            action = session.indirect_fire_action(capability, target_hex, target_id=target_id)
             if session.snapshot() != before:
                 raise RuntimeError(
                     "indirect_fire_planning_modified_engine_state"
@@ -539,7 +577,8 @@ class SessionManager:
         side: str,
         actor_id: int,
         weapon_id: int,
-        target_id: int,
+        target_id: int | None = None,
+        *, target_hex: int | None = None,
     ) -> tuple[EngineAction, str]:
         """Create an OWN/visibility-authorized DIRECT intent without rule preview."""
 
@@ -550,7 +589,7 @@ class SessionManager:
             session = managed.environment.session
             revision = session.state_revision()
             action = session.direct_fire_intent_action(
-                side, actor_id, weapon_id, target_id,
+                side, actor_id, weapon_id, target_id, target_hex=target_hex,
             )
             if session.state_revision() != revision:
                 raise RuntimeError("direct_fire_intent_query_modified_engine_state")
@@ -560,6 +599,27 @@ class SessionManager:
                 "side": side,
             })
             return deepcopy(action), identity_hash
+
+    def query_region_visibility_from_projection(
+        self,
+        session_id: str,
+        side: str,
+        actor_id: int,
+        view: ControllerView,
+        query: RegionVisibilityQuery,
+    ) -> RegionVisibilityResult:
+        """Read a detached side projection and static map data, not live state."""
+
+        managed = self._managed(session_id)
+        self._require_usable(managed)
+        _require_side(managed, side)
+        if view.session_id != managed.external_id:
+            raise ValueError("controller view belongs to another session")
+        if view.perspective.lower() != side:
+            raise ValueError("controller view belongs to another side")
+        return managed.environment.session.query_region_visibility_from_projection(
+            side, actor_id, view.observation, view.source_frame, query
+        )
 
     def query_unit_tactical_overlay_from_projection(
         self,
@@ -704,7 +764,7 @@ class SessionManager:
                     )
                 failure_reason = "committed_step_interrupted"
                 managed.step_index = update.frame_index
-                native_result = managed.environment.session.result()
+                native_result = managed.environment.session.game_status()
             except BaseException as exc:
                 advanced = (
                     managed.environment.session.state_revision()
@@ -903,7 +963,7 @@ class SessionManager:
             or frozen_valid_actions_revision is not None
         ) and not managed.finalized
         terminal = session.is_terminal()
-        result = session.result()
+        result = session.game_status()
         cache_key = (
             managed.environment.source_contract,
             state_revision,
@@ -922,7 +982,7 @@ class SessionManager:
             cached = managed.controller_view_cache.get(side)
             if cached is not None and cached[0] == cache_key:
                 managed.controller_view_cache_hits += 1
-                return deepcopy(cached[1])
+                return detached_copy(cached[1])
             managed.controller_view_cache_misses += 1
         else:
             managed.controller_view_cache_bypasses += 1
@@ -985,7 +1045,7 @@ class SessionManager:
         if cacheable:
             # The template never crosses the manager boundary.  Keep a deep
             # copy so mutation of this miss result cannot poison later hits.
-            managed.controller_view_cache[side] = (cache_key, deepcopy(value))
+            managed.controller_view_cache[side] = (cache_key, detached_copy(value))
         return value
 
 

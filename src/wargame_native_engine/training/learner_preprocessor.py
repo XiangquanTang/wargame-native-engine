@@ -220,7 +220,7 @@ class LearnerObservationPreprocessorSpec:
             or self.output_shape != self.input_shape
             or (
                 identity[0] == LEARNER_OBSERVATION_PREPROCESSOR_SCHEMA_VERSION
-                and self.input_shape != (8302,)
+                and self.input_shape != DecisionObservationEncoder().observation_space.flat_shape
             )
         ):
             raise LearnerPreprocessorContractError(

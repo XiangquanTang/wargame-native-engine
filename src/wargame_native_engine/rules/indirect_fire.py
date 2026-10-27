@@ -59,6 +59,7 @@ class IndirectRangePolicy(str, Enum):
     """Spatial admission policy; it is not a numeric or infinite range."""
 
     SCENARIO_DEFINED_GLOBAL_HEX = "SCENARIO_DEFINED_GLOBAL_HEX"
+    BOUNDED_HEX_DISTANCE = "BOUNDED_HEX_DISTANCE"
 
 
 class IndirectFireMissionState(str, Enum):
@@ -146,6 +147,9 @@ class IndirectFireProfile:
                 )
             if self.target_domain is not IndirectTargetDomain.AREA:
                 raise ValueError("global-hex policy requires AREA target domain")
+        if self.range_policy is IndirectRangePolicy.BOUNDED_HEX_DISTANCE:
+            if self.minimum_range is None or self.maximum_range is None:
+                raise ValueError("bounded-hex policy requires both numeric bounds")
         if (
             self.minimum_range is not None
             and self.maximum_range is not None

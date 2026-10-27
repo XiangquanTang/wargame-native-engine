@@ -17,10 +17,14 @@ from wargame_native_engine.adjudication.request import (
 )
 from wargame_native_engine.adjudication.table_loader import AdjudicationTableSet
 from wargame_native_engine.compat.source_frame.models import ArmorClass, UnitDomain
+from wargame_native_engine.core.fire_intent import FireMode
 from wargame_native_engine.core.operator import OperatorState
 from wargame_native_engine.core.rng import NativeRNG
 from wargame_native_engine.io.serialization import canonical_hash, file_sha256, json_clone
-from wargame_native_engine.version import ENGINE_VERSION
+from wargame_native_engine.version import (
+    ADJUDICATION_SEMANTICS_VERSION,
+    ENGINE_VERSION,
+)
 from wargame_native_engine.visibility.result import VisibilityResult
 
 
@@ -59,6 +63,8 @@ def direct_fire_request_to_dict(request: DirectFireRequest) -> dict[str, Any]:
         "ammunition_before": request.ammunition_before,
         "weapon_cooldown_before": request.weapon_cooldown_before,
         "weapon_unfolded": request.weapon_unfolded,
+        "weapon_locked": request.weapon_locked,
+        "locked_weapon_id": request.locked_weapon_id,
         "elevation_difference": request.elevation_difference,
         "attacker_suppressed": request.attacker_suppressed,
         "attacker_moving": request.attacker_moving,
@@ -77,6 +83,8 @@ def direct_fire_request_to_dict(request: DirectFireRequest) -> dict[str, Any]:
     }
     if request.resource_policy is not DirectFireResourcePolicy.AMMUNITION_KEY:
         result["resource_policy"] = request.resource_policy.value
+    if request.fire_mode is not FireMode.DIRECT:
+        result["fire_mode"] = request.fire_mode.value
     return result
 
 
@@ -113,7 +121,9 @@ def direct_fire_request_from_dict(value: Mapping[str, Any]) -> DirectFireRequest
                             else int(value["ammunition_before"])),
         weapon_cooldown_before=int(value["weapon_cooldown_before"]),
         weapon_unfolded=bool(value["weapon_unfolded"]),
-        elevation_difference=int(value["elevation_difference"]),
+        weapon_locked=bool(value.get("weapon_locked", False)),
+        locked_weapon_id=value.get("locked_weapon_id"),
+        elevation_difference=value["elevation_difference"],
         attacker_suppressed=bool(value["attacker_suppressed"]),
         attacker_moving=bool(value["attacker_moving"]),
         target_terrain=str(value["target_terrain"]),
@@ -129,6 +139,7 @@ def direct_fire_request_from_dict(value: Mapping[str, Any]) -> DirectFireRequest
         carried_passengers=tuple(OperatorState.from_dict(item)
                                  for item in value["carried_passengers"]),
         metadata=json_clone(value.get("metadata", {})),
+        fire_mode=FireMode(value.get("fire_mode", FireMode.DIRECT.value)),
         resource_policy=DirectFireResourcePolicy(str(value.get(
             "resource_policy", DirectFireResourcePolicy.AMMUNITION_KEY.value
         ))),
@@ -170,6 +181,7 @@ def write_direct_fire_replay(root: str | Path, *,
         "final_state_hash": canonical_hash(final_state),
         "collection_hashes": collections,
         **json_clone(extra_manifest or {}),
+        "adjudication_semantics_version": ADJUDICATION_SEMANTICS_VERSION,
     }
     _write(path / "manifest.json", manifest)
 
@@ -181,6 +193,9 @@ def replay_direct_fire(root: str | Path, *, tables: AdjudicationTableSet,
     if manifest.get("schema_version") != DIRECT_FIRE_REPLAY_SCHEMA:
         raise ValueError("unsupported direct-fire replay schema")
     mismatches = []
+    if (manifest.get("adjudication_semantics_version")
+            != ADJUDICATION_SEMANTICS_VERSION):
+        mismatches.append("adjudication_semantics_version")
     for name, expected in manifest["collection_hashes"].items():
         if file_sha256(path / name) != expected:
             mismatches.append(name)
@@ -221,15 +236,20 @@ def _final_state(resolution: DirectFireResolution,
     target = json_clone(request_document["target"])
     losses = 0 if resolution.outcome is None else (
         resolution.outcome.vehicle_losses + resolution.outcome.squad_losses)
-    target["blood"] = max(0, int(target["blood"]) - losses)
-    target["health"] = target["max_health"] * target["blood"] / target["max_blood"]
-    if target["blood"] == 0:
-        target["alive"] = False
-        target["state"] = "destroyed"
-    elif resolution.outcome is not None and resolution.outcome.suppression_applied:
-        target["state"] = "SUPPRESSED"
-        target.setdefault("raw_attributes", {})["suppression_remaining_seconds"] = int(
-            tables.document["runtime_rules"]["suppression"]["effective_duration_seconds"])
+    out_of_range_no_effect = (
+        resolution.outcome is not None
+        and resolution.legality.evidence.get("range_effect") == "OUT_OF_RANGE_NO_EFFECT"
+    )
+    if not out_of_range_no_effect:
+        target["blood"] = max(0, int(target["blood"]) - losses)
+        target["health"] = target["max_health"] * target["blood"] / target["max_blood"]
+        if target["blood"] == 0:
+            target["alive"] = False
+            target["state"] = "destroyed"
+        elif resolution.outcome is not None and resolution.outcome.suppression_applied:
+            target["state"] = "SUPPRESSED"
+            target.setdefault("raw_attributes", {})["suppression_remaining_seconds"] = int(
+                tables.document["runtime_rules"]["suppression"]["effective_duration_seconds"])
     passengers = []
     for passenger in request_document["carried_passengers"]:
         value = json_clone(passenger)

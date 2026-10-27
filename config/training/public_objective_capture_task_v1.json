@@ -32,8 +32,8 @@
       "hash": "7191a1db86b471104fd85654a977cceb2162980a3739f766cc276d5ddc5b6bd0"
     },
     "encoder": {
-      "schema": "native-decision-observation-encoder/2.0",
-      "hash": "46a7ad89a82842b2ed5a34bf664b2e70be8fea55549961b71fbbbde895953aea"
+      "schema": "native-decision-observation-encoder/2.1",
+      "hash": "3b4a4f093c413fdef57d27d9a9e7a82e2a371f6fb078f557338076e61a4dbd81"
     },
     "delta_time_seconds": 25
   },

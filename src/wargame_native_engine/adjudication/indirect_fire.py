@@ -35,9 +35,7 @@ class IndirectFirePlanValidationEvidence:
         _require_sha256(self.checked_policy_hash, "checked_policy_hash")
         if self.planned_hex_validated is not True:
             raise ValueError("planned_hex_validated must be true")
-        if self.range_policy is not (
-            IndirectRangePolicy.SCENARIO_DEFINED_GLOBAL_HEX
-        ):
+        if not isinstance(self.range_policy, IndirectRangePolicy):
             raise ValueError("unsupported indirect-fire range policy")
 
     def to_record(self) -> dict[str, object]:

@@ -15,6 +15,7 @@ from wargame_native_engine.analysis import (
     analyze_replay_to_jsonl,
 )
 from wargame_native_engine.analysis.jsonl import analysis_sidecar_from_jsonl
+from wargame_native_engine.analysis.native_analyzer import NativeEightFactorAnalyzer
 from wargame_native_engine.compat.source_frame.serialization import (
     canonical_source_json,
 )
@@ -321,12 +322,21 @@ def publish_training_episode(
 
 
 def _verify_offline_analysis(replay_path: Path, analysis_path: Path) -> None:
+    # Model selection is explicit in the recorded identity, not inferred from
+    # a filename or from the presence of optional Native fields. Full-byte
+    # equality below verifies every identity and derived value again.
+    with analysis_path.open(encoding="utf-8") as stream:
+        first = json.loads(stream.readline())
+    identity = first.get("provenance", {})
+    native = NativeEightFactorAnalyzer()
+    analyzer = (native if identity.get("model_id") == native.model_id
+                else EightFactorAnalyzer())
     with tempfile.TemporaryDirectory(
         prefix="wargame-training-analysis."
     ) as temporary:
         offline = Path(temporary) / "frame_analysis.native.jsonl"
         analyze_replay_to_jsonl(
-            replay_path, offline, analyzer=EightFactorAnalyzer()
+            replay_path, offline, analyzer=analyzer
         )
         if not _files_equal(offline, analysis_path):
             raise ValueError("online and offline analysis JSONL differ")

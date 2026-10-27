@@ -177,6 +177,12 @@ class CapabilityRegistry:
 
 
 def load_default_capability_registry() -> CapabilityRegistry:
+    """Load the optional demo-certification catalog shipped with this release.
+
+    An empty catalog advertises no bundled demo certifications. It does not
+    imply that the engine has no capabilities; use the live capability APIs
+    for gameplay and ``examples/maps/catalog.json`` for shipped scenarios.
+    """
     repository_root = Path(__file__).resolve().parents[2]
     return CapabilityRegistry.load(
         repository_root

@@ -137,6 +137,7 @@ class SideController:
         target_hex: int,
         *,
         request_id: str,
+        target_id: int | None = None,
         expected_window: int | None = None,
     ) -> ActionProposal:
         window = self.window()
@@ -157,15 +158,17 @@ class SideController:
             shooter_id=shooter_id,
             weapon_id=weapon_id,
             target_hex=target_hex,
+            target_id=target_id,
         )
 
     def plan_direct_fire_intent(
         self,
         unit_id: int,
         weapon_id: int,
-        target_id: int,
+        target_id: int | None = None,
         *,
         request_id: str,
+        target_hex: int | None = None,
         expected_window: int | None = None,
     ) -> ActionProposal:
         window = self.window()
@@ -186,6 +189,7 @@ class SideController:
             actor_id=unit_id,
             weapon_id=weapon_id,
             target_id=target_id,
+            target_hex=target_hex,
         )
 
     def proposal(self, proposal_id: str) -> ActionProposal:

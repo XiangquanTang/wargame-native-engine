@@ -1,12 +1,14 @@
 "use strict";
 
 // Presentation-only resolver. The tracked JSON registry is installed by the
-// hosting Viewer; this module never guesses identity from a unit name/icon_key.
+// hosting Viewer. Exact projected tank names refine presentation, not identity.
 (function installUnitSymbolResolver(root) {
   const REGISTRY_SCHEMA = "operator-registry/v1";
   const SYMBOL_SCHEMA = "unit-symbol/v1";
   const LAYERS_SCHEMA = "unit-symbol-layers/v1";
-  const DEFAULT_REGISTRY_URL = "/static/operator_registry_v1.json";
+  const DEFAULT_REGISTRY_URL = globalThis.ViewerUrls
+    ? globalThis.ViewerUrls.resolve("/static/operator_registry_v1.json")
+    : "/static/operator_registry_v1.json";
   const SAFE_LAYER_NAME = /^[a-z0-9_]+$/;
   // A side projection may disclose the broad Source domain while withholding
   // (or lacking) the fine subtype.  These coarse symbols reveal no more than
@@ -53,10 +55,18 @@
         typeof item === "string" && SAFE_LAYER_NAME.test(item)
       ))
       ? value.modifiers : [];
-    const base = value.status === "UNKNOWN"
+    let base = value.status === "UNKNOWN"
       && !SAFE_UNKNOWN_BASES.has(requestedBase)
       ? "unknown" : requestedBase;
     const modifiers = value.status === "UNKNOWN" ? [] : requestedModifiers;
+    // Weight is verified presentation metadata (registry or exact projected tank
+    // class), never guessed from armor values or a missing Source subtype. Distinct hull
+    // silhouettes remain distinguishable even when small badges are unreadable.
+    if (value.status === "MAPPED" && ["tank", "armored_vehicle"].includes(base)) {
+      const heavy = modifiers.includes("armor_heavy");
+      const medium = modifiers.includes("armor_medium");
+      if (heavy !== medium) base = `${base}_${heavy ? "heavy" : "medium"}`;
+    }
     return Object.freeze({
       schema: LAYERS_SCHEMA,
       layers: Object.freeze([
@@ -129,12 +139,23 @@
       if (!mapped) {
         return unknownDescriptor(typeCode, subtypeCode);
       }
+      // Source 2_0 is reused across maps for tanks of different weights.
+      // Refine ONLY an already mapped tank using exact public class names.
+      // Never inspect armor, weapon IDs, raw attributes or arbitrary substrings.
+      const tankWeights = { "重型坦克": "heavy", "中型坦克": "medium", "轻型坦克": "light" };
+      const sourceTank = key === "2_0" && mapped.base_symbol === "tank";
+      const weight = sourceTank && Object.hasOwn(tankWeights, viewerUnit.name)
+        ? tankWeights[viewerUnit.name] : null;
+      const modifiers = sourceTank
+        ? [...mapped.modifiers.filter((item) => !item.startsWith("armor_")),
+          ...(weight ? [`armor_${weight}`] : [])]
+        : [...mapped.modifiers];
       return Object.freeze({
         schema: SYMBOL_SCHEMA,
         key,
-        display_name: mapped.display_name,
+        display_name: sourceTank ? (weight ? viewerUnit.name : "坦克") : mapped.display_name,
         base_symbol: mapped.base_symbol,
-        modifiers: Object.freeze([...mapped.modifiers]),
+        modifiers: Object.freeze(modifiers),
         status: "MAPPED",
       });
     }

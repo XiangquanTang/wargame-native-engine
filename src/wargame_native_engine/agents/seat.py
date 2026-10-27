@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Protocol, Sequence
 
 from wargame_native_engine.agents.protocol import AgentResetContext
+from wargame_native_engine.io.detached import detached_record
 from wargame_native_engine.io.serialization import json_clone
 from wargame_native_engine.projection.decision_capability import (
     ActionCatalogSnapshot,
@@ -23,6 +24,7 @@ from wargame_native_engine.projection.decision_semantic import (
 )
 
 
+@detached_record
 @dataclass(frozen=True, slots=True)
 class SeatActionCapabilities:
     """Detached, side-only capabilities for one decision window.
@@ -144,8 +146,8 @@ class SeatOperation:
         operation = _nonempty_text(self.operation_type, "operation_type").upper()
         actors = _exact_nonnegative_ints(self.actor_ids, "actor_ids")
         choices = _weapon_choices(self.weapon_choices)
-        if choices and operation != "SHOOT":
-            raise ValueError("weapon_choices are valid only for SHOOT")
+        if choices and operation not in {"SHOOT", "WEAPON_LOCK"}:
+            raise ValueError("weapon_choices are valid only for SHOOT or WEAPON_LOCK")
         if any(unit_id not in actors for unit_id, _ in choices):
             raise ValueError("weapon_choices must belong to selected actors")
         if self.destination_hex is not None:
@@ -189,10 +191,8 @@ class SeatOperation:
                 raise ValueError(
                     "INDIRECT_FIRE actor_ids must contain exactly shooter_id"
                 )
-            if self.guider_id is not None or self.target_id is not None:
-                raise ValueError(
-                    "INDIRECT_FIRE accepts target_hex only and no guider"
-                )
+            if self.guider_id is not None:
+                raise ValueError("INDIRECT_FIRE does not accept a guider")
         elif operation in {"BOARD", "UNLOAD", "CAPTURE"}:
             if len(actors) != 1:
                 raise ValueError(f"{operation} requires exactly one actor")
@@ -202,7 +202,10 @@ class SeatOperation:
                 "fire contract fields require GUIDED_FIRE or INDIRECT_FIRE"
             )
         elif self.target_hex is not None:
-            raise ValueError("target_hex is valid only for INDIRECT_FIRE")
+            if operation != "SHOOT":
+                raise ValueError("target_hex is valid only for SHOOT or INDIRECT_FIRE")
+            if self.target_id is not None:
+                raise ValueError("SHOOT accepts target_id or target_hex, not both")
         object.__setattr__(self, "operation_type", operation)
         object.__setattr__(self, "actor_ids", actors)
         object.__setattr__(self, "movement_mode", _nonempty_text(
@@ -226,6 +229,8 @@ class SeatOperation:
             "weapon_choices": dict(self.weapon_choices),
             "whole_side_wait": self.whole_side_wait,
         }
+        if self.operation_type == "SHOOT" and self.target_hex is not None:
+            result["target_hex"] = self.target_hex
         if self.operation_type == "GUIDED_FIRE":
             result.update({
                 "fire_mode": self.fire_mode,

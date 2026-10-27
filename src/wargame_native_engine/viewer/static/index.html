@@ -4,17 +4,36 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Native 复盘态势查看器</title>
-  <link rel="stylesheet" href="/static/styles.css">
+  <!-- Derive the mount from the page URL, never from untrusted forwarded headers. -->
+  <script>
+    (() => {
+      const url = new URL(window.location.href);
+      url.pathname = url.pathname.replace(/\/(?:red|blue|index\.html)\/?$/, "/");
+      if (!url.pathname.endsWith("/")) url.pathname += "/";
+      url.search = "";
+      url.hash = "";
+      const base = document.createElement("base");
+      base.href = url.href;
+      document.head.appendChild(base);
+    })();
+  </script>
+  <script src="static/viewer_urls.js"></script>
+  <link rel="stylesheet" href="static/styles.css">
 </head>
 <body>
   <header>
     <div>
-      <p class="eyebrow">LOCAL · READ ONLY · GREEN</p>
+      <p id="perspective-heading" class="eyebrow">LOCAL · READ ONLY · GREEN</p>
       <h1>复盘态势与八因子分析</h1>
     </div>
     <div class="compatibility-wrap">
+      <div class="replay-views" role="group" aria-label="复盘记录视角">
+        <button id="replay-view-all" type="button" aria-pressed="true">全局</button>
+        <button id="replay-view-red" type="button" aria-pressed="false">红方</button>
+        <button id="replay-view-blue" type="button" aria-pressed="false">蓝方</button>
+      </div>
+      <p id="replay-view-status" class="strict-evidence-note" role="status">全局视角</p>
       <div id="compatibility" class="badges"></div>
-      <p id="strict-evidence-note" class="strict-evidence-note"></p>
     </div>
   </header>
 
@@ -24,7 +43,6 @@
         <div>
           <h2>六角地图态势视图</h2>
           <p id="map-mode">正在加载地图配置…</p>
-          <p id="map-elevation"></p>
           <p id="map-layer-summary"></p>
           <p id="scenario-mode"></p>
         </div>
@@ -39,8 +57,8 @@
       </div>
       <canvas id="battlefield" aria-label="战场单位坐标画布"></canvas>
       <p id="hex-info" class="hex-info">移动鼠标或点击六边形查看真实坐标与地形</p>
+      <div id="elevation-legend" class="elevation-legend" aria-label="高程颜色与地图坐标图例"></div>
       <div class="legend">
-        <span><i class="elevation-swatch"></i>Low→High elevation</span>
         <span><i class="road-swatch"></i>Road</span>
         <span><i class="river-swatch"></i>River</span>
         <span><i class="unknown-elevation-swatch"></i>Unknown elevation</span>
@@ -53,7 +71,9 @@
 
     <aside class="analysis-panel">
       <section class="panel summary">
-        <div class="section-title"><h2>当前帧分析</h2></div>
+        <div class="section-title"><h2>当前帧分析 · 全局</h2></div>
+        <p id="analysis-coverage" class="analysis-note">正在读取覆盖率…</p>
+        <p id="analysis-missing" class="analysis-note"></p>
         <div class="metric-grid">
           <article class="metric red"><span>RED EFFECTIVE POWER</span><strong id="red-power">—</strong></article>
           <article class="metric blue"><span>BLUE EFFECTIVE POWER</span><strong id="blue-power">—</strong></article>
@@ -64,13 +84,14 @@
 
       <section class="panel factor-panel">
         <div class="section-title">
-          <div><h2>选中单位八因子</h2><p id="selected-unit">点击战场单位</p></div>
+          <div><h2>选中单位记录与八因子</h2><p id="selected-unit">点击战场单位</p></div>
           <strong id="effective-power">—</strong>
         </div>
         <div id="unit-validity" class="unit-validity"></div>
+        <p id="dead-unit-note" class="dead-unit-note"></p>
         <div class="factor-table-wrap">
           <table>
-            <thead><tr><th>因子</th><th>值 / 状态</th><th>公式与证据</th></tr></thead>
+            <thead><tr><th>因子</th><th>当前值 / 状态</th><th>公式与证据</th></tr></thead>
             <tbody id="factor-table"></tbody>
           </table>
         </div>
@@ -79,13 +100,16 @@
 
     <section class="panel chart-panel">
       <div class="section-title">
-        <div><h2>力量与相对优势曲线</h2><p>UNKNOWN 保留为断点，不按 0 绘制</p></div>
-        <div class="legend"><span class="red-text">RED power</span><span class="blue-text">BLUE power</span><span class="gold-text">Normalized advantage</span></div>
+        <div><h2>八因子力量与相对优势曲线 · 全局</h2></div>
+        <div class="legend chart-toggles"><label class="red-text"><input id="show-red" type="checkbox" checked>红方力量</label><label class="blue-text"><input id="show-blue" type="checkbox" checked>蓝方力量</label><label class="gold-text"><input id="show-advantage" type="checkbox" checked>相对优势</label></div>
       </div>
-      <canvas id="timeline-chart" aria-label="力量和优势时间线"></canvas>
+      <canvas id="timeline-chart" tabindex="0" aria-label="力量和优势时间线，可用左右键逐帧，Home 和 End 跳转首末帧"></canvas>
+      <p id="timeline-tooltip" class="chart-readout" aria-live="off">正在读取曲线…</p>
+      <p id="timeline-status" class="analysis-note">正在加载曲线…</p>
     </section>
 
     <section class="panel controls">
+      <p id="loading-status" class="analysis-note" role="status">正在加载复盘…</p>
       <input id="frame-slider" type="range" min="0" value="0" aria-label="时间轴">
       <div class="control-row">
         <button id="previous-frame" type="button">上一帧</button>
@@ -108,16 +132,17 @@
     </section>
 
     <section class="panel evidence-panel">
-      <article><h2>Actions</h2><pre id="actions">[]</pre></article>
-      <article><h2>Judge info</h2><pre id="judge-info">[]</pre></article>
-      <article><h2>Analysis warnings</h2><pre id="warnings">[]</pre></article>
+      <article><h2>Actions · 全局</h2><pre id="actions">[]</pre></article>
+      <article><h2>Judge info · 全局</h2><pre id="judge-info">[]</pre></article>
+      <article><h2>Analysis warnings · 全局</h2><pre id="warnings">[]</pre></article>
     </section>
   </main>
 
   <div id="error-banner" role="alert" hidden></div>
-  <script src="/static/unit_symbol_resolver.js"></script>
-  <script src="/static/unit_symbol_renderer.js"></script>
-  <script src="/static/map_renderer.js"></script>
-  <script src="/static/app.js"></script>
+  <script src="static/unit_symbol_resolver.js"></script>
+  <script src="static/unit_symbol_renderer.js"></script>
+  <script src="static/map_renderer.js"></script>
+  <script src="static/timeline_chart.js"></script>
+  <script src="static/app.js"></script>
 </body>
 </html>

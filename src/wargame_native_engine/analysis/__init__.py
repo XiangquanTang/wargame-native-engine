@@ -3,6 +3,12 @@
 from wargame_native_engine.analysis.analyzer import (
     EightFactorAnalyzer,
     GreenFrameAnalysisInput,
+    ReplayAnalyzer,
+)
+from wargame_native_engine.analysis.generation import (
+    GeneratedReplayAnalysis,
+    generate_native_analysis,
+    generate_source_analysis,
 )
 from wargame_native_engine.analysis.events import detect_advantage_label_changes
 from wargame_native_engine.analysis.jsonl import (
@@ -58,10 +64,14 @@ __all__ = [
     "DEFAULT_ANALYZER_AUTHORITY",
     "FRAME_ANALYSIS_JSONL_NAME",
     "GreenFrameAnalysisInput",
+    "GeneratedReplayAnalysis",
+    "generate_native_analysis",
+    "generate_source_analysis",
     "LiveAnalysisDesynchronizedError",
     "LiveAnalyzedSession",
     "LiveAnalysisUpdate",
     "ReplayAnalysisResult",
+    "ReplayAnalyzer",
     "analysis_frames_to_jsonl",
     "analyzer_semantic_hash",
     "analyzer_semantic_spec",

@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from wargame_native_engine.weapon_names import weapon_display_name
+from wargame_native_engine.adjudication.fire_readiness import weapon_binding_failure
+from wargame_native_engine.adjudication.request import fire_elevation_level_difference
+
 from collections import defaultdict
 from dataclasses import dataclass, fields, replace
 from pathlib import Path
@@ -38,6 +42,16 @@ from wargame_native_engine.adjudication.indirect_fire import (
 from wargame_native_engine.adjudication.indirect_fire_service import (
     IndirectFireLifecycleService,
 )
+from wargame_native_engine.adjudication.fire_effect_query import (
+    FireEffectQuery,
+    FireEffectQueryError,
+    direct_fire_probabilities,
+    projected_fire_inputs,
+    projected_guider,
+    query_result_base,
+)
+from wargame_native_engine.adjudication.weapon_catalog import build_weapon_catalog
+from wargame_native_engine.adjudication.indirect_effect_query import indirect_fire_probabilities
 from wargame_native_engine.compat.source_frame.models import ArmorClass, UnitDomain
 from wargame_native_engine.core.action import (
     ACTION_PRIORITY, ActionDecision, ActionType, EngineAction, ValidAction,
@@ -66,6 +80,10 @@ from wargame_native_engine.core.concealment import (
     ConcealmentCapability,
     ConcealmentPosture,
     concealment_capability_sort_key,
+)
+from wargame_native_engine.core.empty_fire import (
+    EMPTY_FIRE_EXPOSURE_FRAMES, EmptyFireIntent, advance_empty_fire_exposure,
+    empty_fire_readiness_error, has_empty_fire_exposure, mark_empty_fire_exposure,
 )
 from wargame_native_engine.core.destruction import destroy_source_operator
 from wargame_native_engine.core.event import (
@@ -116,7 +134,7 @@ from wargame_native_engine.core.operator import (
     MovementTaskPauseReason,
     OperatorState,
 )
-from wargame_native_engine.core.result import GameResult, StepResult
+from wargame_native_engine.core.result import GameResult, GameStatus, StepResult
 from wargame_native_engine.core.rng import NativeRNG
 from wargame_native_engine.core.tactical_overlay import (
     FireTarget,
@@ -126,6 +144,12 @@ from wargame_native_engine.core.tactical_overlay import (
     VisibilityField,
     WeaponEnvelope,
     WeaponEnvelopeEntry,
+)
+from wargame_native_engine.core.region_visibility import (
+    RegionVisibilityQuery,
+    RegionVisibilityQueryError,
+    RegionVisibilityResult,
+    evaluate_region_visibility,
 )
 from wargame_native_engine.core.world import Stage, WorldState
 from wargame_native_engine.rules.operator_identity import (
@@ -307,7 +331,7 @@ class NativeEngine:
             self._capture_policy_recorded = True
         else:
             self._capture_policy = load_objective_capture_policy(
-                "2" if objective_capture_policy is None
+                "3" if objective_capture_policy is None
                 else objective_capture_policy
             )
             self._capture_policy_recorded = True
@@ -414,12 +438,16 @@ class NativeEngine:
             self._adjudication_tables = AdjudicationTableSet(
                 Path(__file__).resolve().parents[3]
                 / "config/adjudication/source_tables_v1/native_adjudication_tables_final.json")
-            self._source_visibility_map = HexMapProfile({
-                item.hex_id: HexCell(
-                    item.hex_id, float(item.elevation),
-                    self._source_policy.terrain(item.terrain).value)
-                for item in scenario.map.hexes
-            })
+            self._source_visibility_map = HexMapProfile(
+                cells={
+                    item.hex_id: HexCell(
+                        item.hex_id, float(item.elevation),
+                        self._source_policy.terrain(item.terrain).value)
+                    for item in scenario.map.hexes
+                },
+                elevation_kind=scenario.map.elevation_kind,
+                elevation_unit_m=scenario.map.elevation_unit_m,
+            )
         self._indirect_fire_service = IndirectFireLifecycleService(
             source_map=self._source_map,
             adjudication_tables=self._adjudication_tables,
@@ -570,6 +598,7 @@ class NativeEngine:
                     ammunition_cost = indirect.ammo_cost_per_mission
                 resources.append({
                     "weapon_id": int(weapon_id),
+                    "display_name": weapon_display_name(int(weapon_id)),
                     "attack_modes": sorted(modes),
                     "resource_policy": resource_policy,
                     "ammunition_key": ammunition_key,
@@ -594,32 +623,237 @@ class NativeEngine:
                 "operator_id": operator.operator_id,
                 "weapons": resources,
                 "ammunition_pools": dict(sorted(ammunition.items())),
+                "weapon_locked": operator.weapon_locked,
+                "command_lost": operator.command_lost,
+                "locked_weapon_id": operator.locked_weapon_id,
+                "weapon_unfolded": operator.weapon_unfolded,
                 "weapon_cooldown_remaining_ms": (
                     operator.weapon_cooldown_remaining_ms
                 ),
             })
         return tuple(json_clone(values))
 
+    def get_weapon_catalog(self) -> dict[str, Any]:
+        """Return known weapon metadata without reading any live operator."""
+        source = self.scenario.metadata.get("source_compatible", {})
+        profiles = source.get("weapons", {}) if isinstance(source, Mapping) else {}
+        return build_weapon_catalog(
+            profiles, self._adjudication_tables,
+            guidance_authority=self._guidance_authority,
+            indirect_authority=self._indirect_fire_authority,
+            ammunition_authority=self._indirect_fire_ammunition_authority,
+        )
+
+    def query_fire_effect_from_projection(
+        self,
+        side: str,
+        observation: Mapping[str, Any],
+        source_frame: Mapping[str, Any],
+        valid_actions: Sequence[Mapping[str, Any]],
+        own_weapon_inventory: Sequence[Mapping[str, Any]],
+        *,
+        query: FireEffectQuery,
+    ) -> dict[str, Any]:
+        """Analyze one frozen seat view and explicit enemy-state assumptions.
+
+        No WorldState, live RNG, or enemy scenario template is consulted.  The
+        contact ID is only an authorization/position/model lookup in the side
+        projection, never permission to reveal concealed target statistics.
+        """
+        self._require_side(side)
+        if not isinstance(query, FireEffectQuery):
+            raise TypeError("query must be FireEffectQuery")
+        attacker, target, resource = projected_fire_inputs(
+            side, observation, source_frame, own_weapon_inventory, query,
+        )
+        result = query_result_base(query, observation, valid_actions,
+                                   self._adjudication_tables)
+        unresolved = {
+            "status": "UNRESOLVED", "damage_probability": None,
+            "expected_damage": None, "damage_distribution": [],
+            "outcome_distribution": [], "can_execute_under_assumptions": None,
+        }
+        if self._adjudication_tables is None:
+            return {**result, **unresolved,
+                    "reason_code": "ADJUDICATION_TABLES_UNAVAILABLE"}
+        if target is None:
+            return {**result, **unresolved, "reason_code": "TARGET_PROFILE_REQUIRED"}
+        if self._source_map is None or self._source_visibility_map is None:
+            return {**result, **unresolved, "reason_code": "SOURCE_MAP_UNAVAILABLE"}
+        try:
+            left = self._source_map.cell(attacker.current_hex)
+            right = self._source_map.cell(target.current_hex)
+        except (TypeError, ValueError) as exc:
+            raise FireEffectQueryError("TARGET_HEX_NOT_FOUND", str(exc)) from exc
+        if query.fire_mode == FireMode.INDIRECT.value:
+            return self._query_indirect_fire_effect(query, attacker, target, result, unresolved)
+        try:
+            weapon = self._source_weapon_profile(query.weapon_id)
+        except ValueError as exc:
+            return {**result, **unresolved, "reason_code": str(exc)}
+        resource_policy = DirectFireResourcePolicy.AMMUNITION_KEY
+        loitering_policy = None
+        if resource.get("resource_policy") == "SELF_AS_MUNITION":
+            weapon = replace(weapon, ammunition_key=None)
+            resource_policy = DirectFireResourcePolicy.SELF_AS_MUNITION
+            loitering_policy = self._loitering_attack_policy_for(
+                attacker, query.weapon_id, weapon,
+            )
+            if loitering_policy is None:
+                return {**result, **unresolved,
+                        "reason_code": "LOITERING_ATTACK_IDENTITY_MISMATCH"}
+        try:
+            elevation_difference = fire_elevation_level_difference(
+                self._source_visibility_map, attacker.current_hex, target.current_hex,
+                distance=hex_distance(attacker.current_hex, target.current_hex),
+                weapon=weapon, fire_mode=FireMode(query.fire_mode), resource_policy=resource_policy,
+            )
+        except ValueError as exc:
+            return {**result, **unresolved, "reason_code": "ELEVATION_LEVEL_UNRESOLVED",
+                    "reason_detail": str(exc)}
+        profile = query.target_profile
+        observer = attacker
+        if query.fire_mode == FireMode.GUIDED.value:
+            if query.guider_id is None:
+                return {**result, **unresolved, "reason_code": "GUIDER_REQUIRED"}
+            observer = projected_guider(
+                side, observation, source_frame, own_weapon_inventory, query.guider_id,
+            )
+            if FireMode.GUIDED not in weapon.supported_fire_modes:
+                return {**result, **unresolved, "reason_code": "WEAPON_GUIDED_MODE_UNSUPPORTED"}
+            if query.target_id is None or not result["can_execute"]:
+                return {**result, **unresolved, "reason_code": "GUIDED_CAPABILITY_NOT_AVAILABLE"}
+            result["guidance_evidence"] = "Frozen legal GUIDED action validates ownership, affiliation and readiness"
+        visibility = evaluate_visibility(
+            self._source_visibility_map,
+            observer_hex=observer.current_hex, target_hex=target.current_hex,
+            observer_domain=_unit_domain(observer.operator_type),
+            target_domain=_unit_domain(target.operator_type),
+            observer_is_drone=_uses_drone_observation_profile(
+                observer, self._operator_lifecycle_authority,
+            ),
+            target_concealed=profile["concealed"],
+            target_terrain=self._source_map.terrain(target.current_hex).value,
+            line_of_sight_evidence=self._runtime_line_of_sight(observer, target),
+        )
+        request = DirectFireRequest(
+            tick=int(observation["tick"]), episode_seed=0,
+            action_id="read-only-fire-effect-query",
+            attacker=attacker, target=target, weapon=weapon,
+            visibility=visibility, distance=hex_distance(attacker.current_hex, target.current_hex),
+            target_domain=_unit_domain(target.operator_type),
+            target_armor=ArmorClass(profile["armor_class"]),
+            ammunition_before=resource.get("ammunition"),
+            weapon_cooldown_before=(attacker.weapon_cooldown_remaining_ms + 999) // 1000,
+            weapon_unfolded=attacker.weapon_unfolded,
+            weapon_locked=attacker.weapon_locked,
+            locked_weapon_id=attacker.locked_weapon_id,
+            elevation_difference=elevation_difference,
+            attacker_suppressed=attacker.suppression_remaining_ms > 0,
+            attacker_moving=(not attacker.stopped
+                             or attacker.movement_mode == MovementMode.MARCHING.value),
+            target_terrain=self._source_map.terrain(target.current_hex).value,
+            target_concealed=profile["concealed"], target_moving=profile["moving"],
+            target_stacked=profile["stacked"], target_marching=profile["marching"],
+            attacker_transitioning=(attacker.transition_kind is not None
+                                    or attacker.move_to_stop_remaining_ms > 0)
+            and not (loitering_policy is not None
+                     and loitering_policy.can_interrupt_movement_route),
+            attacker_hovering=(attacker.stopped
+                               or query.fire_mode == FireMode.GUIDED.value
+                               or resource_policy is DirectFireResourcePolicy.SELF_AS_MUNITION),
+            target_external_direct_fire_prohibited=profile["close_combat"],
+            resource_policy=resource_policy,
+            fire_mode=FireMode(query.fire_mode),
+        )
+        result["source"]["weapon_profile_hash"] = canonical_hash({
+            "weapon_id": weapon.weapon_id, "weapon_class": weapon.weapon_class,
+            "maximum_range": weapon.maximum_range,
+            "target_domains": sorted(domain.value for domain in weapon.target_domains),
+            "ammunition_key": weapon.ammunition_key,
+            "cooldown_ticks": weapon.cooldown_ticks,
+            "requires_unfolded": weapon.requires_unfolded,
+            "can_fire_while_moving": weapon.can_fire_while_moving,
+            "supported_fire_modes": sorted(mode.value for mode in weapon.supported_fire_modes),
+        })
+        result["geometry"] = {"distance": request.distance,
+                              "target_hex": target.current_hex,
+                              "visibility_under_assumptions": visibility.to_dict()}
+        probabilities = direct_fire_probabilities(self._adjudication_tables, request)
+        if query.fire_mode == FireMode.GUIDED.value:
+            result["hit_probability"] = (
+                sum(item["probability"] for item in probabilities["outcome_distribution"]
+                    if not item["no_effect"])
+                if probabilities["status"] == "RESOLVED" else None
+            )
+            result["hit_probability_reason"] = (
+                "GUIDED_HIT_EVENT: any non-NO_EFFECT outcome, including suppression; not a separate accuracy roll"
+            )
+        return {**result, **probabilities}
+
+    def _query_indirect_fire_effect(
+        self,
+        query: FireEffectQuery,
+        attacker: OperatorState,
+        target: OperatorState,
+        result: dict[str, Any],
+        unresolved: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Combine conditional impact probabilities with frozen launch readiness."""
+        if query.indirect_profile is None:
+            return {**result, **unresolved, "reason_code": "INDIRECT_PROFILE_REQUIRED"}
+        indirect = self._indirect_fire_authority.profile_for_weapon(query.weapon_id)
+        if indirect is None:
+            return {**result, **unresolved, "reason_code": "WEAPON_INDIRECT_MODE_UNSUPPORTED"}
+        probabilities = indirect_fire_probabilities(
+            self._adjudication_tables, source_map=self._source_map,
+            profile=indirect, damage_policy=self._indirect_fire_damage_policy,
+            execution_policy=self._indirect_fire_execution_policy,
+            attacker=attacker, target=target, target_profile=query.target_profile,
+            observation_policy=query.indirect_profile["observation_policy"],
+            planned_hex=query.indirect_profile.get("planned_hex"),
+        )
+        blockers = list(_indirect_fire_execution_blockers(
+            self._indirect_fire_authority, indirect, attacker,
+            ammunition_authority=self._indirect_fire_ammunition_authority,
+            damage_policy=self._indirect_fire_damage_policy,
+            descriptor=self._indirect_fire_authority_descriptors.get(indirect.profile_id),
+            observation_policy=IndirectFireObservationPolicy(query.indirect_profile["observation_policy"]),
+        ))
+        planned_hex = query.indirect_profile.get("planned_hex", target.current_hex)
+        if query.target_id is not None and planned_hex != target.current_hex:
+            blockers.append("TARGET_HEX_MISMATCH")
+        if probabilities.get("reason_code") == "TARGET_HEX_NOT_FOUND":
+            blockers.append("TARGET_HEX_NOT_FOUND")
+        ready = attacker.alive and attacker.deployed and not blockers
+        probabilities["can_execute_under_assumptions"] = ready
+        result["can_execute"] = ready if query.target_id is not None else None
+        result["execution_evidence"] = "frozen owned resources and indirect authority"
+        result["execution_blockers"] = blockers
+        if not attacker.alive or not attacker.deployed:
+            result["execution_blockers"].append("shooter_not_operational")
+        return {**result, **probabilities}
+
     def direct_fire_intent_action(
         self,
         side: str,
         actor_id: int,
         weapon_id: int,
-        target_id: int,
+        target_id: int | None = None,
+        *,
+        target_hex: int | None = None,
     ) -> EngineAction:
-        """Authorize identity/visibility only and preserve a DIRECT intent.
+        """Authorize either a visible unit or an explicit target-free map cell.
 
-        Range, target domain, ammunition, cooldown, movement and all other
-        rule checks remain exclusively in the normal step adjudication path.
+        Resource/state checks stay in step adjudication. A coordinate must never
+        be resolved into an implicit enemy identity, even when occupied.
         """
-
         self._require_side(side)
-        for name, value in (
-            ("actor_id", actor_id),
-            ("weapon_id", weapon_id),
-            ("target_id", target_id),
-        ):
-            if type(value) is not int or value < 0:
+        if (target_id is None) == (target_hex is None):
+            raise ValueError("EXACTLY_ONE_FIRE_TARGET_REQUIRED")
+        for name, value in (("actor_id", actor_id), ("weapon_id", weapon_id),
+                            ("target_id", target_id), ("target_hex", target_hex)):
+            if value is not None and (type(value) is not int or value < 0):
                 raise ValueError(f"{name.upper()}_INVALID")
         world = self._require_world()
         actor = world.operators.get(actor_id)
@@ -629,18 +863,21 @@ class NativeEngine:
             raise ValueError("ACTOR_NOT_CONTROLLED")
         if weapon_id not in actor.weapon_ids:
             raise ValueError("WEAPON_NOT_CARRIED")
-        visible_enemy_ids = {
+        parameters = {"weapon_id": weapon_id}
+        if target_hex is not None:
+            if self._source_map is None:
+                raise ValueError("SOURCE_MAP_UNAVAILABLE")
+            try:
+                self._source_map.cell(target_hex)
+            except ValueError as exc:
+                raise ValueError("TARGET_HEX_NOT_FOUND") from exc
+            parameters["target_hex"] = target_hex
+        elif target_id not in {
             value.operator_id for value in self._visible_enemies(side)
-        }
-        if target_id not in visible_enemy_ids:
+        }:
             raise ValueError("TARGET_NOT_VISIBLE")
-        return EngineAction(
-            side,
-            actor_id,
-            ActionType.SHOOT,
-            target_id=target_id,
-            parameters={"weapon_id": weapon_id},
-        )
+        return EngineAction(side, actor_id, ActionType.SHOOT,
+                            target_id=target_id, parameters=parameters)
 
     def guidance_profile_for_operator(
         self,
@@ -1548,8 +1785,8 @@ class NativeEngine:
         target_distance = hex_distance(shooter.current_hex, target_hex)
         if not capability.minimum_range <= target_distance <= capability.maximum_range:
             return IndirectFireTargetHexValidation(
-                IndirectFireTargetHexStatus.INVALID,
-                "TARGET_HEX_OUT_OF_RANGE",
+                IndirectFireTargetHexStatus.VALID,
+                "TARGET_HEX_OUT_OF_RANGE_ZERO_DAMAGE",
                 capability.shooter_id,
                 capability.weapon_id,
                 target_hex,
@@ -1590,6 +1827,8 @@ class NativeEngine:
         self,
         capability: IndirectFireCapability,
         planned_hex: int,
+        *,
+        target_id: int | None = None,
     ) -> EngineAction:
         """Return one explicit, authority-bound FIRE/INDIRECT action.
 
@@ -1611,6 +1850,7 @@ class NativeEngine:
         if descriptor is None:
             raise ValueError("CAPABILITY_BLOCKED")
         shooter = pre_state.operators[capability.shooter_id]
+        self._validate_indirect_damage_target(pre_state, shooter, planned_hex, target_id)
         # Action intent keeps the pre-0.4.2 authority payload unchanged.  The
         # new boundary semantics is archive/engine identity, not user intent.
         identity = load_legacy_indirect_fire_replay_identity()
@@ -1618,6 +1858,7 @@ class NativeEngine:
             side=shooter.side,
             actor_id=capability.shooter_id,
             action_type=ActionType.FIRE,
+            target_id=target_id,
             parameters={
                 "fire_mode": FireMode.INDIRECT.value,
                 "weapon_id": capability.weapon_id,
@@ -1628,6 +1869,24 @@ class NativeEngine:
                 **identity,
             },
         )
+
+    def _validate_indirect_damage_target(
+        self, pre_state: WorldState, shooter: OperatorState,
+        planned_hex: int, target_id: int | None,
+    ) -> None:
+        if target_id is None:
+            return
+        if type(target_id) is not int or target_id < 0:
+            raise ValueError("TARGET_ID_INVALID")
+        target = pre_state.operators.get(target_id)
+        if target is None or not target.alive or not target.deployed:
+            raise ValueError("TARGET_NOT_OPERATIONAL")
+        if target.side == shooter.side:
+            raise ValueError("TARGET_NOT_ENEMY")
+        if target_id not in {value.operator_id for value in self._visible_enemies(shooter.side)}:
+            raise ValueError("TARGET_NOT_VISIBLE")
+        if target.current_hex != planned_hex:
+            raise ValueError("TARGET_HEX_MISMATCH")
 
     def _build_indirect_fire_plan_request_from_pre_state(
         self,
@@ -1688,6 +1947,11 @@ class NativeEngine:
             return _indirect_fire_plan_failure(
                 "WEAPON_NOT_AUTHORIZED",
                 "weapon_not_authorized",
+            )
+        if "indirect_fire_ammunition_unavailable" in matching.blockers:
+            return _indirect_fire_plan_failure(
+                "INDIRECT_FIRE_AMMUNITION_UNAVAILABLE",
+                "indirect_fire_ammunition_unavailable",
             )
         if matching.status is not IndirectFireCapabilityStatus.AVAILABLE:
             return IndirectFirePlanValidationResult(
@@ -1894,8 +2158,10 @@ class NativeEngine:
             )
             if mission.phase is IndirectFireMissionState.ACTIVE
             and mission.impact_hex is not None
-            and world.operators.get(mission.shooter_id) is not None
-            and world.operators[mission.shooter_id].side == side
+            and (mission.launch_side if mission.action_stream_bound else (
+                world.operators[mission.shooter_id].side
+                if mission.shooter_id in world.operators else None
+            )) == side
         )
 
     def get_indirect_fire_mission_areas(
@@ -1933,8 +2199,10 @@ class NativeEngine:
                 key=fire_mission_sort_key,
             )
             if mission.phase in visible_phases
-            and world.operators.get(mission.shooter_id) is not None
-            and world.operators[mission.shooter_id].side == side
+            and (mission.launch_side if mission.action_stream_bound else (
+                world.operators[mission.shooter_id].side
+                if mission.shooter_id in world.operators else None
+            )) == side
         )
 
     def cancel_indirect_fire_mission(
@@ -2009,7 +2277,10 @@ class NativeEngine:
         if mission is None:
             raise ValueError("INDIRECT_FIRE_MISSION_NOT_FOUND")
         shooter = pre_state.operators.get(mission.shooter_id)
-        if shooter is None:
+        firing_side = mission.launch_side if mission.action_stream_bound else (
+            None if shooter is None else shooter.side
+        )
+        if firing_side is None:
             raise ValueError("INDIRECT_FIRE_SHOOTER_NOT_FOUND")
         if self._source_map is None or self._source_visibility_map is None:
             raise ValueError("SOURCE_VISIBILITY_MAP_UNAVAILABLE")
@@ -2022,7 +2293,7 @@ class NativeEngine:
                 state_time_ms=pre_state.elapsed_time_ms,
                 state_hash=canonical_hash(pre_state.to_dict()),
                 planned_hex=mission.planned_hex,
-                firing_side=shooter.side,
+                firing_side=firing_side,
                 policy_id=self._indirect_fire_observation_authority.policy_id,
                 policy_hash=self._indirect_fire_observation_authority.content_hash,
                 source_interface=(
@@ -2039,7 +2310,7 @@ class NativeEngine:
 
         observers = tuple(sorted((
             operator for operator in pre_state.operators.values()
-            if operator.side == shooter.side
+            if operator.side == firing_side
             and operator.alive
             and operator.deployed
             and operator.current_hex is not None
@@ -2047,7 +2318,7 @@ class NativeEngine:
         ), key=lambda value: value.operator_id))
         targets = tuple(sorted((
             operator for operator in pre_state.operators.values()
-            if operator.side != shooter.side
+            if operator.side != firing_side
             and operator.alive
             and operator.deployed
             and operator.current_hex == mission.planned_hex
@@ -2129,7 +2400,7 @@ class NativeEngine:
             state_time_ms=pre_state.elapsed_time_ms,
             state_hash=canonical_hash(pre_state.to_dict()),
             planned_hex=mission.planned_hex,
-            firing_side=shooter.side,
+            firing_side=firing_side,
             policy_id=self._indirect_fire_observation_authority.policy_id,
             policy_hash=self._indirect_fire_observation_authority.content_hash,
             source_interface=(
@@ -2688,6 +2959,9 @@ class NativeEngine:
             action_id=(direct_request.action_id if action_id is None else action_id),
             visibility=request.guider_visibility_evidence,
             distance=request.shooter_distance,
+            fire_mode=FireMode.GUIDED,
+            # Guided readiness has its own established shooter validation.
+            attacker_hovering=True,
             ammunition_before=request.ammunition_before,
             weapon_cooldown_before=(request.cooldown_before + 999) // 1000,
         )
@@ -2759,6 +3033,10 @@ class NativeEngine:
         ):
             return result(False, "GUIDER_SUPPRESSED")
 
+        binding_failure = weapon_binding_failure(weapon_id=weapon.weapon_id,
+            locked=shooter.weapon_locked, locked_weapon_id=shooter.locked_weapon_id)
+        if binding_failure is not None:
+            return result(False, binding_failure)
         if not shooter.alive:
             return result(False, "SHOOTER_NOT_ALIVE")
         if not shooter.deployed:
@@ -2972,6 +3250,8 @@ class NativeEngine:
             type(weapon.weapon_id) is not int
             or weapon.weapon_id not in shooter.weapon_ids
             or FireMode.GUIDED not in weapon.supported_fire_modes
+            or weapon_binding_failure(weapon_id=weapon.weapon_id,
+                locked=shooter.weapon_locked, locked_weapon_id=shooter.locked_weapon_id) is not None
             or shooter.movement_locked
             or shooter.weapon_cooldown_remaining_ms != 0
             or shooter.transition_kind is not None
@@ -3221,12 +3501,101 @@ class NativeEngine:
             tuple(segments),
         )
 
+    def query_region_visibility_from_projection(
+        self,
+        side: str,
+        actor_id: int,
+        observation: Mapping[str, Any],
+        source_frame: Mapping[str, Any],
+        query: RegionVisibilityQuery,
+    ) -> RegionVisibilityResult:
+        """Query a bounded hypothetical region without reading live WorldState.
+
+        Identity and location come from the selected friendly snapshot. Static
+        own-unit metadata supplies only the same profile/LOS authority used by
+        ordinary observation; caller assertions cannot alter that identity.
+        """
+
+        self._require_side(side)
+        if type(actor_id) is not int or actor_id < 0:
+            raise RegionVisibilityQueryError("invalid_arguments", "invalid actor_id")
+        if not isinstance(query, RegionVisibilityQuery):
+            raise RegionVisibilityQueryError("invalid_arguments", "invalid query")
+        if not isinstance(observation, Mapping) or not isinstance(source_frame, Mapping):
+            raise RegionVisibilityQueryError("invalid_arguments", "invalid side projection")
+        friendly = _record_by_id(
+            observation.get("friendly_operators"), actor_id, "operator_id"
+        )
+        if friendly is None or friendly.get("side") != side:
+            raise RegionVisibilityQueryError("actor_not_owned", "actor is not controlled by side")
+        source = _record_by_id(source_frame.get("operators"), actor_id, "obj_id")
+        if source is None or source.get("owner") != side:
+            raise RegionVisibilityQueryError("actor_not_owned", "projection lacks own actor evidence")
+        template = next((value for value in self.scenario.operators
+                         if value.operator_id == actor_id and value.side == side), None)
+        if template is None:
+            raise RegionVisibilityQueryError("actor_unavailable", "actor template is unavailable")
+        observer = OperatorState.from_dict(template.to_dict())
+        observer.operator_type = str(friendly["operator_type"])
+        observer.subtype = friendly["subtype"]
+        observer.current_hex = _exact_nonnegative_record_int(source.get("cur_hex"), "cur_hex")
+        observer.altitude = float(friendly["altitude"])
+        observer.lifecycle_profile_id = friendly.get("lifecycle_profile_id")
+        if not _exact_record_bool(friendly.get("alive"), "alive") or not _exact_record_bool(
+            friendly.get("deployed"), "deployed"
+        ):
+            raise RegionVisibilityQueryError("actor_unavailable", "actor is not active and deployed")
+        domain = _unit_domain(observer.operator_type)
+        if domain is UnitDomain.UNKNOWN:
+            raise RegionVisibilityQueryError("visibility_unavailable", "unsupported observer domain")
+        if self._source_map is None or self._source_visibility_map is None:
+            raise RegionVisibilityQueryError("visibility_unavailable", "a Source-compatible hex map is required")
+
+        height = _source_visibility_height_m(observer, self._operator_lifecycle_authority)
+        use_static_los = self.map_runtime_data is not None and height is not None
+
+        def line_of_sight(target_hex: int) -> LineOfSightEvidence:
+            try:
+                if use_static_los:
+                    return self.map_runtime_data.visibility.line_of_sight(
+                        observer.current_hex, target_hex,
+                        observer_height_m=height,
+                        target_height_m=query.target_profile.height_m,
+                    )
+                return evaluate_line_of_sight(
+                    self._source_visibility_map, observer.current_hex, target_hex
+                )
+            except ValueError as exc:
+                raise RegionVisibilityQueryError(
+                    "visibility_unavailable", str(exc)
+                ) from exc
+
+        return evaluate_region_visibility(
+            query=query,
+            actor={
+                "actor_id": actor_id, "current_hex": observer.current_hex,
+                "operator_type": observer.operator_type, "subtype": observer.subtype,
+                "altitude": observer.altitude, "visibility_height_m": height,
+            },
+            observer_domain=domain,
+            observer_is_drone=_uses_drone_observation_profile(
+                observer, self._operator_lifecycle_authority
+            ),
+            profile=self._source_visibility_map,
+            observation_profiles=self._source_observation_profiles,
+            terrain_at=lambda hex_id: self._source_map.terrain(hex_id).value,
+            line_of_sight=line_of_sight,
+            map_id=self.scenario.map.map_id,
+            los_authority=("source_static_visibility_lookup" if use_static_los
+                           else "native_terrain_line_of_sight"),
+        )
+
     def query_unit_tactical_overlay(
         self,
         side: str,
         unit_id: int,
     ) -> UnitTacticalOverlay:
-        """Project read-only tactical space for one controlled ground unit.
+        """Project read-only ground-target tactical space for one controlled unit.
 
         Visibility delegates to the same observation evaluator used by the
         authoritative observation refresh.  Weapon envelopes use the same
@@ -3312,6 +3681,7 @@ class NativeEngine:
         projected.operator_type = str(friendly.get(
             "operator_type", projected.operator_type
         ))
+        projected.subtype = friendly.get("subtype", projected.subtype)
         projected.current_hex = _exact_nonnegative_record_int(
             source_operator.get("cur_hex"), "friendly cur_hex"
         )
@@ -3323,6 +3693,7 @@ class NativeEngine:
         projected.x = float(position[0])
         projected.y = float(position[1])
         projected.altitude = float(friendly.get("altitude", projected.altitude))
+        projected.lifecycle_profile_id = friendly.get("lifecycle_profile_id", projected.lifecycle_profile_id)
         projected.alive = _exact_record_bool(friendly.get("alive"), "alive")
         projected.deployed = _exact_record_bool(
             friendly.get("deployed"), "deployed"
@@ -3363,6 +3734,7 @@ class NativeEngine:
                 action.get("side") == side
                 and action.get("action_type") == ActionType.SHOOT.value
                 and action.get("actor_id") == unit_id
+                and action.get("target_id") is not None
             ):
                 target_id = _exact_nonnegative_record_int(
                     action.get("target_id"), "target_id"
@@ -3391,10 +3763,11 @@ class NativeEngine:
         if operator.current_hex is None:
             raise ValueError("unit has no current hex")
         observer_domain = _unit_domain(operator.operator_type)
-        if observer_domain not in {UnitDomain.PERSONNEL, UnitDomain.VEHICLE}:
-            raise ValueError(
-                "tactical overlay v1 supports PERSONNEL and VEHICLE observers"
-            )
+        if observer_domain is UnitDomain.UNKNOWN:
+            raise ValueError("tactical overlay requires a supported observer domain")
+        observer_is_drone = _uses_drone_observation_profile(
+            operator, self._operator_lifecycle_authority,
+        )
         if self._source_map is None or self._source_visibility_map is None:
             raise ValueError("tactical overlay requires a source-compatible hex map")
 
@@ -3418,6 +3791,7 @@ class NativeEngine:
                     observer_hex=operator.current_hex,
                     target_hex=cell.hex_id,
                     observer_domain=observer_domain,
+                    observer_is_drone=observer_is_drone,
                     target_domain=target_domain,
                     observation_profiles=self._source_observation_profiles,
                 ):
@@ -3427,6 +3801,7 @@ class NativeEngine:
                     observer_hex=operator.current_hex,
                     target_hex=cell.hex_id,
                     observer_domain=observer_domain,
+                    observer_is_drone=observer_is_drone,
                     target_domain=target_domain,
                     target_concealed=False,
                     target_terrain=self._source_map.terrain(cell.hex_id).value,
@@ -3789,6 +4164,7 @@ class NativeEngine:
         accepted: list[RoutedAction] = []
         decisions: list[ActionDecision] = []
         events: list[EngineEvent] = []
+        empty_fire_intents: list[EmptyFireIntent] = []
         fire_intents: list[_SourceFireIntent] = []
         guided_fire_intents: list[_SourceGuidedFireIntent] = []
         indirect_fire_intents: list[_SourceIndirectFireIntent] = []
@@ -3800,9 +4176,14 @@ class NativeEngine:
             error = common_errors[item.action_sequence]
             if error is None:
                 if action.action_type is ActionType.SHOOT:
-                    error, intent = self._stage_source_shoot(item, pre_state, events)
-                    if intent is not None:
-                        fire_intents.append(intent)
+                    if action.target_id is None and "target_hex" in action.parameters:
+                        error, empty = self._stage_empty_fire(item, pre_state)
+                        if empty is not None:
+                            empty_fire_intents.append(empty)
+                    else:
+                        error, intent = self._stage_source_shoot(item, pre_state, events)
+                        if intent is not None:
+                            fire_intents.append(intent)
                 elif action.action_type is ActionType.FIRE:
                     mode = str(action.parameters.get("fire_mode", "")).upper()
                     if mode == FireMode.GUIDED.value:
@@ -3863,6 +4244,7 @@ class NativeEngine:
                     action.target_id, item.action_sequence,
                     {"action_id": action.action_id, "code": error}))
 
+        advance_empty_fire_exposure(world)
         self._apply_source_concealment_intents(concealment_intents, events)
         self._apply_source_boarding_intents(boarding_intents, events)
         for event in apply_source_capture_intents(
@@ -3876,6 +4258,7 @@ class NativeEngine:
                 event.action_sequence,
                 event.data,
             ))
+        self._apply_empty_fire_intents(empty_fire_intents, events)
         self._apply_source_fire_intents(
             fire_intents,
             guided_fire_intents,
@@ -4018,10 +4401,23 @@ class NativeEngine:
             raise RuntimeError(
                 "ENTER_CONCEALMENT must be resolved through posture staging"
             )
-        if action.action_type is ActionType.WEAPON_LOCK:
-            return self._start_source_transition(
-                operator, "WEAPON_LOCK", sequence, action.action_id, events)
-        if action.action_type is ActionType.WEAPON_UNFOLD:
+        if action.action_type in {ActionType.WEAPON_LOCK, ActionType.WEAPON_UNLOCK,
+                                  ActionType.WEAPON_UNFOLD}:
+            if action.target_id is not None or action.target_position is not None:
+                return "INVALID_WEAPON_POSTURE_TARGET"
+            if action.action_type is ActionType.WEAPON_LOCK:
+                if set(action.parameters) != {"weapon_id"}:
+                    return "WEAPON_ID_REQUIRED"
+                weapon_id = action.parameters["weapon_id"]
+                if type(weapon_id) is not int or weapon_id not in operator.weapon_ids:
+                    return "WEAPON_NOT_CARRIED"
+                return self._start_source_transition(
+                    operator, "WEAPON_LOCK", sequence, action.action_id, events,
+                    weapon_id=weapon_id)
+            if action.parameters:
+                return "INVALID_WEAPON_POSTURE_PARAMETERS"
+            if action.action_type is ActionType.WEAPON_UNLOCK:
+                return self._unlock_source_weapon(operator, sequence, action.action_id, events)
             return self._start_source_transition(
                 operator, "WEAPON_UNFOLD", sequence, action.action_id, events)
         if action.action_type is ActionType.CHANGE_STATE:
@@ -4115,13 +4511,16 @@ class NativeEngine:
 
     def _start_source_transition(self, operator: Any, kind: str,
                                  action_sequence: int, action_id: str,
-                                 events: list[EngineEvent]) -> str | None:
-        if not operator.stopped or operator.moving:
+                                 events: list[EngineEvent], *,
+                                 weapon_id: int | None = None) -> str | None:
+        if kind == "WEAPON_LOCK" and operator.command_lost:
+            return "ACTOR_CONTROL_LOST"
+        if not operator.stopped or operator.moving or operator.move_to_stop_remaining_ms > 0:
             return "ACTOR_MUST_BE_STOPPED"
-        if operator.transition_kind is not None:
+        if operator.transition_kind is not None or operator.transition_remaining_ms > 0:
             return "TRANSITION_IN_PROGRESS"
-        if kind == "WEAPON_LOCK" and operator.weapon_locked:
-            return "WEAPON_ALREADY_LOCKED"
+        if operator.weapon_locked or operator.locked_weapon_id is not None:
+            return "WEAPON_ALREADY_LOCKED" if kind == "WEAPON_LOCK" else "WEAPON_UNLOCK_REQUIRED"
         if kind == "WEAPON_UNFOLD" and operator.weapon_unfolded:
             return "WEAPON_ALREADY_UNFOLDED"
         operator.transition_kind = kind
@@ -4129,6 +4528,7 @@ class NativeEngine:
         operator.state = "TRANSITIONING"
         operator.stopped = False
         if kind == "WEAPON_LOCK":
+            operator.locked_weapon_id = weapon_id
             operator.weapon_unfolded = False
             event_type = EventType.WEAPON_LOCK_STARTED
         else:
@@ -4137,7 +4537,26 @@ class NativeEngine:
             event_type, operator.side, operator.operator_id, None,
             action_sequence, {"action_id": action_id,
                               "duration_ms": operator.transition_remaining_ms,
-                              "transition_kind": kind}))
+                              "transition_kind": kind,
+                              "locked_weapon_id": operator.locked_weapon_id}))
+        return None
+
+    def _unlock_source_weapon(self, operator: Any, action_sequence: int,
+                              action_id: str, events: list[EngineEvent]) -> str | None:
+        if operator.command_lost:
+            return "ACTOR_CONTROL_LOST"
+        if not operator.stopped or operator.moving or operator.move_to_stop_remaining_ms > 0:
+            return "ACTOR_MUST_BE_STOPPED"
+        if operator.transition_kind is not None or operator.transition_remaining_ms > 0:
+            return "TRANSITION_IN_PROGRESS"
+        if not operator.weapon_locked and operator.locked_weapon_id is None:
+            return "WEAPON_NOT_LOCKED"
+        previous = operator.locked_weapon_id
+        operator.weapon_locked = False
+        operator.locked_weapon_id = None
+        events.append(self._source_event(
+            EventType.WEAPON_UNLOCKED, operator.side, operator.operator_id, None,
+            action_sequence, {"action_id": action_id, "previous_locked_weapon_id": previous}))
         return None
 
     def _change_source_state(self, routed: RoutedAction,
@@ -4195,6 +4614,75 @@ class NativeEngine:
             return None
         return "UNSUPPORTED_STATE_CHANGE"
 
+    def _stage_empty_fire(
+        self, routed: RoutedAction, pre_state: WorldState,
+    ) -> tuple[str | None, EmptyFireIntent | None]:
+        action = routed.action
+        target_hex = action.parameters.get("target_hex")
+        weapon_id = action.parameters.get("weapon_id")
+        if action.target_id is not None or action.target_position is not None:
+            return "AMBIGUOUS_FIRE_TARGET", None
+        if type(target_hex) is not int or target_hex < 0:
+            return "TARGET_HEX_INVALID", None
+        if type(weapon_id) is not int or weapon_id < 0:
+            return "WEAPON_REQUIRED", None
+        if self._source_map is None or self._adjudication_tables is None:
+            return "SOURCE_MAP_UNAVAILABLE", None
+        try:
+            self._source_map.cell(target_hex)
+        except ValueError:
+            return "TARGET_HEX_NOT_FOUND", None
+        attacker = pre_state.operators[int(action.actor_id)]
+        if attacker.current_hex is None:
+            return "CURRENT_HEX_REQUIRED", None
+        try:
+            weapon = self._source_weapon_profile(weapon_id)
+            if self._loitering_attack_policy_for(attacker, weapon_id, weapon) is not None:
+                return "EMPTY_FIRE_RESOURCE_POLICY_UNSUPPORTED", None
+        except ValueError as exc:
+            return str(exc), None
+        ammunition = self._ammunition(attacker).get(weapon.ammunition_key, 0)
+        error = empty_fire_readiness_error(attacker, weapon, ammunition)
+        if error is not None:
+            return error, None
+        cooldown = (self._adjudication_tables.timing("direct_fire_cooldown_seconds")
+                    if weapon.cooldown_ticks is None else weapon.cooldown_ticks)
+        return None, EmptyFireIntent(routed, target_hex, weapon, ammunition,
+                                     int(cooldown) * 1000)
+
+    def _apply_empty_fire_intents(
+        self, intents: Sequence[EmptyFireIntent], events: list[EngineEvent],
+    ) -> None:
+        world = self._require_world()
+        for intent in sorted(intents, key=lambda item: item.routed.action_sequence):
+            action, sequence = intent.routed.action, intent.routed.action_sequence
+            attacker = world.operators[int(action.actor_id)]
+            ammunition = self._ammunition(attacker)
+            key = intent.weapon.ammunition_key
+            if ammunition.get(key, 0) != intent.ammunition_before:
+                raise RuntimeError("EMPTY_FIRE_RESOURCE_PRESTATE_MISMATCH")
+            ammunition[key] = intent.ammunition_before - 1
+            attacker.raw_attributes["ammunition"] = ammunition
+            source = attacker.raw_attributes.get("source_frame")
+            if isinstance(source, dict):
+                source["remain_bullet_nums"] = dict(ammunition)
+            attacker.weapon_cooldown_remaining_ms = intent.cooldown_ms
+            mark_empty_fire_exposure(attacker)
+            common = {"action_id": action.action_id, "weapon_id": intent.weapon.weapon_id,
+                      "target_hex": intent.target_hex, "empty_fire": True,
+                      "no_effect": True}
+            for kind, extra in (
+                (EventType.DIRECT_FIRE_REQUESTED, {}),
+                (EventType.DIRECT_FIRE_VALIDATED, {"reason_code": "EMPTY_FIRE_NO_EFFECT"}),
+                (EventType.AMMUNITION_CONSUMED, {"ammunition_key": key,
+                 "before": intent.ammunition_before, "after": ammunition[key]}),
+                (EventType.WEAPON_COOLDOWN_STARTED, {"after": intent.cooldown_ms // 1000}),
+                (EventType.UNIT_EXPOSED, {"reason": "EMPTY_FIRE",
+                 "duration_frames": EMPTY_FIRE_EXPOSURE_FRAMES}),
+            ):
+                events.append(self._source_event(kind, action.side, action.actor_id,
+                                                None, sequence, {**common, **extra}))
+
     def _stage_source_shoot(
         self,
         routed: RoutedAction,
@@ -4202,6 +4690,8 @@ class NativeEngine:
         events: list[EngineEvent],
     ) -> tuple[str | None, _SourceFireIntent | None]:
         action, sequence = routed.action, routed.action_sequence
+        if action.target_position is not None or "target_hex" in action.parameters:
+            return "AMBIGUOUS_FIRE_TARGET", None
         if action.target_id is None or action.target_id not in pre_state.operators:
             return "TARGET_NOT_FOUND", None
         try:
@@ -4648,6 +5138,8 @@ class NativeEngine:
             if capability is None or (
                 capability.status is not IndirectFireCapabilityStatus.AVAILABLE
             ):
+                if capability is not None and "indirect_fire_ammunition_unavailable" in capability.blockers:
+                    raise ValueError("INDIRECT_FIRE_AMMUNITION_UNAVAILABLE")
                 if capability is not None and (
                     "indirect_fire_planned_cooldown_remaining"
                     in capability.blockers
@@ -4707,6 +5199,17 @@ class NativeEngine:
                 pre_state,
                 action_stream_bound=True,
             )
+            self._validate_indirect_damage_target(
+                pre_state, shooter, transport.target.hex_id, action.target_id,
+            )
+            in_range = capability.range_policy is IndirectRangePolicy.SCENARIO_DEFINED_GLOBAL_HEX
+            if not in_range and capability.minimum_range is not None and capability.maximum_range is not None:
+                distance = hex_distance(shooter.current_hex, transport.target.hex_id)
+                in_range = capability.minimum_range <= distance <= capability.maximum_range
+            mission = replace(
+                mission, damage_target_id=action.target_id,
+                damage_allowed=action.target_id is not None and in_range,
+            )
             contract = _build_validated_indirect_fire_intent(
                 tick=pre_state.tick,
                 shooter_id=transport.shooter_id,
@@ -4746,6 +5249,14 @@ class NativeEngine:
                 action_sequence=intent.routed.action_sequence,
             )
             events.append(event)
+            if not intent.mission.damage_allowed:
+                shooter = world.operators[intent.mission.shooter_id]
+                mark_empty_fire_exposure(shooter)
+                events.append(self._indirect_fire_service.mission_event(
+                    world, EventType.UNIT_EXPOSED, intent.mission,
+                    {"reason": "EMPTY_FIRE", "duration_frames": EMPTY_FIRE_EXPOSURE_FRAMES},
+                    action_sequence=intent.routed.action_sequence,
+                ))
 
     def _resolve_active_indirect_fire_missions(
         self,
@@ -4759,6 +5270,22 @@ class NativeEngine:
             and mission.action_stream_bound
         ), key=fire_mission_sort_key))
         for mission in active:
+            if not mission.damage_allowed:
+                resolved = replace(
+                    mission, phase=IndirectFireMissionState.RESOLVED,
+                    active_remaining_seconds=0, active_elapsed_remainder_ms=0,
+                    cancelable=False,
+                )
+                world.indirect_fire_missions = tuple(
+                    resolved if value.mission_id == mission.mission_id else value
+                    for value in world.indirect_fire_missions
+                )
+                events.append(self._indirect_fire_service.mission_event(
+                    world, EventType.INDIRECT_FIRE_RESOLVED, resolved,
+                    {"outcome": "EMPTY_FIRE" if mission.damage_target_id is None else "OUT_OF_RANGE_ZERO_DAMAGE",
+                     "planned_hex": mission.planned_hex, "affected_units": []},
+                ))
+                continue
             if mission.impact_hex is None:
                 impact = self.resolve_indirect_fire_impact(mission.mission_id)
                 if not impact.valid:
@@ -4777,9 +5304,10 @@ class NativeEngine:
                 resolution = impact.resolution
                 initialize_area = True
             else:
-                current_ids = self._indirect_fire_service.applicable_target_ids(
+                current_ids = self._indirect_fire_service.mission_target_ids(
                     world,
                     mission.impact_hex,
+                    mission,
                     excluded_operator_ids=mission.affected_operator_ids,
                 )
                 if not current_ids:
@@ -4883,6 +5411,18 @@ class NativeEngine:
         }
         for intent in all_intents:
             shooter = world.operators[intent.contract.shooter_id]
+            request = _source_fire_direct_request(intent)
+            if (request.permits_out_of_range_attempt
+                    and request.distance > request.weapon.maximum_range):
+                mark_empty_fire_exposure(shooter)
+                events.append(self._source_event(
+                    EventType.UNIT_EXPOSED, shooter.side, shooter.operator_id,
+                    None, intent.routed.action_sequence,
+                    {"action_id": intent.routed.action.action_id,
+                     "reason": "OUT_OF_RANGE_EMPTY_FIRE",
+                     "duration_frames": EMPTY_FIRE_EXPOSURE_FRAMES},
+                ))
+                continue
             self._expose_operator(
                 shooter,
                 events,
@@ -4977,6 +5517,12 @@ class NativeEngine:
             int, list[_SourceFireIntent | _SourceGuidedFireIntent]
         ] = defaultdict(list)
         for intent in all_intents:
+            request = _source_fire_direct_request(intent)
+            if (request.permits_out_of_range_attempt
+                    and request.distance > request.weapon.maximum_range):
+                # Resources/exposure were applied above. A wasted shot must
+                # not touch its target, even to refresh existing suppression.
+                continue
             target = intent.contract.target
             if not isinstance(target, UnitTarget):
                 raise RuntimeError("fire staging requires a unit target")
@@ -5289,8 +5835,6 @@ class NativeEngine:
                 attacker,
                 target,
             ))
-        left = self._source_map.cell(attacker.current_hex)
-        right = self._source_map.cell(target.current_hex)
         ammunition = self._ammunition(attacker)
         passengers = tuple(
             state.operators[int(item)]
@@ -5308,8 +5852,16 @@ class NativeEngine:
             ),
             weapon_cooldown_before=(attacker.weapon_cooldown_remaining_ms + 999) // 1000,
             weapon_unfolded=attacker.weapon_unfolded,
-            elevation_difference=int(round(float(right.elevation)
-                                           - float(left.elevation))),
+            weapon_locked=attacker.weapon_locked,
+            locked_weapon_id=attacker.locked_weapon_id,
+            attacker_hovering=(
+                attacker.stopped
+                or resource_policy is DirectFireResourcePolicy.SELF_AS_MUNITION
+            ),
+            elevation_difference=fire_elevation_level_difference(
+                self._source_visibility_map, attacker.current_hex, target.current_hex,
+                distance=visibility.distance, weapon=profile, resource_policy=resource_policy,
+                fire_mode=FireMode(action.parameters.get("fire_mode", FireMode.DIRECT.value))),
             attacker_suppressed=attacker.suppression_remaining_ms > 0,
             attacker_moving=(not attacker.stopped
                              or attacker.movement_mode == MovementMode.MARCHING.value),
@@ -5342,7 +5894,8 @@ class NativeEngine:
                     "consume_condition": loitering_policy.consume_condition,
                 }
             ),
-            resource_policy=resource_policy)
+            resource_policy=resource_policy,
+            fire_mode=FireMode(action.parameters.get("fire_mode", FireMode.DIRECT.value)))
 
     def _loitering_attack_policy_for(
         self,
@@ -5438,18 +5991,21 @@ class NativeEngine:
     def is_terminal(self) -> bool:
         return self._require_world().done
 
+    def game_status(self) -> GameStatus:
+        """Read lifecycle scalars without serializing or hashing WorldState."""
+        world = self._require_world()
+        return GameStatus(world.terminal, world.truncated, world.winner,
+                          _game_outcome(world), world.stage)
+
     def result(self) -> GameResult:
         world = self._require_world()
         loser = None
         if world.winner is not None and len(self.scenario.side_order) == 2:
             loser = next(side for side in self.scenario.side_order
                          if side != world.winner)
-        outcome = ("truncated" if world.truncated else
-                   "ongoing" if not world.terminal else
-                   "draw" if world.winner is None else "win")
         return GameResult(
             terminal=world.terminal, truncated=world.truncated,
-            winner=world.winner, loser=loser, outcome=outcome,
+            winner=world.winner, loser=loser, outcome=_game_outcome(world),
             reason=world.terminal_reason, final_stage=world.stage,
             ticks=world.tick, action_counts=dict(self._action_counts),
             error_counts=dict(self._error_counts), seed=self._seed,
@@ -5930,14 +6486,25 @@ class NativeEngine:
             if (
                 operator.weapon_ids
                 and operator.stopped
+                and not operator.moving
+                and operator.move_to_stop_remaining_ms == 0
                 and operator.transition_kind is None
+                and operator.transition_remaining_ms == 0
             ):
-                if not operator.weapon_locked:
-                    action = EngineAction(side, operator.operator_id,
-                                          ActionType.WEAPON_LOCK)
+                if (not operator.command_lost
+                        and (operator.weapon_locked or operator.locked_weapon_id is not None)):
+                    action = EngineAction(side, operator.operator_id, ActionType.WEAPON_UNLOCK)
                     values.append(ValidAction(action, ACTION_PRIORITY[action.action_type],
                                               "source_action_router"))
-                if not operator.weapon_unfolded:
+                elif not operator.command_lost:
+                    for weapon_id in operator.weapon_ids:
+                        action = EngineAction(side, operator.operator_id,
+                                              ActionType.WEAPON_LOCK,
+                                              parameters={"weapon_id": weapon_id})
+                        values.append(ValidAction(action, ACTION_PRIORITY[action.action_type],
+                                                  "source_action_router"))
+                if (not operator.weapon_unfolded and not operator.weapon_locked
+                        and operator.locked_weapon_id is None):
                     action = EngineAction(side, operator.operator_id,
                                           ActionType.WEAPON_UNFOLD)
                     values.append(ValidAction(action, ACTION_PRIORITY[action.action_type],
@@ -6004,15 +6571,19 @@ class NativeEngine:
         world = self._require_world()
         self._source_valid_actions_cache.clear()
         self._source_valid_actions_state_hash = None
-        for observer in sorted(world.operators.values(),
-                               key=lambda item: item.operator_id):
+        ordered_operators = tuple(sorted(
+            world.operators.values(), key=lambda item: item.operator_id,
+        ))
+        for observer in ordered_operators:
             visible: list[int] = []
             if observer.alive and observer.deployed and observer.current_hex is not None:
                 observer_domain = _unit_domain(observer.operator_type)
-                for target in sorted(world.operators.values(),
-                                     key=lambda item: item.operator_id):
+                for target in ordered_operators:
                     if (target.side == observer.side or not target.alive
                             or not target.deployed or target.current_hex is None):
+                        continue
+                    if has_empty_fire_exposure(target):
+                        visible.append(target.operator_id)
                         continue
                     target_domain = _unit_domain(target.operator_type)
                     observer_is_drone = _uses_drone_observation_profile(
@@ -6150,6 +6721,10 @@ def _indirect_fire_execution_blockers(
     """Translate unresolved authority into stable public blocker codes."""
 
     blockers: list[str] = []
+    binding_failure = weapon_binding_failure(weapon_id=profile.weapon_id,
+        locked=shooter.weapon_locked, locked_weapon_id=shooter.locked_weapon_id)
+    if binding_failure is not None:
+        blockers.append(binding_failure.lower())
     if profile.range_policy is not IndirectRangePolicy.SCENARIO_DEFINED_GLOBAL_HEX:
         if profile.minimum_range is None:
             blockers.append("artillery_minimum_range")
@@ -6165,6 +6740,10 @@ def _indirect_fire_execution_blockers(
         or resource.ammo_cost != ammunition.ammo_cost_per_mission
     ):
         blockers.append("ammunition_consumption_per_mission")
+    if ammunition is not None:
+        inventory = NativeEngine._ammunition(shooter)
+        if inventory.get(ammunition.ammunition_key, 0) < ammunition.ammo_cost_per_mission:
+            blockers.append("indirect_fire_ammunition_unavailable")
     if observation_policy is IndirectFireObservationPolicy.UNRESOLVED:
         blockers.append("impact_observation_policy")
     if not isinstance(damage_policy, IndirectFireDamagePolicy):
@@ -6498,3 +7077,10 @@ def _guided_fire_intent_sort_key(
         intent.weapon_id,
         intent.target.unit_id,
     )
+
+
+def _game_outcome(world: WorldState) -> str:
+    """Share scalar outcome rules without routing result through virtual hooks."""
+    return ("truncated" if world.truncated else
+            "ongoing" if not world.terminal else
+            "draw" if world.winner is None else "win")

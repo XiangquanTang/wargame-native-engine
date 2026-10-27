@@ -15,8 +15,8 @@ from wargame_native_engine.rules.indirect_fire import (
 )
 
 
-FIRE_MISSION_SCHEMA_VERSION = "native-indirect-fire-mission/1.2"
-PREVIOUS_FIRE_MISSION_SCHEMA_VERSION = "native-indirect-fire-mission/1.1"
+FIRE_MISSION_SCHEMA_VERSION = "native-indirect-fire-mission/1.4"
+PREVIOUS_FIRE_MISSION_SCHEMA_VERSION = "native-indirect-fire-mission/1.3"
 LEGACY_FIRE_MISSION_SCHEMA_VERSION = "native-indirect-fire-mission/1.0"
 SCATTER_OUT_OF_MAP_OUTCOME = "SCATTER_OUT_OF_MAP"
 FireMissionPhase = IndirectFireMissionState
@@ -356,6 +356,12 @@ class FireMission:
     scatter_evidence: FireMissionScatterEvidence | None = None
     observation_evidence: FireMissionObservationEvidence | None = None
     terminal_outcome: str | None = None
+    damage_target_id: int | None = None
+    damage_allowed: bool = False
+    # Immutable launch evidence: an airborne projectile outlives its launcher.
+    launch_side: str | None = None
+    launch_hex: int | None = None
+    launch_strength: int | None = None
 
     def __post_init__(self) -> None:
         for name in (
@@ -380,13 +386,22 @@ class FireMission:
             "active_elapsed_remainder_ms",
         ):
             _require_nonnegative_exact_int(getattr(self, name), name)
+        launch_values = (self.launch_side, self.launch_hex, self.launch_strength)
+        if any(value is not None for value in launch_values):
+            _require_nonempty(self.launch_side, "launch_side")
+            _require_nonnegative_exact_int(self.launch_hex, "launch_hex")
+            _require_nonnegative_exact_int(self.launch_strength, "launch_strength")
         if self.flight_elapsed_remainder_ms >= 1_000:
             raise ValueError("flight_elapsed_remainder_ms must be below 1000")
         if self.active_elapsed_remainder_ms >= 1_000:
             raise ValueError("active_elapsed_remainder_ms must be below 1000")
         if self.active_remaining_seconds > self.active_duration_seconds:
             raise ValueError("active_remaining_seconds exceeds active duration")
-        for name in ("active_started_tick", "impact_hex"):
+        if type(self.damage_allowed) is not bool:
+            raise TypeError("damage_allowed must be an exact bool")
+        if self.action_stream_bound and self.damage_allowed and self.damage_target_id is None:
+            raise ValueError("gameplay damage requires an explicit target")
+        for name in ("active_started_tick", "impact_hex", "damage_target_id"):
             value = getattr(self, name)
             if value is not None:
                 _require_nonnegative_exact_int(value, name)
@@ -483,6 +498,11 @@ class FireMission:
             "ammunition_key": self.ammunition_key,
             "cancelable": self.cancelable,
             "action_stream_bound": self.action_stream_bound,
+            "damage_target_id": self.damage_target_id,
+            "damage_allowed": self.damage_allowed,
+            "launch_side": self.launch_side,
+            "launch_hex": self.launch_hex,
+            "launch_strength": self.launch_strength,
             "flight_elapsed_remainder_ms": self.flight_elapsed_remainder_ms,
             "cancellation_reason": (
                 None
@@ -521,8 +541,16 @@ class FireMission:
             FIRE_MISSION_SCHEMA_VERSION,
             PREVIOUS_FIRE_MISSION_SCHEMA_VERSION,
             LEGACY_FIRE_MISSION_SCHEMA_VERSION,
+            "native-indirect-fire-mission/1.1",
+            "native-indirect-fire-mission/1.2",
         }:
             raise ValueError("unsupported indirect-fire mission schema")
+        if (schema_version == FIRE_MISSION_SCHEMA_VERSION
+                and value.get("action_stream_bound", False)
+                and any(value.get(name) is None for name in (
+                    "launch_side", "launch_hex", "launch_strength",
+                ))):
+            raise ValueError("action-stream mission requires sealed launch evidence")
         cancellation = value.get("cancellation_reason")
         scatter = value.get("scatter_evidence")
         observation = value.get("observation_evidence")
@@ -555,6 +583,11 @@ class FireMission:
             ammunition_key=str(value["ammunition_key"]),
             cancelable=bool(value["cancelable"]),
             action_stream_bound=bool(value.get("action_stream_bound", False)),
+            damage_target_id=value.get("damage_target_id"),
+            damage_allowed=value.get("damage_allowed", False),
+            launch_side=value.get("launch_side"),
+            launch_hex=value.get("launch_hex"),
+            launch_strength=value.get("launch_strength"),
             flight_elapsed_remainder_ms=int(
                 value.get("flight_elapsed_remainder_ms", 0)
             ),

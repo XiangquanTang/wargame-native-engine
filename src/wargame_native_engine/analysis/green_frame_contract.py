@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from wargame_native_engine.compat.source_frame.contract import (
-    CURRENT_SOURCE_CONTRACT, SOURCE_CONTRACT_KEY,
+    SOURCE_CONTRACT_KEY, is_dynamic_source_contract,
 )
 from wargame_native_engine.analysis.advantage import calculate_green_advantage
 from wargame_native_engine.analysis.demo_compat_factors import (
@@ -130,8 +130,9 @@ def build_green_frame_analysis(
 
     for unit in units:
         evidence = extract_unit_factor_evidence(
-            unit, null_is_missing=(frame.get("extra", {}).get("native", {}).get(
-                SOURCE_CONTRACT_KEY) == CURRENT_SOURCE_CONTRACT),
+            unit, null_is_missing=is_dynamic_source_contract(
+                frame.get("extra", {}).get("native", {}).get(SOURCE_CONTRACT_KEY)
+            ),
         )
         factor_values = _build_factor_values(evidence, unit)
         obs_count = sum(

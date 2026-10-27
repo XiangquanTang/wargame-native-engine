@@ -180,6 +180,10 @@ def convert_source_scenario(
         mappings=mappings,
         profile_source=profile_source,
     )
+    if profile.get("initial_source_policy") == "FRESH_SOURCE_V1":
+        _validate_fresh_source_state(source)
+    if profile.get("initial_transport_policy") == "SOURCE_EXACT_SINGLE":
+        _apply_initial_source_transport(source, operators)
     objectives, objective_records = _convert_objectives(source, native_map, profile)
     termination = _mapping(profile.get("termination"), "termination")
     max_ticks = _exact_positive_int(termination.get("max_ticks"), "termination.max_ticks")
@@ -196,9 +200,12 @@ def convert_source_scenario(
 
     positions: dict[str, dict[int, tuple[float, float]]] = {"red": {}, "blue": {}}
     for operator in operators:
-        if operator.current_hex is None:
+        source_hex = operator.current_hex
+        if source_hex is None and operator.mounted_on is not None:
+            source_hex = operator.raw_attributes["source_frame"]["cur_hex"]
+        if source_hex is None:
             raise RuntimeError("converted source operator lost current_hex")
-        row, column = divmod(operator.current_hex, 100)
+        row, column = divmod(source_hex, 100)
         positions[operator.side][operator.operator_id] = (float(column), float(row))
 
     source_sha = hashlib.sha256(scenario_raw).hexdigest()
@@ -248,7 +255,15 @@ def convert_source_scenario(
                 "objective policy", "termination profile", "default seed policy",
             ]
         ),
-        "missing_fields": [],
+        "missing_fields": (json_clone(profile.get("missing_source_fields", []))
+                           if profile.get("initial_source_policy") == "FRESH_SOURCE_V1" else []),
+        **({"native_launch_conventions": {
+            "initial_defaults_basis": profile.get("initial_defaults_basis"),
+            "initial_state_defaults": json_clone(profile.get("initial_state_defaults", {})),
+            "armor_profile_basis": profile.get("armor_profile_basis"),
+            "observation_source_policy": "Preserve raw observe_distance unchanged; Native ObservationProfiles controls runtime observation. Legacy dictionaries are not reinterpreted as subtype vectors.",
+            "transport_policy": profile.get("initial_transport_policy"),
+        }} if profile.get("initial_source_policy") == "FRESH_SOURCE_V1" else {}),
         "warnings": list(warnings),
     }
     source_metadata = {
@@ -276,6 +291,11 @@ def convert_source_scenario(
             "source_cities": json_clone(source.get("cities", [])),
             "source_landmarks": json_clone(source.get("landmarks", {})),
             "source_time": json_clone(source.get("time", {})),
+            **({"source_scenario_raw": json_clone(source),
+                "source_launch_policy": {"initial_defaults_basis": profile.get("initial_defaults_basis"),
+                                         "missing_source_fields": json_clone(profile.get("missing_source_fields", [])),
+                                         "armor_profile_basis": profile.get("armor_profile_basis")}}
+               if profile.get("initial_source_policy") == "FRESH_SOURCE_V1" else {}),
         },
         initial_stage=Stage.COMBAT,
     )
@@ -433,8 +453,10 @@ def _convert_operators(
         type_code = _exact_int(item.get("type"), f"operators[{index}].type")
         subtype_code = _exact_int(item.get("sub_type"), f"operators[{index}].sub_type")
         profile_key = f"{type_code}:{subtype_code}"
+        override_profiles = _mapping(profile.get("operator_profiles", {}), "operator_profiles")
         platform = _mapping(
-            platform_profiles.get(profile_key), f"platform_profiles.{profile_key}"
+            override_profiles.get(str(operator_id), platform_profiles.get(profile_key)),
+            f"platform_profiles.{profile_key}",
         )
         native_domain = _nonempty_string(platform.get("native_domain"), "native_domain").upper()
         if native_domain not in {item.value for item in UnitDomain if item is not UnitDomain.UNKNOWN}:
@@ -552,6 +574,8 @@ def _convert_operators(
         })
         raw_attributes = {
             "source_frame": source_frame,
+            **({"source_scenario_operator": json_clone(item)}
+               if profile.get("initial_source_policy") == "FRESH_SOURCE_V1" else {}),
             "source_scenario_id": str(source.get("scenario_id")),
             "source_name": source_name,
             "canonical_type": canonical_type,
@@ -678,6 +702,75 @@ def _convert_objectives(
             "native_policy": "explicit Native same-hex objective scoring",
         })
     return objectives, records
+
+
+
+def _validate_fresh_source_state(source: Mapping[str, Any]) -> None:
+    """Fail closed on active source state this initial-setup adapter cannot replay."""
+    for raw in _sequence(source.get("operators"), "operators"):
+        item = _mapping(raw, "operator")
+        for field in ("cur_pos", "speed", "move_state", "keep", "keep_remain_time",
+                      "tire", "tire_accumulate_time", "weapon_cool_time", "weapon_unfold_time",
+                      "move_to_stop_remain_time", "get_on_remain_time", "get_off_remain_time",
+                      "change_state_remain_time", "changing_altitude_remain_time"):
+            if field in item and (type(item[field]) not in (int, float) or item[field] != 0):
+                raise SourceScenarioConversionError(
+                    "unsupported_initial_source_state", f"operator {item.get('obj_id')}: {field} is not zero")
+        if item.get("move_path", []) != [] or item.get("stop", 1) != 1:
+            raise SourceScenarioConversionError("unsupported_initial_source_state", "initial operator is moving")
+        if item.get("lose_control", 0) != 0:
+            raise SourceScenarioConversionError("unsupported_initial_source_state", "initial command loss is not implemented")
+
+
+def _apply_initial_source_transport(
+    source: Mapping[str, Any], operators: list[OperatorState],
+) -> None:
+    """Project explicit reciprocal initial occupancy into existing Native transport."""
+    raw_by_id = {item["obj_id"]: item for item in source["operators"]}
+    native = {item.operator_id: item for item in operators}
+    claims: dict[int, int] = {}
+    for operator_id, raw in raw_by_id.items():
+        on_board = raw.get("on_board", 0)
+        if type(on_board) is not int or on_board not in (0, 1):
+            raise SourceScenarioConversionError("invalid_initial_on_board", str(operator_id))
+        car = raw.get("car")
+        passengers = raw.get("passenger_ids", [])
+        if not isinstance(passengers, list) or any(type(v) is not int for v in passengers):
+            raise SourceScenarioConversionError("invalid_initial_passenger_ids", str(operator_id))
+        if len(passengers) > 1 or len(set(passengers)) != len(passengers):
+            raise SourceScenarioConversionError("unsupported_initial_passenger_count", str(operator_id))
+        if not on_board:
+            if car is not None:
+                raise SourceScenarioConversionError("initial_car_without_occupancy", str(operator_id))
+            continue
+        if type(car) is not int or car not in native or car == operator_id:
+            raise SourceScenarioConversionError("invalid_initial_car", str(operator_id))
+        if passengers:
+            raise SourceScenarioConversionError("nested_initial_transport", str(operator_id))
+        carrier, passenger = native[car], native[operator_id]
+        carrier_raw = raw_by_id[car]
+        if carrier_raw.get("passenger_ids", []) != [operator_id]:
+            raise SourceScenarioConversionError("initial_transport_not_reciprocal", str(operator_id))
+        if (carrier.operator_type, carrier.subtype, passenger.operator_type, passenger.subtype) != (
+                "VEHICLE", "source-2-1", "PERSONNEL", "source-1-2"):
+            raise SourceScenarioConversionError("unsupported_initial_transport_types", str(operator_id))
+        if carrier.side != passenger.side or carrier.current_hex != passenger.current_hex:
+            raise SourceScenarioConversionError("invalid_initial_transport_location", str(operator_id))
+        if not carrier.alive or not passenger.alive or carrier_raw.get("on_board", 0):
+            raise SourceScenarioConversionError("invalid_initial_transport_state", str(operator_id))
+        if car in claims:
+            raise SourceScenarioConversionError("unsupported_initial_passenger_count", str(car))
+        claims[car] = operator_id
+        carrier.boarding_profile_id = passenger.boarding_profile_id = "GROUND_PERSONNEL_SINGLE_V1"
+        carrier.passenger_id = operator_id
+        passenger.mounted_on = car
+        passenger.deployed = False
+        passenger.current_hex = None
+        passenger.state = "ON_BOARD"
+    for carrier_id, raw in raw_by_id.items():
+        passengers = raw.get("passenger_ids", [])
+        if passengers and claims.get(carrier_id) != passengers[0]:
+            raise SourceScenarioConversionError("initial_transport_not_reciprocal", str(carrier_id))
 
 
 def _validate_profile_identity(

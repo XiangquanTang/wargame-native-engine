@@ -254,6 +254,7 @@ class ReplayReader:
                 )],
                 "actions": self._jsonl(path / "actions.jsonl"),
                 "events": self._jsonl(path / "events.jsonl"),
+                "steps_file_present": (path / "steps.jsonl").is_file(),
                 "steps": (self._jsonl(path / "steps.jsonl")
                           if (path / "steps.jsonl").is_file() else []),
                 "summary": summary}
@@ -359,7 +360,7 @@ def replay_actions(scenario: NativeScenario, root: str | Path, *,
     ):
         engine.close()
         raise ValueError("replay initial state mismatch")
-    if bundle.get("steps"):
+    if bundle.get("steps_file_present"):
         generated_actions: list[Mapping[str, Any]] = []
         generated_events: list[Mapping[str, Any]] = []
         snapshots = bundle.get("snapshots", [])
@@ -509,7 +510,7 @@ def replay_source_archive(scenario: NativeScenario, source: str | Path, *,
         expected["map_runtime_data"] = runtime_identity
     mismatches = [name for name, value in expected.items()
                   if manifest.get(name) != value]
-    if not archive.steps:
+    if not archive.steps_file_present:
         mismatches.append("steps.jsonl")
     if mismatches:
         message = "source replay compatibility mismatch: " + ", ".join(

@@ -25,6 +25,7 @@ from wargame_native_engine.core.operator import (
     OperatorState,
 )
 from wargame_native_engine.core.world import WorldState
+from wargame_native_engine.io.detached import detached_record
 from wargame_native_engine.io.serialization import canonical_hash
 from wargame_native_engine.movement.models import MovementMode
 from wargame_native_engine.movement.policy import (
@@ -114,6 +115,7 @@ class WeaponPosture(str, Enum):
     TRANSITIONING = "TRANSITIONING"
     NOT_APPLICABLE = "NOT_APPLICABLE"
     INCONSISTENT = "INCONSISTENT"
+    FOLDED = "FOLDED"
 
 
 class LimitedLifecycleState(str, Enum):
@@ -125,6 +127,7 @@ class LimitedLifecycleState(str, Enum):
     INCONSISTENT = "INCONSISTENT"
 
 
+@detached_record
 @dataclass(frozen=True, slots=True)
 class IdentityView:
     side: str
@@ -136,6 +139,7 @@ class IdentityView:
     domain: str | None
 
 
+@detached_record
 @dataclass(frozen=True, slots=True)
 class SurvivalView:
     alive: bool
@@ -146,6 +150,7 @@ class SurvivalView:
     max_blood: int | None
 
 
+@detached_record
 @dataclass(frozen=True, slots=True)
 class DeploymentView:
     deployed: bool
@@ -155,6 +160,7 @@ class DeploymentView:
     on_board: bool
 
 
+@detached_record
 @dataclass(frozen=True, slots=True)
 class MovementView:
     state: MovementLifecycleState
@@ -172,6 +178,7 @@ class MovementView:
     stop_transition_remaining_ms: int
 
 
+@detached_record
 @dataclass(frozen=True, slots=True)
 class OperatorTransitionView:
     active: bool
@@ -179,6 +186,7 @@ class OperatorTransitionView:
     remaining_ms: int
 
 
+@detached_record
 @dataclass(frozen=True, slots=True)
 class FatigueView:
     applicability: Applicability
@@ -187,18 +195,21 @@ class FatigueView:
     recovery_remaining_ms: int | None
 
 
+@detached_record
 @dataclass(frozen=True, slots=True)
 class SuppressionView:
     active: bool
     remaining_ms: int
 
 
+@detached_record
 @dataclass(frozen=True, slots=True)
 class ConcealmentView:
     applicability: Applicability
     posture: str | None
 
 
+@detached_record
 @dataclass(frozen=True, slots=True)
 class BoardingView:
     applicability: Applicability
@@ -209,6 +220,7 @@ class BoardingView:
     movement_locked: bool
 
 
+@detached_record
 @dataclass(frozen=True, slots=True)
 class WeaponLifecycleView:
     applicability: Applicability
@@ -218,6 +230,7 @@ class WeaponLifecycleView:
     cooldown_clear: bool
 
 
+@detached_record
 @dataclass(frozen=True, slots=True)
 class RecoveryView:
     applicability: Applicability
@@ -226,6 +239,7 @@ class RecoveryView:
     ready: bool | None
 
 
+@detached_record
 @dataclass(frozen=True, slots=True)
 class LimitedLifecycleView:
     applicability: Applicability
@@ -235,12 +249,14 @@ class LimitedLifecycleView:
     remaining_ms: int | None
 
 
+@detached_record
 @dataclass(frozen=True, slots=True)
 class IntegrityView:
     status: IntegrityStatus
     codes: tuple[str, ...]
 
 
+@detached_record
 @dataclass(frozen=True, slots=True)
 class AuthoritativeOperatorLifecycleView:
     schema_version: str
@@ -262,6 +278,7 @@ class AuthoritativeOperatorLifecycleView:
     integrity: IntegrityView
 
 
+@detached_record
 @dataclass(frozen=True, slots=True)
 class OperatorLifecycleProjectionAuthority:
     operator_lifecycle: OperatorLifecycleAuthority
@@ -293,6 +310,25 @@ class _IntegrityCollector:
             status=status,
             codes=tuple(sorted({item[1] for item in self.values})),
         )
+
+
+def project_operator_conditions(
+    operator: OperatorState,
+    *,
+    policy: SourceMovementPolicy | None = None,
+) -> tuple[FatigueView, SuppressionView, IntegrityView]:
+    """Project analysis conditions using the lifecycle view's same authority.
+
+    This narrow path deliberately avoids identity/weapon projections and their
+    semantic hashes when a frame exporter only needs fatigue and suppression.
+    It never updates timers or repairs state.
+    """
+    issues = _IntegrityCollector([])
+    fatigue = _fatigue(
+        operator, _domain(operator, issues),
+        default_projection_authority().movement if policy is None else policy, issues,
+    )
+    return fatigue, _suppression(operator, issues), issues.result()
 
 
 def project_operator_lifecycle(
@@ -850,6 +886,8 @@ def _weapon(
         posture = WeaponPosture.LOCKED
     elif not operator.weapon_locked and operator.weapon_unfolded:
         posture = WeaponPosture.UNFOLDED
+    elif not operator.weapon_locked and operator.locked_weapon_id is None:
+        posture = WeaponPosture.FOLDED
     else:
         posture = WeaponPosture.INCONSISTENT
         issues.add(IntegrityStatus.INCONSISTENT, "WEAPON_POSTURE_INCONSISTENT")
