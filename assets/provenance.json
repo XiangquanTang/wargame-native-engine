@@ -1,43 +1,53 @@
 {
-  "source_replay": "Map123 v22 scripted two-seat recording",
-  "software_version": "0.4.22",
-  "adjudication_semantics": "native-joint-prestate/1.10",
-  "source_replay_sha256": "8b2c9448cfb4f99f304d6848aad3df15ee78233ad6630ded77d4b2765ac68082",
-  "source_scenario_sha256": "b75191e59c9e592f058d423709eb61b6cb3633da10a62c977b041c274ed810b4",
-  "first_source_frame": 80,
-  "last_source_frame": 130,
+  "source_replay": "local_data/map123/runs/map123-artillery-ammo2-20261015T141330Z-1d104042/replay.zip",
+  "source_replay_sha256": "e27e4dd83aaae8ce536adde826b557b9942b347645065862a64420c0fd687ccf",
+  "source_scenario_sha256": "9a5c9185066f18280c9a193e83abcd92795161a9681a6909095febb54298f1fa",
+  "first_source_frame": 500,
+  "last_source_frame": 550,
   "source_frames": 51,
   "duration_seconds": 25.5,
   "view": "GREEN referee, both sides visible",
-  "presentation": "rendered from recorded facts, not browser capture",
+  "presentation": "historical recorded match rendered from facts; not a v22 recording or browser capture",
   "moving_unit_ids": {
     "red": [
-      27
+      30,
+      32,
+      63,
+      64,
+      65,
+      70,
+      71
     ],
     "blue": [
-      1
+      1,
+      2,
+      3,
+      81,
+      82,
+      83
     ]
   },
   "validated_fire_frames": [
-    96
+    533,
+    544,
+    546
   ],
   "codec": "H.264 AVC / MP4; minih264 and minimp4 (CC0), build tools excluded from release",
   "outputs": {
-    "map123-v22-overview.png": {
-      "bytes": 69476,
-      "sha256": "52814f1a4b22acb93177ea030d3bd1edc99e02a77f66ed36f35aab46413e07e4"
+    "map123-500-550-poster.png": {
+      "bytes": 80307,
+      "sha256": "bbd31b5f8bf2adf0c8941bc53af9a001839ba216f62ff17ffdf210a52ad6c734"
     },
-    "map123-v22-poster.png": {
-      "bytes": 74926,
-      "sha256": "671049004a33cd4b75f75c7938c2e7c38e577174b245e6355132041b10acee5d"
+    "map123-500-550-preview.gif": {
+      "bytes": 323971,
+      "sha256": "c3da4e1e36694e04f8b096f6086ba0032b72482bdecc0e0fd21d8c7195e10c5e"
     },
-    "map123-v22-preview.gif": {
-      "bytes": 209439,
-      "sha256": "b79ae1d3d1a17852e127375e3d01006c18a589fd394520b61c3f35eaf3354f39"
-    },
-    "map123-v22.mp4": {
-      "bytes": 926018,
-      "sha256": "5943be9ace4910cd5c5c48c67555bb04d7436a810b73f1db8ffdd00dd6ce48ee"
+    "map123-500-550.mp4": {
+      "bytes": 1108554,
+      "sha256": "af2ceceaf8bf5b471e443cb0a2c841c7669d1d1d5ecd42a2114f906d283e010d"
     }
-  }
+  },
+  "source_match_date": "2026-10-15",
+  "source_match_total_frames": 1070,
+  "source_adjudication_semantics": "native-joint-prestate/1.2"
 }
