@@ -1485,6 +1485,97 @@ class RealtimeAgentSession:
             )
             return seat_view, deepcopy(result)
 
+    def current_tactical_overlay_snapshot(
+        self,
+        binding: RealtimeSeatBinding,
+        *,
+        unit_id: int,
+    ) -> tuple[
+        RealtimeSeatView, ControllerView, UnitTacticalOverlay, dict[str, object]
+    ]:
+        """Read one current browser scene, overlay and actor capability view.
+
+        A browser behind a slow proxy cannot always perform a version-bound
+        query before the next tick. This read-only recovery chooses the latest
+        version once and returns its matching scene and capabilities; it does
+        not relax the strict model query or command-admission contracts.
+        """
+
+        actor = _nonnegative_int(unit_id, "unit_id")
+        with self._lock:
+            authoritative = self._resolve_binding_locked(binding)
+            self._require_accepting()
+            version = self._latest[authoritative.seat].observation_version
+            seat_view, controller_view, overlay = self.tactical_overlay_snapshot(
+                binding, observation_version=version, unit_id=actor,
+            )
+            service = self._advisory_services[authoritative.seat]
+            base = self._operation_capabilities_from_view(
+                service, (actor,), controller_view,
+                seat_view.capabilities.operation_summary.get("indirect_fire", {}),
+            )
+            return seat_view, controller_view, overlay, base
+
+    def tactical_overlay_snapshot(
+        self,
+        binding: RealtimeSeatBinding,
+        *,
+        observation_version: int,
+        unit_id: int,
+    ) -> tuple[RealtimeSeatView, ControllerView, UnitTacticalOverlay]:
+        """Return an overlay and its exact frozen identity/actor evidence.
+
+        Model and browser readers share the existing per-seat/version/actor
+        cache. Never combine a separate latest-view read with an overlay: a
+        tick may publish between those reads. No live WorldState is consulted.
+        """
+
+        actor = _nonnegative_int(unit_id, "unit_id")
+        with self._lock:
+            seat_view, controller_view = self._current_query_views_locked(
+                binding, observation_version,
+            )
+            if not any(
+                value.get("operator_id") == actor
+                and value.get("side") == seat_view.seat
+                for value in controller_view.observation["friendly_operators"]
+            ):
+                raise RealtimeAgentSessionError(
+                    "actor_not_owned", "actor is not controlled by this seat",
+                )
+            overlay = self._tactical_overlay_from_view_locked(
+                seat_view.seat, seat_view.observation_version, actor,
+                controller_view,
+            )
+            return seat_view, controller_view, overlay
+
+    def _tactical_overlay_from_view_locked(
+        self,
+        side: str,
+        version: int,
+        actor: int,
+        view: ControllerView,
+    ) -> UnitTacticalOverlay:
+        """Shared cache boundary; caller holds the orchestration lock."""
+
+        key = (side, version, actor)
+        cached = self._tactical_overlay_cache.get(key)
+        if cached is None:
+            match = self._require_match()
+            try:
+                cached = (
+                    match.gateway.manager
+                    .query_unit_tactical_overlay_from_projection(
+                        match.session_id, side, actor, view,
+                    )
+                )
+            except ValueError as exc:
+                raise CommandGatewayError(
+                    "tactical_overlay_query_rejected", str(exc)
+                ) from exc
+            self._tactical_overlay_cache[key] = cached
+        return deepcopy(cached)
+
     def tactical_overlay(
         self,
         binding: RealtimeSeatBinding,
@@ -1511,27 +1602,10 @@ class RealtimeAgentSession:
                     code,
                     "tactical overlay requires the latest observation version",
                 )
-            key = (authoritative.seat, version, actor)
-            cached = self._tactical_overlay_cache.get(key)
-            if cached is None:
-                match = self._require_match()
-                view = detached_copy(self._controller_views[authoritative.seat])
-                try:
-                    cached = (
-                        match.gateway.manager
-                        .query_unit_tactical_overlay_from_projection(
-                            match.session_id,
-                            authoritative.seat,
-                            actor,
-                            view,
-                        )
-                    )
-                except ValueError as exc:
-                    raise CommandGatewayError(
-                        "tactical_overlay_query_rejected", str(exc)
-                    ) from exc
-                self._tactical_overlay_cache[key] = cached
-            return deepcopy(cached)
+            return self._tactical_overlay_from_view_locked(
+                authoritative.seat, version, actor,
+                self._controller_views[authoritative.seat],
+            )
 
     def preview_operation(
         self,

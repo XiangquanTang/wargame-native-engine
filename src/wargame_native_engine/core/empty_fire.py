@@ -7,7 +7,9 @@ is deliberately independent of the simulation's elapsed milliseconds.
 from dataclasses import dataclass
 
 from wargame_native_engine.adjudication.request import WeaponProfile
-from wargame_native_engine.adjudication.fire_readiness import weapon_posture_failure, weapon_binding_failure
+from wargame_native_engine.adjudication.fire_readiness import (
+    weapon_posture_failure, weapon_binding_failure, weapon_transition_failure,
+)
 from wargame_native_engine.core.action_router import RoutedAction
 from wargame_native_engine.core.operator import OperatorState
 from wargame_native_engine.core.world import WorldState
@@ -71,8 +73,15 @@ def empty_fire_readiness_error(
         return posture_failure
     if attacker.weapon_cooldown_remaining_ms > 0:
         return "WEAPON_ON_COOLDOWN"
-    if attacker.transition_kind is not None or attacker.move_to_stop_remaining_ms > 0:
-        return "ATTACKER_TRANSITIONING"
+    transition_failure = weapon_transition_failure(
+        transitioning=(attacker.transition_kind is not None
+                       or attacker.move_to_stop_remaining_ms > 0),
+        transition_kind=attacker.transition_kind, ordinary_direct=True,
+        locked=attacker.weapon_locked, locked_weapon_id=attacker.locked_weapon_id,
+        weapon_id=weapon.weapon_id,
+    )
+    if transition_failure is not None:
+        return transition_failure
     if attacker.operator_type == "AIR" and not attacker.stopped:
         return "AIR_UNIT_MUST_HOVER"
     return None

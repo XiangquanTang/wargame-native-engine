@@ -521,9 +521,11 @@
       this._drawMap(context);
       this._drawTacticalOverlays(context);
       this._drawScenarioFeatures(context, this.map?.scenario?.features || []);
-      this._drawObjectives(context, frame?.cities || []);
       this._drawActionTargets(context);
       this._drawUnits(context, frame?.viewer_units || []);
+      // Occupying units must not cover the current frame's objective flags.
+      // Flags are paint-only: unit hit targets and recorded ownership stay intact.
+      this._drawObjectives(context, frame?.cities || []);
       this._drawSelectedHex(context);
       if (this.onRender) this.onRender(this);
     }

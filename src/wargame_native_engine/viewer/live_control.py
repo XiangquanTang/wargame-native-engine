@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from wargame_native_engine.compat.source_frame.contract import SOURCE_ACTION_CONTRACT, SOURCE_CONTRACT_KEY
 from wargame_native_engine.gateway import ControllerView
 from wargame_native_engine.io.scenario import NativeScenario
 from wargame_native_engine.viewer.terrain_display import terrain_display_semantic
@@ -146,6 +147,7 @@ def controller_view_record(view: ControllerView) -> dict[str, object]:
             category,
             view.perspective,
             own_lifecycles.get(item.get("obj_id")),
+            source_contract=native.get(SOURCE_CONTRACT_KEY) if isinstance(native, Mapping) else None,
         )
         for item, category in source_units
     ]
@@ -154,6 +156,8 @@ def controller_view_record(view: ControllerView) -> dict[str, object]:
         source_units=source_units,
         own_lifecycles=own_lifecycles,
     )
+    from wargame_native_engine.viewer.transport_positions import attach_mounted_positions
+    attach_mounted_positions(viewer_units, [item for item, _ in source_units], perspective=view.perspective)
     return {
         **view.to_record(),
         "frame": {
@@ -182,6 +186,7 @@ def _viewer_unit(
     category: str,
     perspective: str,
     own_lifecycle: object | None = None,
+    *, source_contract: str | None = None,
 ) -> dict[str, object]:
     source_current_hex = value.get("cur_hex")
     if type(source_current_hex) is not int or source_current_hex < 0:
@@ -275,7 +280,12 @@ def _viewer_unit(
         "destroyed": value.get("alive") is False or blood == 0,
         "state": value.get("state"),
         "stopped": bool(value.get("stop", False)),
-        "marching": value.get("move_state") not in {None, 0},
+        # Source 1.3 movement enums distinguish march (1), infantry (2),
+        # and flight (3). Preserve UNKNOWN rather than treating every nonzero
+        # code as march; historical display contracts keep their old behavior.
+        "marching": ((None if value.get("move_state") is None else value.get("move_state") == 1)
+                     if source_contract == SOURCE_ACTION_CONTRACT
+                     else value.get("move_state") not in {None, 0}),
         "suppressed": bool(value.get("suppressed", False)),
         "move_state": value.get("move_state"),
         "direction": value.get("direction"),

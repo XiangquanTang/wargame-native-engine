@@ -52,11 +52,14 @@ so a GUIDED request cannot silently become an ordinary DIRECT shot on round-trip
 
 ## Replay and evidence
 
-Snapshots and full replay manifests record `/1.3`; strict restoration/replay
-rejects `/1.2` rather than silently apply new rules to old runs. Isolated direct-fire
-replays now also record and check that semantics identity. Historical performance
-and equivalence files in `benchmarks/` remain evidence for commit `ded41a29` under
-`/1.2`, not a new `/1.3` performance claim.
+The ordinary direct-fire range policy described here was introduced under
+historical adjudication semantics `/1.3`, rather than silently applying its rules
+to `/1.2` runs. This release records the current `native-joint-prestate/1.11`
+identity declared in `src/wargame_native_engine/version.py`; snapshots, full
+replays and isolated direct-fire replays check their matching semantics identity.
+Historical performance and equivalence results for commit `ded41a29` under
+`/1.2` are not shipped in this upload package and do not establish current-release
+performance. The maintained `benchmarks/` scripts can produce fresh local results.
 
 Run `python devtools/run_checks.py` from the repository root for maintained
 backend, replay, interface and UI regression checks. UI control-flow tests use

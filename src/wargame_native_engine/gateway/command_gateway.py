@@ -683,6 +683,8 @@ class CommandGateway:
         *,
         truncated: bool = False,
         overwrite: bool = False,
+        replay_mode: str = "compact",
+        command_outcomes: list[Mapping[str, Any]] | None = None,
     ) -> SessionPublication:
         gateway_session = self._gateway_session(session_id)
         with gateway_session.lock:
@@ -716,6 +718,8 @@ class CommandGateway:
                 output_dir,
                 truncated=truncated,
                 overwrite=overwrite,
+                replay_mode=replay_mode,
+                command_outcomes=command_outcomes,
                 control_audit_payload=gateway_session.audit.jsonl_bytes(),
             )
 

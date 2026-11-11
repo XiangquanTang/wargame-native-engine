@@ -190,6 +190,7 @@ class ObservedEnemyOperatorObservation:
     alive: bool
     destroyed: bool
     motion_state: str
+    display_name: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         value = {
@@ -207,6 +208,7 @@ class ObservedEnemyOperatorObservation:
             "alive": self.alive,
             "destroyed": self.destroyed,
             "motion_state": self.motion_state,
+            "display_name": self.display_name,
         }
         policy = load_perspective_policy()
         if set(value) != set(policy.enemy_observation_allowlist):
@@ -253,7 +255,32 @@ def side_safe_enemy_observation(
         alive=bool(value.alive),
         destroyed=not bool(value.alive),
         motion_state=contract.enemy_motion(value.state),
+        display_name=(contact_display_name(value.raw_attributes.get("source_name"))
+                      if isinstance(value, OperatorState) else None),
     )
+
+
+CONTACT_IDENTITY_SCHEMA_VERSION = "native-visible-contact-identity/1.0"
+CONTACT_IDENTITY_FIELDS = (
+    "side", "operator_type", "subtype", "source_type_code", "source_subtype_code",
+    "canonical_identity", "canonical_status", "domain", "display_name",
+)
+
+
+def contact_display_name(value: object) -> str | None:
+    """A bounded plain-text model label, never arbitrary raw attributes."""
+    if not isinstance(value, str) or not value.strip() or len(value) > 200:
+        return None
+    if any(ord(char) < 32 or ord(char) == 127 for char in value):
+        return None
+    return value.strip()
+
+
+def contact_identity_record(value: OperatorState) -> dict[str, Any]:
+    """Explicit identification evidence; excludes location and private state."""
+    observed = side_safe_enemy_observation(value)
+    return {"schema_version": CONTACT_IDENTITY_SCHEMA_VERSION,
+            **{key: getattr(observed, key) for key in CONTACT_IDENTITY_FIELDS}}
 
 
 @lru_cache(maxsize=1)

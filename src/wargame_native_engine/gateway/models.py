@@ -241,12 +241,13 @@ class CommandResult:
 class SessionPublication:
     output_dir: Path
     replay_path: Path
-    analysis_path: Path
+    analysis_path: Path | None
     frame_count: int
     step_count: int
     terminal: bool
     truncated: bool
     control_audit_path: Path | None = None
+    replay_format: str = "native-source-frame-replay/1.0"
 
     def __post_init__(self) -> None:
         _exact_bool(self.terminal, "terminal")

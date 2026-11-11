@@ -1,0 +1,74 @@
+{
+  "schema": "native-release-validation/1.0",
+  "release": "0.4.24.1-self-contained-20261103-r3",
+  "implementation_review": "approved",
+  "checks": {
+    "v24_targeted_suite": {
+      "total": 56,
+      "passed": 53,
+      "skipped_optional_torch": 3
+    },
+    "v25_targeted_suite": {
+      "total": 56,
+      "passed": 54,
+      "skipped_optional_torch": 2
+    },
+    "new_data_plugin_and_launcher_tests_per_version": {
+      "total": 26,
+      "passed": 26
+    },
+    "before_after_native_rules_random_20_windows": "40 action IDs, outcome and every frame-analysis byte identical",
+    "map221_geometry_encoding": "4200 cells encoded losslessly in 70 ranges; raw geometry JSON 20364 bytes to 905 bytes",
+    "installer_both_versions": "preflight, install, idempotence, rollback, local-edit refusal and private-data preservation passed",
+    "injected_partial_write_rollback": "passed",
+    "python_310_syntax": "passed",
+    "public_archive_and_asset_scan": "passed: 682 files; no Python cache; only approved hotfix and integrity metadata differ from reviewed r2; maximum file 22335408 bytes",
+    "asset_inventory": "two included map archives verified; exactly two declared missing assets reported",
+    "release_workflow_missing_asset_guard": "both workflows exit before model loading or output creation",
+    "gitignore_assets": "approved map ZIPs, Map123 NPZ, scenario and exact PPO path allowed; unrelated weights/archives/cache ignored",
+    "prior_public_assembled_focused_suite": {
+      "total": 34,
+      "passed": 34
+    }
+  },
+  "not_run": [
+    "real Torch checkpoint loading with this new data-format update",
+    "real GPU dual-model match with this update",
+    "1500-step live match with this update",
+    "GitHub CI on a remote repository"
+  ],
+  "prior_host_evidence": "The preceding controller version completed a 20-step and a 1500-step PPO versus LLM+Jev host run. These are not tests of the new data-format implementation.",
+  "asset_status": "Map123 and Map221 map sources included; exact current capture-v3 PPO checkpoint and Map221 source scenario must be supplied by user.",
+  "github_pushed": false,
+  "documentation_revision": {
+    "revision": "r2",
+    "scope": "documentation and release-integrity metadata only",
+    "supersedes_sha256": "3b98b864f64b6131a516ce9954642d08f6025bcef359a8fe12cbf7ed8d759af6",
+    "business_code_and_assets_unchanged": true,
+    "upgrade_zip_unchanged": true
+  },
+  "hotfix_revision": {
+    "revision": "r3",
+    "supersedes_sha256": "9ce09358349c0a0b1eb32a4bd170bb117c29a90a12efc7342ca27bab92d006d2",
+    "fix": "known action authorization metadata removed from semantic model/business projections; original engine-bound actions retained; read compatibility for initial 1.0 decision samples",
+    "validation": {
+      "schema": "native-hotfix-validation/1.0",
+      "addon": "decision-records-hotfix-addon",
+      "status": "independent-review-approved",
+      "code_tests": {
+        "total": 62,
+        "passed": 59,
+        "skipped_optional_torch": 3
+      },
+      "real_user_file_tested": false,
+      "real_gpu_match_tested": false,
+      "engine_execution_binding": "original bound engine candidates retained; only business/model action projections normalized",
+      "user_data_migration": "none; original files untouched",
+      "installer_both_versions": "preflight/no writes; install; idempotence; rollback; local-edit refusal; private-data preservation; injected partial-write restoration passed",
+      "native_board_unload_parity": "independent 4-window original action/hash/receipt/replay parity exact",
+      "legacy_file_compatibility": "synthetic native-derived legacy JSONL extraction retains source bytes and business decisions; unknown/malformed fields rejected",
+      "source_user_file_available": false,
+      "python_310_syntax": "passed"
+    }
+  }
+}

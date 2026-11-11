@@ -182,6 +182,9 @@ class NativeTrainingEnv:
         timing_collector: TrainingTimingCollector | None = None,
         enable_planning_world_hash_cache: bool = True,
         enable_execution_tracking: bool = False,
+        analyzer_factory=None,
+        replay_assets: Mapping[str, Any] | None = None,
+        retain_analysis_history: bool = True,
     ) -> None:
         side = str(controlled_side).lower()
         if side not in {"red", "blue"}:
@@ -327,6 +330,9 @@ class NativeTrainingEnv:
             environment_factory,
             storage_root=storage,
             reuse_planning_world_hash=enable_planning_world_hash_cache,
+            analyzer_factory=analyzer_factory,
+            replay_assets=replay_assets,
+            retain_analysis_history=retain_analysis_history,
         )
         self._gateway = CommandGateway(
             self._manager,
@@ -1003,6 +1009,7 @@ class NativeTrainingEnv:
         output_dir: str | Path,
         *,
         overwrite: bool = False,
+        replay_mode: str = "legacy-debug",
     ) -> SessionPublication:
         self._require_initialized()
         if self._failed:
@@ -1015,6 +1022,7 @@ class NativeTrainingEnv:
                 str(output_dir),
                 truncated=not view.terminal,
                 overwrite=overwrite,
+                replay_mode=replay_mode,
             )
         self._ended = True
         return publication

@@ -6,6 +6,7 @@ from pathlib import Path
 from wargame_native_engine.adjudication.fire_effect_query import FireEffectQuery
 from wargame_native_engine.core.action import EngineAction, ValidAction
 from wargame_native_engine.core.engine import NativeEngine
+from wargame_native_engine.rules.mounted_position import MOUNTED_POSITION_POLICY
 from wargame_native_engine.core.fire_capability import IndirectFireCapability
 from wargame_native_engine.core.observation import SideObservation
 from wargame_native_engine.core.result import GameResult, GameStatus, StepResult
@@ -38,7 +39,7 @@ class NativeEngineBackend:
                  map_runtime_data: "MapRuntimeData | None" = None,
                  path_planner: "PathPlanner | None" = None,
                  enable_boarding_type_assignments: bool = True,
-                 mounted_position_policy: str | None = None,
+                 mounted_position_policy: str | None = MOUNTED_POSITION_POLICY,
                  objective_capture_policy: str | Mapping[str, Any] | None = None
                  ) -> None:
         self.scenario = scenario
@@ -64,6 +65,8 @@ class NativeEngineBackend:
     def determinism_identity(self) -> Mapping[str, object]:
         runtime = self.engine.map_runtime_data
         value: dict[str, object] = {}
+        if self.engine.mounted_position_policy == MOUNTED_POSITION_POLICY:
+            value["mounted_position_policy"] = self.engine.mounted_position_policy
         if runtime is not None:
             value["map_runtime_data"] = runtime.identity_record()
         if self.engine._boarding_type_assignments_enabled:  # noqa: SLF001

@@ -18,7 +18,7 @@
 ## 五类职责及支持模块
 
 1. **游戏逻辑**：`core` 管权威世界；`adjudication`、`movement`、`visibility`、`rules`、`systems`
-   管既有规则。v22 沿用 v21 的裁决语义 1.10，前端隐藏按钮不代表服务端规则改变。
+   管既有规则。v22 初版沿用 v21 的裁决语义 1.10；锁定过渡射击补丁使用 1.11。前端隐藏按钮不代表服务端规则改变。
 2. **操作功能**：`operations`、`gateway`、`session` 负责席位隔离、预检和提交；
    `agents/realtime.py` 负责时钟和队列。停止、锁定、展开等状态转换完成前不能绕过就绪条件。
 3. **模型接口**：`agents/tool_calling.py` 提供工具，`training` 提供同步环境；

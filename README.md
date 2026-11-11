@@ -1,56 +1,113 @@
-# Wargame Native Engine · v22
+# Native Wargame: RL / Rules / LLM + Jev
 
-Python 兵棋引擎，支持红蓝双方推演、智能体接入、训练与确定性回放。版本 **0.4.22**，采用 Native 简化规则。
+可审计的简化兵棋引擎与模型控制器。此源码快照冻结于 **2026-11-02**，引擎版本为 **0.4.24.1**，加入独立决策样本与片段导出。没有修改为0.4.25。
 
-[![Map123 双方行动](assets/map123-500-550-preview.gif)](assets/map123-500-550.mp4)
+## 两条对战入口
 
-Map123 历史对局（2026-10-15），第 **500～550 帧**，红蓝同屏，2 倍速、25.5 秒。画面由真实回放数据渲染。
+1. **RL 对战规则**：红方冻结 PPO，蓝方规则控制器。
+2. **LLM + Jev 对战 RL**：红方冻结 PPO，蓝方 Qwen 战略计划 + NanoJev 合法动作选择。
 
-[观看视频](assets/map123-500-550.mp4) · [查看图片](assets/map123-500-550-poster.png)
+两个入口调用同一个 `scripts.run_match`，同一决策窗口每方最多提交一条命令，候选上限255，开发验证默认遇错停止。LLM计划作为Jev输入中的战略意图，Jev从引擎提供的合法候选中选择。没有用规则静默替代模型，也没有声称已完成兵棋数据微调。
 
-## 快速启动
+## 文件与资产
 
-需要 Python 3.10+，在项目根目录执行：
+- `src/`、`scripts/`、`checks/`：引擎、运行入口与检查。
+- `config/`：原生规则、类型表和训练配置。规则控制器没有学习权重文件。
+- `examples/map123/`：地图123原生想定、压缩通视表、移动代价与清单。
+- `release_assets/maps/221/`、`release_assets/maps/123/`：获准附带的原始地图ZIP。
+- `release_assets/scenarios/221/`、`release_assets/models/ppo/`：待用户补充的想定和本轮PPO权重。
+- `tools/agent_services/`：已验证接口的本地Qwen服务和测试工具。
+- `release_assets/MISSING_FILES.zh-CN.md`：缺失文件清单和准确放置位置。
+- `SOURCE_FILES.sha256`：源码快照完整性清单，只用于文件校验，不是决策数据的业务索引。
 
-```bash
-python -m pip install -e .
-python -m scripts.run_maps run river-valley --port 8003
-```
+**发布时尚缺2个文件**：地图221的`2201010101.json`想定，以及指定capture-v3 PPO权重。不能以旧v2权重替代。补齐后再执行两条真实模型对战。
 
-打开终端打印的 RED / BLUE 地址。按 Ctrl+C 正常结束并保存回放，结果保存在 `local_data/`。
+## 环境
 
-## 地图
+Python 3.10+。核心引擎使用标准库，PPO运行需要PyTorch。Ray只在并行训练时需要。
 
-包含 18 项公开地图资源、19 个场景变体，详见[地图清单](examples/maps/catalog.json)。
+本次真实部署环境记录：Python3.10、Torch2.4.1+cu121、Transformers4.51.3、huggingface_hub0.30.2、safetensors0.5.3、accelerate1.6.0；TITAN RTX24GB；Qwen使用FP16，NanoJev使用FP32。这是已验证组合，不会由源码安装器自动替换你的Torch。
 
-```bash
-python -m scripts.run_maps list
-python -m scripts.run_maps verify
-python -m scripts.run_maps run map123 --variant original --port 8003
-```
-
-Map123 为 100×100 六角格、每格 200 米；首次展开视线缓存需约 1.1 GB 磁盘空间。
-`--variant artillery-ammo2` 可切换至独立炮兵演示。上述启动命令分别运行，避免占用同一端口。
-
-## 导入自己的地图与想定
-
-将地图 ZIP 和想定 JSON 分别放入 `local_data/maps/inbox/`：
+开发包安装（按自己的环境决定是否执行）：
 
 ```bash
-python -m scripts.run_maps start --input local_data/maps/inbox/map_221.zip --scenario-input local_data/maps/inbox/2201010101.json
+python -m pip install -e '.[dev]'
 ```
 
-自备地图不随仓库分发。追加 `--prepare-only` 仅转换检查；追加 `--port 8004` 可另开服务。
+PPO、Qwen与NanoJev权重是独立输入。Qwen/NanoJev权重未打入此源码包。NanoJev源码来自其[官方仓库](https://github.com/TianyuCodings/NanoJev)，具体下载和旧版Transformers兼容说明见`docs/local_model_services.md`。
 
-## 接口与使用说明
+## 先补齐资产
 
-- [模型与训练接入](docs/engineering_guide.md)、[游戏工具调用](docs/game_tool_calling.md)
-- [地图导入](docs/multi_map_workspace.md)、[想定转换](docs/source_game_start_v17.md)
-- [架构与数据流](docs/architecture.md)、[云端运行](docs/notebook_map123.md)
-- [回放视角](docs/replay_side_visibility.md)、[v22 迁移](docs/v22_migration.md)
+按照缺失清单复制文件，然后在仓库根目录执行：
 
-基础运行无第三方 Python 依赖；PPO 学习器另需 `pip install -e '.[learner]'`。
-请保留 `src/`、`scripts/`、`config/`、`examples/` 和 `docs/rules/` 的目录关系。
-本地输入、缓存和运行结果不提交 Git。素材来源见 [provenance.json](assets/provenance.json)。
+```bash
+python release_assets/check_assets.py
+```
 
-许可证：[MIT](LICENSE)。
+所有条目必须为`OK`。检查不会加载模型或反序列化地图中的pickle。
+
+## RL 对战规则
+
+```bash
+python release_assets/run_workflow.py rl-vs-rules --max-steps 20
+```
+
+短局通过后：
+
+```bash
+python release_assets/run_workflow.py rl-vs-rules --max-steps 1500
+```
+
+## LLM + Jev 对战 RL
+
+先保持两个本地服务运行：Qwen端口8766，NanoJev端口8765。
+
+```bash
+python release_assets/run_workflow.py llm-jev-vs-rl --max-steps 20
+```
+
+短局通过并核对决策记录后：
+
+```bash
+python release_assets/run_workflow.py llm-jev-vs-rl --max-steps 1500
+```
+
+输出写入自动创建的`local_data/matches/`子目录。不同运行不会覆盖。1500步结束可能是运行上限截断，`winner:null`不等于自动平局裁决。
+
+需要使用其他地图/权重路径时，查看`python -m scripts.run_rl_rules_match --help`和`python -m scripts.run_llm_jev_match --help`（源代码方式运行时设置`PYTHONPATH=src:.`）。保留的旧默认路径只适配原部署目录；上面的发布入口使用本包的可移植资产路径。
+
+## 地图123
+
+原生数据已包含，不需要地图221的补充文件。首次准备会从压缩通视数据生成约1.1GB本地缓存；缓存位于`local_data/`，不进入Git。
+
+```bash
+PYTHONPATH=src:. python -m scripts.run_map123 --prepare-only
+```
+
+启动原生交互演示：
+
+```bash
+PYTHONPATH=src:. python -m scripts.run_map123 --port 8003
+```
+
+上述为地图123加载/演示入口，不将地图221训练的PPO效果自动视为地图123效果。
+
+## 决策数据与复盘
+
+新记录将当前可见态势、完整战略计划、局部编号和完整候选动作、选择及执行反馈放在同一条记录中。动作哈希保留在引擎技术层，不作为业务样本的必需外键。片段可以独立阅读和用于后续数据筛选。
+
+自主模型输入只使用该方可见信息；执行结果与后续状态单列。使用训练样本时，应排除执行后信息和观察者数据，避免未来信息泄漏。片段可读不等于可以仅凭观察量完全恢复原始隐藏世界；确定性引擎重放仍使用原生复盘包。
+
+具体记录文件、查看与导出参数见`docs/self_contained_decisions.md`。
+
+## 验证范围
+
+旧数据格式下，用户已在服务器完成RL对战规则和1500步LLM+Jev对战RL。新版数据格式的验证范围以`VALIDATION.json`为准。发布时没有在云端重新运行真实GPU、真实PPO权重或1500步全局，不能把模拟HTTP测试标成真实模型评测。
+
+## 上传GitHub
+
+解压本上传包，把**解压后的仓库文件**上传或提交到自己的仓库；不要把整个交付ZIP当成源码目录提交。没有在此流程中自动推送仓库。
+
+资产中最大已包含文件是地图123压缩通视数据，约22.3MB；未包含1GB展开缓存。GitHub限制见[官方大文件说明](https://docs.github.com/en/repositories/working-with-files/managing-large-files/about-large-files-on-github)。补充自己的文件后先检查大小，不要上传模型缓存、代理配置、访问凭据或无关个人数据。
+
+根目录MIT许可证沿用原引擎代码许可证。附带地图与用户补充模型属于单独的数据资产；发布者应确认其数据发布权，不将本文件视为替第三方授予许可。

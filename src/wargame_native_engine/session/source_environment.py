@@ -6,10 +6,11 @@ from typing import Any, Mapping, Sequence
 
 from wargame_native_engine.compat.source_frame.exporter import SourceFrameExporter
 from wargame_native_engine.compat.source_frame.contract import (
-    CURRENT_SOURCE_CONTRACT, LEGACY_SOURCE_CONTRACT, SOURCE_CONTRACT_KEY,
+    SOURCE_ACTION_CONTRACT, LEGACY_SOURCE_CONTRACT, SOURCE_CONTRACT_KEY,
     is_dynamic_source_contract, require_source_contract,
 )
 from wargame_native_engine.compat.source_frame.models import SourceFrame
+from wargame_native_engine.compat.source_frame.action_export import export_source_action
 from wargame_native_engine.core.action import EngineAction
 from wargame_native_engine.core.event import EventType, is_green_judge_event
 from wargame_native_engine.io.serialization import canonical_hash, json_clone
@@ -35,7 +36,7 @@ class SourceCompatibleEnvironment:
     def __init__(self, session: GameSession, *, template: SourceFrame,
                  projector: PerspectiveProjector | None = None,
                  engine_version: str | None = None,
-                 source_contract: str = CURRENT_SOURCE_CONTRACT) -> None:
+                 source_contract: str = SOURCE_ACTION_CONTRACT) -> None:
         if engine_version is not None and (
             not isinstance(engine_version, str) or not engine_version.strip()
         ):
@@ -158,10 +159,17 @@ class SourceCompatibleEnvironment:
             action_records = []
             action_results = []
             for action, decision in zip(result.actions, result.decisions):
-                record = action.to_dict()
-                if not decision.accepted:
-                    record.update({"accepted": False,
-                                   "decision_code": decision.code})
+                if self.source_contract == SOURCE_ACTION_CONTRACT:
+                    record = export_source_action(
+                        action, cur_step=int(result.tick_before),
+                        template=self.template, decision=decision,
+                    )
+                else:
+                    # Older contracts are replay authorities, not migrations.
+                    record = action.to_dict()
+                    if not decision.accepted:
+                        record.update({"accepted": False,
+                                       "decision_code": decision.code})
                 action_records.append(record)
                 action_results.append({
                     "action_id": action.action_id,
@@ -316,6 +324,8 @@ class SourceCompatibleEnvironment:
             valid_actions={key: values for key, values in sorted(by_actor.items())},
             adjudication=adjudication,
             source_contract=self.source_contract,
+            mounted_position_policy=snapshot.get("mounted_position_policy"),
+            project_contact_identity=("display_name" in self.projector.policy.enemy_observation_allowlist),
             weapon_inventory=(tuple(
                 value for side in self.session.scenario.side_order
                 for value in self.session.own_weapon_inventory(side)
@@ -364,6 +374,8 @@ class SourceCompatibleEnvironment:
         }
         if self.source_contract != LEGACY_SOURCE_CONTRACT:
             value[SOURCE_CONTRACT_KEY] = self.source_contract
+        if snapshot.get("mounted_position_policy") == "native-mounted-position-sync/1.1":
+            value["mounted_position_policy"] = snapshot["mounted_position_policy"]
         if "objective_capture_policy" in snapshot:
             value["objective_capture_policy"] = json_clone(
                 snapshot["objective_capture_policy"]

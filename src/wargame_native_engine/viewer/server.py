@@ -55,11 +55,17 @@ class ReplayViewerHTTPServer(ThreadingHTTPServer):
             if key in self._response_cache:
                 self._response_cache.move_to_end(key)
                 return self._response_cache[key]
-            raw = _json_bytes(factory())
-            compressed = gzip.compress(raw, compresslevel=3, mtime=0)
-            encoded = (raw, compressed)
-            size = len(raw) + len(compressed)
-            limit = 32 * 1024 * 1024
+        # A full lazy curve may take seconds. Do not hold the shared cache lock
+        # while generating it: the initial frame/map and later seeks must work.
+        raw = _json_bytes(factory())
+        compressed = gzip.compress(raw, compresslevel=3, mtime=0)
+        encoded = (raw, compressed)
+        size = len(raw) + len(compressed)
+        limit = 32 * 1024 * 1024
+        with self._response_lock:
+            if key in self._response_cache:
+                self._response_cache.move_to_end(key)
+                return self._response_cache[key]
             if size <= limit:
                 while self._response_cache and (
                     self._response_cache_bytes + size > limit
@@ -95,9 +101,6 @@ class ReplayViewerRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/perspectives":
             self._send_record(path, self.server.view.perspectives_record)
             return
-        if path == "/api/timeline":
-            self._send_record(path, self.server.view.timeline_record)
-            return
         if path == "/api/map":
             self._send_record(path, self.server.view.map_record)
             return
@@ -106,16 +109,32 @@ class ReplayViewerRequestHandler(BaseHTTPRequestHandler):
             if len(values) != 1 or values[0] not in {"GREEN", "RED", "BLUE"}:
                 raise ValueError("perspective must be GREEN, RED or BLUE")
             perspective = values[0]
+            models = parse_qs(urlsplit(self.path).query, keep_blank_values=True).get("analysis_model", [None])
+            if len(models) != 1 or models[0] not in {None, "source", "native"}:
+                raise ValueError("analysis_model must be source or native")
+            model = models[0]
+            if model is not None and not getattr(self.server.view, "supports_analysis_models", False):
+                raise ValueError("this replay has a fixed recorded analysis model")
         except ValueError as exc:
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
             return
+        model_args = {} if model is None else {"analysis_model": model}
+        if path == "/api/timeline":
+            try:
+                self._send_record(path if model is None else f"{path}?analysis_model={model}",
+                                  lambda: self.server.view.timeline_record(**model_args))
+            except (TypeError, ValueError, IndexError) as exc:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            return
         for prefix, getter in (
-            ("/api/frame-bundle/", lambda index: self.server.view.frame_bundle_record(index, perspective)),
+            ("/api/frame-bundle/", lambda index: self.server.view.frame_bundle_record(index, perspective, **model_args)),
             ("/api/frame/", lambda index: self.server.view.frame_record(index, perspective)),
-            ("/api/analysis/", lambda index: self._analysis_record(index, perspective)),
+            ("/api/analysis/", lambda index: self._analysis_record(index, perspective, model_args)),
         ):
             if path.startswith(prefix):
                 key = path if perspective == "GREEN" else f"{path}?perspective={perspective}"
+                if model is not None:
+                    key += ("&" if "?" in key else "?") + f"analysis_model={model}"
                 self._send_indexed(path[len(prefix):], getter, key)
                 return
         self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
@@ -144,10 +163,10 @@ class ReplayViewerRequestHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: object) -> None:
         return
 
-    def _analysis_record(self, index: int, perspective: str) -> dict[str, object]:
+    def _analysis_record(self, index: int, perspective: str, model_args: dict) -> dict[str, object]:
         if perspective != "GREEN":
             raise ReplayPerspectiveUnavailable("阵营八因子分析不可用。")
-        return self.server.view.analysis_record(index)
+        return self.server.view.analysis_record(index, **model_args)
 
     def _send_indexed(self, raw_index: str, getter: Any, key: str) -> None:
         try:

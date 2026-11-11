@@ -1,0 +1,54 @@
+{
+  "release": "0.4.24.1-self-contained-20261103-r3",
+  "engine_version": "0.4.24.1",
+  "code_source": "exact delivered 0.4.24.1 plus guarded add-ons and self-contained records update",
+  "included_addons": [
+    "boarding-id-hotfix",
+    "controller-match",
+    "progressive-v2",
+    "capture-pressure-v3",
+    "candidate-limit-255",
+    "llm-jev-controller",
+    "self-contained-decisions-addon",
+    "decision-records-hotfix-addon"
+  ],
+  "private_path_redacted_docs": [
+    "docs/capture_pressure_v3.md"
+  ],
+  "missing_assets": "release_assets/MISSING_FILES.zh-CN.md",
+  "models_included": [],
+  "runtime_cache_included": false,
+  "github_pushed": false,
+  "source_matches_update_for_code": true,
+  "documentation_revision": {
+    "revision": "r2",
+    "scope": "documentation and release-integrity metadata only",
+    "supersedes_sha256": "3b98b864f64b6131a516ce9954642d08f6025bcef359a8fe12cbf7ed8d759af6",
+    "business_code_and_assets_unchanged": true,
+    "upgrade_zip_unchanged": true
+  },
+  "hotfix_revision": {
+    "revision": "r3",
+    "supersedes_sha256": "9ce09358349c0a0b1eb32a4bd170bb117c29a90a12efc7342ca27bab92d006d2",
+    "fix": "known action authorization metadata removed from semantic model/business projections; original engine-bound actions retained; read compatibility for initial 1.0 decision samples",
+    "validation": {
+      "schema": "native-hotfix-validation/1.0",
+      "addon": "decision-records-hotfix-addon",
+      "status": "independent-review-approved",
+      "code_tests": {
+        "total": 62,
+        "passed": 59,
+        "skipped_optional_torch": 3
+      },
+      "real_user_file_tested": false,
+      "real_gpu_match_tested": false,
+      "engine_execution_binding": "original bound engine candidates retained; only business/model action projections normalized",
+      "user_data_migration": "none; original files untouched",
+      "installer_both_versions": "preflight/no writes; install; idempotence; rollback; local-edit refusal; private-data preservation; injected partial-write restoration passed",
+      "native_board_unload_parity": "independent 4-window original action/hash/receipt/replay parity exact",
+      "legacy_file_compatibility": "synthetic native-derived legacy JSONL extraction retains source bytes and business decisions; unknown/malformed fields rejected",
+      "source_user_file_available": false,
+      "python_310_syntax": "passed"
+    }
+  }
+}

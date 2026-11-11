@@ -1492,18 +1492,14 @@ def _capability_unavailable(
         visible = menu.unit.get("observed_enemy_ids", ())
         if not visible:
             return "no_visible_enemy", "当前未发现可见敌军"
-        if moving:
-            return (
-                "actor_moving",
-                "单位正在移动；机动射击须武器支持且已锁定，仍需满足弹药、冷却及目标条件",
-            )
-        if transitioning:
-            return "actor_transitioning", "单位正在进行状态转换"
+        # Movement/transition alone is no longer a firing blocker: a completed
+        # matching lock permits DIRECT. This menu has no weapon-lock evidence,
+        # so do not mislabel cooldown/target failures as a state restriction.
         if "WEAPON_UNFOLD" in available:
             return "weapon_not_unfolded", "武器尚未展开"
         return (
             "no_legal_shoot",
-            "可见目标不满足射程、弹药、冷却、武器或目标类型条件",
+            "当前无合法射击组合；请检查武器锁定/展开、弹药、冷却、观察及目标类型条件",
         )
     if operation == "GUIDED_FIRE":
         return (

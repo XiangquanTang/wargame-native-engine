@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from wargame_native_engine.analysis.jsonl import analysis_sidecar_from_jsonl
 from wargame_native_engine.analysis.models import (
@@ -44,6 +44,10 @@ from wargame_native_engine.viewer.recorded_visibility import (
     validate_recorded_visibility,
     published_contact_identities,
 )
+
+
+if TYPE_CHECKING:
+    from wargame_native_engine.viewer.compact_view import CompactReplayView
 
 
 REPLAY_ARCHIVE_NAME = "replay.zip"
@@ -210,8 +214,8 @@ def load_replay_view(
     native_scenario_map: str | Path | None = None,
     map_coordinate_system: str | None = None,
     scenario_config: str | Path | None = None,
-) -> ReplayView:
-    """Load and strictly align a replay ZIP with its external analysis JSONL."""
+) -> ReplayView | CompactReplayView:
+    """Load compact playback, or strictly align legacy ZIP/analysis evidence."""
 
     if native_scenario_map is not None and any(
         value is not None
@@ -226,6 +230,19 @@ def load_replay_view(
     analysis_path = root / ANALYSIS_SIDECAR_NAME
     if not replay_path.is_file():
         raise ReplayViewerLoadError(f"missing replay archive: {replay_path}")
+    # The compact codec has its own lossless, indexed reader. Keep the legacy
+    # archive/analysis alignment path below unchanged for historical recordings.
+    from wargame_native_engine.replay.compact import is_compact_replay
+    try:
+        compact = is_compact_replay(replay_path)
+    except Exception as exc:
+        raise ReplayViewerLoadError(f"failed to load replay archive: {exc}") from exc
+    if compact:
+        from wargame_native_engine.viewer.compact_view import load_compact_replay_view
+        return load_compact_replay_view(
+            root, map_config=map_config, native_scenario_map=native_scenario_map,
+            map_coordinate_system=map_coordinate_system, scenario_config=scenario_config,
+        )
     if not analysis_path.is_file():
         raise ReplayViewerLoadError(f"missing analysis sidecar: {analysis_path}")
 
@@ -569,6 +586,8 @@ def _frame_record(
         _viewer_unit(unit, "passenger", _SOURCE_MAPPINGS)
         for unit in frame.passengers
     ]
+    from wargame_native_engine.viewer.transport_positions import attach_mounted_positions
+    attach_mounted_positions(units, [unit.raw for unit in frame.all_units])
     return {
         "frame_index": frame_index,
         "frame_name": frame_name,
@@ -599,6 +618,11 @@ def _viewer_unit(
     extra = unit.raw.get("extra")
     native = extra.get("native", {}) if isinstance(extra, Mapping) else {}
     native = native if isinstance(native, Mapping) else {}
+    movement_projection = native.get("movement_projection")
+    movement_unknown = (unit.raw.get("move_state", 0) is None
+                        and isinstance(movement_projection, Mapping)
+                        and movement_projection.get("schema_version") == "native-source-movement-export/1.0"
+                        and movement_projection.get("status") == "UNMAPPED")
     move_path = unit.raw.get("move_path")
     movement_target_hex = (
         move_path[0]
@@ -630,7 +654,7 @@ def _viewer_unit(
         "weapon_locked": native.get("weapon_locked") if type(native.get("weapon_locked")) is bool else None,
         "locked_weapon_id": native.get("locked_weapon_id") if type(native.get("locked_weapon_id")) is int else None,
         "stopped": unit.stopped,
-        "marching": unit.marching,
+        "marching": None if movement_unknown else unit.marching,
         "suppressed": unit.suppressed,
         "move_state": json_clone(unit.raw.get("move_state")),
         "direction": json_clone(unit.raw.get("direction")),

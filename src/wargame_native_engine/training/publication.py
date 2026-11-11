@@ -156,6 +156,7 @@ def publish_training_episode(
             staging_episode,
             truncated=truncated,
             overwrite=False,
+            replay_mode="legacy-debug",
         )
         phase = "transitions"
         transition_path = write_decision_transitions_jsonl(

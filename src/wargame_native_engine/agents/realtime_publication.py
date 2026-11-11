@@ -23,6 +23,7 @@ from wargame_native_engine.io.importers.source_replay_archive import (
     SourceReplayArchiveReader,
 )
 from wargame_native_engine.io.replay import replay_source_archive
+from wargame_native_engine.replay.compact import CompactReplayReader, COMPACT_FORMAT
 from wargame_native_engine.io.serialization import file_sha256
 from wargame_native_engine.operations.facade import MatchHandle
 from wargame_native_engine.training.publication import (
@@ -56,9 +57,9 @@ class RealtimeEpisodePublicationError(RuntimeError):
 class RealtimeEpisodePublication:
     output_dir: Path
     replay_path: Path
-    analysis_path: Path
-    command_path: Path
-    tick_path: Path
+    analysis_path: Path | None
+    command_path: Path | None
+    tick_path: Path | None
     summary_path: Path
     control_audit_path: Path | None
     run_namespace: str
@@ -145,28 +146,46 @@ def publish_realtime_episode(
         final_view = match.gateway.view(
             match.session_id, match.red_controller_id
         )
+        _verify_commands(events, episode_id=episode)
+        # Successful admissions have their actual Native action/result in frames.
+        # Preserve non-applied requests too, without the duplicate timing/version audit.
+        command_outcomes = []
+        for event in events:
+            if event.status is CommandStatus.APPLIED:
+                continue
+            source = event.to_record()
+            command_outcomes.append({key: source[key] for key in (
+                "command_sequence", "seat", "status", "error_code", "decision", "target_tick")})
         facts = match.publish(
             staging_episode, truncated=truncated, overwrite=False,
+            command_outcomes=command_outcomes,
         )
+        compact = facts.replay_format == COMPACT_FORMAT
         phase = "command_jsonl"
         command_path = staging_episode / SEAT_COMMANDS_NAME
-        _write_bytes(command_path, seat_commands_to_jsonl(events).encode("utf-8"))
+        if not compact:
+            _write_bytes(command_path, seat_commands_to_jsonl(events).encode("utf-8"))
         phase = "tick_jsonl"
         tick_path = staging_episode / REALTIME_TICKS_NAME
-        _write_bytes(tick_path, realtime_ticks_to_jsonl(ticks).encode("utf-8"))
+        if not compact:
+            _write_bytes(tick_path, realtime_ticks_to_jsonl(ticks).encode("utf-8"))
         phase = "replay_verification"
-        archive = SourceReplayArchiveReader(facts.replay_path)
-        replay = replay_source_archive(
-            match.bundle.scenario,
-            facts.replay_path,
-            strict=True,
-            map_runtime_data=match.bundle.map_runtime_data,
-        )
-        if not replay.matches:
-            raise ValueError("strict replay final state hash mismatch")
-        phase = "analysis"
-        _verify_offline_analysis(facts.replay_path, facts.analysis_path)
-        _verify_analysis_alignment(archive, facts.analysis_path)
+        compact = facts.replay_format == COMPACT_FORMAT
+        if compact:
+            archive = CompactReplayReader(facts.replay_path)
+            if sum(1 for _ in archive.iter_records()) != archive.frame_count:
+                raise ValueError("compact replay reconstruction count mismatch")
+        else:
+            archive = SourceReplayArchiveReader(facts.replay_path)
+            replay = replay_source_archive(
+                match.bundle.scenario, facts.replay_path, strict=True,
+                map_runtime_data=match.bundle.map_runtime_data,
+            )
+            if not replay.matches:
+                raise ValueError("strict replay final state hash mismatch")
+            phase = "analysis"
+            _verify_offline_analysis(facts.replay_path, facts.analysis_path)
+            _verify_analysis_alignment(archive, facts.analysis_path)
         phase = "integrity"
         _verify_commands(events, episode_id=episode)
         _verify_ticks(
@@ -176,8 +195,9 @@ def publish_realtime_episode(
             fact_frame_count=archive.frame_count,
             step_count=int(archive.manifest["step_count"]),
         )
-        _verify_exact_jsonl(command_path, seat_commands_to_jsonl(events))
-        _verify_exact_jsonl(tick_path, realtime_ticks_to_jsonl(ticks))
+        if not compact:
+            _verify_exact_jsonl(command_path, seat_commands_to_jsonl(events))
+            _verify_exact_jsonl(tick_path, realtime_ticks_to_jsonl(ticks))
         terminal = _manifest_bool(archive.manifest, "termination")
         published_truncated = _manifest_bool(archive.manifest, "truncated")
         if terminal != final_view.terminated:
@@ -185,7 +205,8 @@ def publish_realtime_episode(
         if published_truncated != truncated:
             raise ValueError("realtime truncated status does not match request")
         winner = archive.manifest.get("winner")
-        final_hash = _manifest_text(archive.manifest, "final_state_hash")
+        final_hash = (match.gateway.manager.native_result(match.session_id).world_hash
+                      if compact else _manifest_text(archive.manifest, "final_state_hash"))
         counts = _command_counts(events)
         summary: dict[str, Any] = {
             "summary_schema": REALTIME_SUMMARY_SCHEMA,
@@ -208,12 +229,20 @@ def publish_realtime_episode(
             "outcome": final_view.outcome,
             "final_state_hash": final_hash,
             "replay_sha256": file_sha256(facts.replay_path),
-            "analysis_sha256": file_sha256(facts.analysis_path),
-            "commands_sha256": file_sha256(command_path),
-            "ticks_sha256": file_sha256(tick_path),
-            "strict_replay_match": True,
-            "online_offline_analysis_match": True,
+            "analysis_sha256": None if facts.analysis_path is None else file_sha256(facts.analysis_path),
+            "commands_sha256": None if compact else file_sha256(command_path),
+            "ticks_sha256": None if compact else file_sha256(tick_path),
+            "strict_replay_match": None if compact else True,
+            "online_offline_analysis_match": None if compact else True,
+            "replay_format": facts.replay_format,
+            "replay_mode": "compact" if compact else "legacy-debug",
+            "compact_roundtrip_verified": True if compact else None,
         }
+        if compact:
+            # One package hash sidecar; do not recreate the debug hash inventory.
+            for key in tuple(summary):
+                if key.endswith("_hash") or key.endswith("_sha256"):
+                    del summary[key]
         phase = "summary"
         summary_path = staging_episode / REALTIME_SUMMARY_NAME
         _write_summary(summary_path, summary)
@@ -224,9 +253,9 @@ def publish_realtime_episode(
         return RealtimeEpisodePublication(
             target,
             target / "replay.zip",
-            target / "frame_analysis.native.jsonl",
-            target / SEAT_COMMANDS_NAME,
-            target / REALTIME_TICKS_NAME,
+            None if compact else target / "frame_analysis.native.jsonl",
+            None if compact else target / SEAT_COMMANDS_NAME,
+            None if compact else target / REALTIME_TICKS_NAME,
             target / REALTIME_SUMMARY_NAME,
             (
                 target / "control_audit.native.jsonl"

@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import math
 from pathlib import Path
 import sys
 from uuid import uuid4
@@ -114,12 +113,10 @@ def main(argv=None):
         launch_options = launcher_parser.parse_args([
             "--output-dir", "managed-output", "--run-namespace", "managed-run", *extra,
         ])
-        if not 1 <= launch_options.port <= 65535:
-            parser.error("--port must be in 1..65535")
-        if launch_options.tick_interval_ms <= 0 or launch_options.max_catch_up_ticks_per_batch <= 0:
-            parser.error("tick interval and catch-up batch size must be positive")
-        if not math.isfinite(launch_options.shutdown_timeout_seconds) or launch_options.shutdown_timeout_seconds <= 0:
-            parser.error("shutdown timeout must be positive")
+        try:
+            run_realtime_dual_control.validate_launch_options(launch_options)
+        except ValueError as exc:
+            parser.error(str(exc))
         from wargame_native_engine.data.scenario_workspace import prepare_source_game
         report = prepare_source_game(args.input, args.scenario_input, args.workspace,
                                      coordinate_system=args.coordinate_system,

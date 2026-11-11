@@ -73,17 +73,21 @@ class LiveAnalyzedSession:
         analyzer: ReplayAnalyzer | None = None,
         retain_update_timeline: bool = True,
         retain_frame_analyses: bool = True,
+        retain_history: bool = True,
     ) -> None:
         if not isinstance(environment, SourceCompatibleEnvironment):
             raise TypeError("environment must be a SourceCompatibleEnvironment")
         self.environment = environment
         self.analyzer = analyzer if analyzer is not None else EightFactorAnalyzer()
+        self._retain_history = bool(retain_history)
+        if not self._retain_history and retain_update_timeline:
+            raise ValueError("full timeline requires retained analysis history")
         self._retain_update_timeline = bool(retain_update_timeline)
         self._retain_frame_analyses = bool(retain_frame_analyses)
         self._frame_analyses: list[FrameAnalysis] = []
         self._analysis_history = (
             None
-            if self._retain_frame_analyses
+            if self._retain_frame_analyses or not self._retain_history
             else tempfile.TemporaryFile(
                 mode="w+b", prefix="wargame-live-analysis."
             )
@@ -194,6 +198,8 @@ class LiveAnalyzedSession:
     @property
     def frame_analyses(self) -> tuple[FrameAnalysis, ...]:
         self._require_synchronized()
+        if not self._retain_history:
+            raise RuntimeError("full analysis history not retained in compact mode")
         if self._retain_frame_analyses:
             return deepcopy(tuple(self._frame_analyses))
         return tuple(
@@ -207,6 +213,10 @@ class LiveAnalyzedSession:
         self._require_synchronized()
         if type(frame_index) is not int or not 0 <= frame_index < self._frame_count:
             raise IndexError("analysis frame index out of range")
+        if not self._retain_history:
+            if self._frame_analyses and self._frame_analyses[-1].provenance.frame_index == frame_index:
+                return deepcopy(self._frame_analyses[-1])
+            raise IndexError("analysis history not retained")
         value = (
             self._frame_analyses[frame_index]
             if self._retain_frame_analyses
@@ -289,7 +299,9 @@ class LiveAnalyzedSession:
             if self._retain_update_timeline
             else None
         )
-        if self._retain_frame_analyses:
+        if not self._retain_history:
+            self._frame_analyses[:] = [frame_analysis]
+        elif self._retain_frame_analyses:
             self._frame_analyses.append(frame_analysis)
         else:
             self._store_frame_analysis(frame_analysis)

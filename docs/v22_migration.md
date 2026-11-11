@@ -1,6 +1,8 @@
 # 从 v21 到 v22
 
-v22 的软件版本为 0.4.22，裁决语义保持 `native-joint-prestate/1.10`。
+v22 初版的软件版本为 0.4.22，裁决语义保持 `native-joint-prestate/1.10`。
+当前锁定过渡射击补丁为 0.4.22.1 / `native-joint-prestate/1.11`，新增变化见
+[补丁迁移说明](locked_transition_fire_v22.md)。下文记录 v22 初版整理。
 此轮目标是清晰交付结构与启动日志，不重写游戏规则、武器数据或模型动作协议。
 
 ## 推荐使用独立目录

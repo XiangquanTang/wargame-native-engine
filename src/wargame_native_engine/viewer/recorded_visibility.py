@@ -15,19 +15,20 @@ from pathlib import Path
 from typing import Any
 
 from wargame_native_engine.compat.source_frame.contract import (
-    ANALYSIS_SOURCE_CONTRACT, CURRENT_SOURCE_CONTRACT, SOURCE_CONTRACT_KEY,
+    ANALYSIS_SOURCE_CONTRACT, CURRENT_SOURCE_CONTRACT, SOURCE_ACTION_CONTRACT, SOURCE_CONTRACT_KEY,
 )
 from wargame_native_engine.compat.source_frame.mapping import SourceMappings
 from wargame_native_engine.compat.source_frame.models import SourceFrame
 from wargame_native_engine.core.observation import (
     ObservedEnemyOperatorObservation, side_safe_enemy_observation,
+    CONTACT_IDENTITY_SCHEMA_VERSION, CONTACT_IDENTITY_FIELDS, contact_display_name,
 )
 from wargame_native_engine.io.importers.source_replay_archive import SourceReplayArchive
 from wargame_native_engine.io.scenario import NativeScenario
 from wargame_native_engine.io.serialization import json_clone
 from wargame_native_engine.movement.policy import load_source_movement_policy
 from wargame_native_engine.observations.perspective import Perspective, PerspectiveProjector
-from wargame_native_engine.rules.perspective import load_perspective_policy
+from wargame_native_engine.rules.perspective import load_perspective_policy, recorded_perspective_policy
 
 
 class ReplayPerspectiveUnavailable(ValueError):
@@ -42,6 +43,7 @@ _PUBLICATION_IDENTITY_SEMANTICS = frozenset({
     "native-joint-prestate/1.8",
     "native-joint-prestate/1.9",
     "native-joint-prestate/1.10",
+    "native-joint-prestate/1.11",
 })
 
 
@@ -66,22 +68,39 @@ def validate_recorded_visibility(
     extra = frame.raw.get("extra")
     native = extra.get("native") if isinstance(extra, Mapping) else None
     contract = manifest.get(SOURCE_CONTRACT_KEY, manifest.get("frame_contract"))
-    if (manifest.get("replay_format") != "native-source-frame-replay/1.0"
+    if (manifest.get("replay_format") not in {"native-source-frame-replay/1.0",
+                                              "native-source-compact-replay/1.0"}
             or manifest.get("perspective") != "GREEN"
-            or contract not in {CURRENT_SOURCE_CONTRACT, ANALYSIS_SOURCE_CONTRACT}
+            or contract not in {CURRENT_SOURCE_CONTRACT, ANALYSIS_SOURCE_CONTRACT, SOURCE_ACTION_CONTRACT}
             or not isinstance(native, Mapping)
             or native.get(SOURCE_CONTRACT_KEY) != contract
             or native.get("perspective") != "GREEN"
             or native.get("protocol_version") != "source-compatible-environment/1.0"):
         raise ReplayPerspectiveUnavailable(
-            "阵营视角不可用：录像缺少可验证的 Native Source 1.1/1.2 可见记录。"
+            "阵营视角不可用：录像缺少可验证的 Native Source 1.1/1.2/1.3 可见记录。"
         )
     identity, _, _ = _authority()
-    if any(manifest.get(key) != value or native.get(key) != value
-           for key, value in identity.items()):
+    try:
+        recorded_policy = recorded_perspective_policy(manifest)
+    except ValueError as exc:
+        raise ReplayPerspectiveUnavailable("阵营视角不可用：录像视角策略无法确认。") from exc
+    identity = {**identity, **recorded_policy.to_provenance()}
+    compact = manifest.get("replay_format") == "native-source-compact-replay/1.0"
+    projection = manifest.get("native_frame_projection")
+    header_authority = compact and projection == "native-source-playback-projection/1.0"
+    if (compact and projection is not None and not header_authority
+            or header_authority and manifest.get("frame_contract", contract) != contract
+            or any(manifest.get(key) != value for key, value in identity.items())
+            or any((key in native and native[key] != value) if header_authority
+                   else native.get(key) != value for key, value in identity.items())):
         raise ReplayPerspectiveUnavailable(
             "阵营视角不可用：录像的 Source 观测规则或视角策略无法确认。"
         )
+    # A marked Native compact recording stores policy identity once in its
+    # header. Current-frame contract, perspective, protocol and visibility IDs
+    # remain required above/below; absent copies are not regenerated. Any
+    # contradictory copy still fails closed. Generic raw compact and legacy
+    # recordings retain the historical requirement to match both locations.
     color = 0 if perspective == "RED" else 1
     by_id = {unit.obj_id: unit for unit in frame.all_units}
     visible: set[int] = set()
@@ -145,17 +164,41 @@ def published_contact_identities(
             or not report.get("final_state_hash")
             or report.get("final_state_hash") != manifest.get("final_state_hash")):
         return {}
+    return scenario_contact_identities(scenario)
+
+
+def scenario_contact_identities(scenario: NativeScenario) -> dict[int, dict[str, Any]]:
+    """Private static lookup, consumed only after current visibility validation."""
     result = {}
     for state in scenario.operators:
         observed = side_safe_enemy_observation(state)
-        # Retain public classification only, not scenario positions or roster in
-        # a public endpoint. New/mismatching runtime IDs remain generic contacts.
-        result[state.operator_id] = {
-            key: getattr(observed, key)
-            for key in ("side", "operator_type", "subtype", "source_type_code",
-                        "source_subtype_code", "canonical_identity", "canonical_status", "domain")
-        }
+        result[state.operator_id] = {key: getattr(observed, key) for key in CONTACT_IDENTITY_FIELDS}
     return result
+
+
+def _current_contact_identity(unit, manifest, side):
+    """Read the new explicit identity record, not GREEN template classifications."""
+    if recorded_perspective_policy(manifest).policy_version != "1.2.0":
+        return None
+    extra = unit.raw.get("extra")
+    native = extra.get("native") if isinstance(extra, Mapping) else None
+    record = native.get("contact_identity") if isinstance(native, Mapping) else None
+    if not isinstance(record, Mapping):
+        return {}
+    if (set(record) != {"schema_version", *CONTACT_IDENTITY_FIELDS}
+            or record.get("schema_version") != CONTACT_IDENTITY_SCHEMA_VERSION
+            or record.get("side") != side
+            or any(record.get(key) is not None and (type(record[key]) is not int or record[key] < 0)
+                   for key in ("source_type_code", "source_subtype_code"))
+            or any(not isinstance(record.get(key), str) or not record[key]
+                   for key in ("operator_type", "domain"))
+            or any(record.get(key) is not None and not isinstance(record[key], str)
+                   for key in ("subtype", "canonical_identity"))
+            or record.get("canonical_status") not in ("KNOWN", "UNKNOWN")
+            or (record.get("display_name") is not None
+                and contact_display_name(record["display_name"]) != record["display_name"])):
+        return {}
+    return {key: record[key] for key in CONTACT_IDENTITY_FIELDS}
 
 
 def recorded_side_frame(
@@ -191,17 +234,29 @@ def recorded_side_frame(
             display["carrier_id"] = raw.get("car")
             display["launcher_id"] = raw.get("launcher")
             units.append(display)
+    from wargame_native_engine.viewer.transport_positions import attach_mounted_positions
+    attach_mounted_positions(units, operators + passengers, perspective=perspective)
     by_id = {unit.obj_id: unit for unit in frame.all_units}
     for identifier in sorted(visible):
         unit = by_id[identifier]
-        # GREEN template type/name need not equal the live Native contact's
-        # identity. Their presence is not observation evidence: generic contact
-        # symbols are deliberate, not a reason to backfill private identity.
+        # Classification never comes from arbitrary GREEN template/raw state.
+        # New archives carry current explicit evidence; old archives may use an
+        # independently bound static scenario, clearly labelled as derived.
         row, column = unit.row_col
         side = "blue" if color == 0 else "red"
-        identity = (identities or {}).get(identifier)
-        if identity is None or identity.get("side") != side:
+        identity = _current_contact_identity(unit, manifest, side)
+        identity_source = "RECORDED_CONTACT_IDENTITY"
+        if identity is None:
+            identity = (identities or {}).get(identifier)
+            identity_source = "SCENARIO_DERIVED_IDENTITY"
+        if (identity and identity.get("identity_verification") == "HASH_BOUND_EMBEDDED_SCENARIO"
+                and (unit.type_code != identity.get("source_type_code")
+                     or unit.sub_type_code != identity.get("source_subtype_code"))):
+            # A static asset cannot override contradictory current recorded codes.
             identity = {}
+        if not identity or identity.get("side") != side:
+            identity = {}
+            identity_source = "UNKNOWN"
         observed = ObservedEnemyOperatorObservation(
             operator_id=identifier, side=side,
             operator_type=identity.get("operator_type", "UNKNOWN"), subtype=identity.get("subtype"),
@@ -210,15 +265,17 @@ def recorded_side_frame(
             canonical_identity=identity.get("canonical_identity"),
             canonical_status=identity.get("canonical_status", "UNKNOWN"),
             domain=identity.get("domain", "UNKNOWN"),
+            display_name=identity.get("display_name"),
             position=(float(column), float(row)), altitude=unit.altitude,
             alive=True, destroyed=False, motion_state="UNKNOWN",
         )
         raw = projector._visible_enemy(observed, Perspective[perspective])
         raw["extra"]["observation"]["mapping_status"] = "DERIVED_FROM_RECORDED_VISIBILITY"
-        identity_source = "SCENARIO_DERIVED_IDENTITY" if identity else "UNKNOWN"
         raw["extra"]["observation"]["identity_source"] = identity_source
         if identity:
-            raw["extra"]["observation"]["identity_verification"] = "PUBLICATION_REPORTED_STRICT_REPLAY_MATCH"
+            raw["extra"]["observation"]["identity_verification"] = (
+                "CURRENT_FRAME_IDENTITY_RECORD" if identity_source == "RECORDED_CONTACT_IDENTITY"
+                else identity.get("identity_verification", "PUBLICATION_REPORTED_STRICT_REPLAY_MATCH"))
         operators.append(raw)
         # Start with unknowns rather than trimming a GREEN display record.
         units.append({

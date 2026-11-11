@@ -26,6 +26,29 @@ def weapon_posture_failure(
     return None
 
 
+def weapon_transition_failure(
+    *, transitioning: bool, transition_kind: str | None,
+    ordinary_direct: bool, locked: bool, locked_weapon_id: int | None,
+    weapon_id: int | str,
+) -> str | None:
+    """A completed matching lock survives movement/posture transitions.
+
+    Starting LOCK reserves an ID but is not a ready lock. Also fail closed for
+    inconsistent snapshots claiming a lock during LOCK/UNFOLD. This exemption
+    does not alter guided/indirect readiness, resources, or aircraft hovering.
+    """
+    if not transitioning:
+        return None
+    completed_lock = (
+        locked and type(locked_weapon_id) is int and locked_weapon_id >= 0
+        and locked_weapon_id == weapon_id
+        and transition_kind not in {"WEAPON_LOCK", "WEAPON_UNFOLD"}
+    )
+    if ordinary_direct and completed_lock:
+        return None
+    return "ATTACKER_TRANSITIONING"
+
+
 def weapon_binding_failure(*, weapon_id: int, locked: bool,
                            locked_weapon_id: int | None) -> str | None:
     """Legacy boolean-only locks fail closed; never infer a carried weapon."""

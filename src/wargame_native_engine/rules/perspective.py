@@ -82,12 +82,16 @@ class PerspectivePolicy:
 
 
 @lru_cache(maxsize=4)
-def load_perspective_policy(path: str | Path | None = None) -> PerspectivePolicy:
+def load_perspective_policy(path: str | Path | None = None, *,
+                            version: str | None = None) -> PerspectivePolicy:
+    if version not in {None, "1.1.0", "1.2.0"}:
+        raise ValueError("unsupported perspective policy version")
     source = (
         Path(path)
         if path is not None
         else Path(__file__).resolve().parents[3]
-        / "config/source_compat/source_perspective_policy_v1.json"
+        / ("config/source_compat/source_perspective_policy_legacy_1_1.json"
+           if version == "1.1.0" else "config/source_compat/source_perspective_policy_v1.json")
     )
     value = json.loads(source.read_text(encoding="utf-8"))
     if not isinstance(value, Mapping):
@@ -133,8 +137,20 @@ def load_perspective_policy(path: str | Path | None = None) -> PerspectivePolicy
         raise ValueError("unsafe visible enemy field policy")
     if value["own_integrity_visibility"] != "GREEN_ONLY":
         raise ValueError("unsafe own integrity visibility")
+    if version is not None and value["policy_version"] != version:
+        raise ValueError("perspective policy version mismatch")
     document = json_clone(value)
     return PerspectivePolicy(document, canonical_hash(document))
+
+
+def recorded_perspective_policy(metadata: Mapping[str, Any]) -> PerspectivePolicy:
+    """Resolve only an exact known historical policy tuple, never just a name."""
+    if type(metadata.get("perspective_policy_version")) is not str:
+        raise ValueError("invalid recorded perspective policy version")
+    policy = load_perspective_policy(version=metadata.get("perspective_policy_version"))
+    if any(metadata.get(key) != value for key, value in policy.to_provenance().items()):
+        raise ValueError("unrecognized recorded perspective policy")
+    return policy
 
 
 __all__ = [

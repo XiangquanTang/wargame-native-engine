@@ -1,0 +1,14 @@
+{
+  "schema": "native-release-assets/1.0",
+  "release": "0.4.24.1-self-contained-20261102",
+  "assets": [
+    {"path": "release_assets/maps/221/map_221.zip", "kind": "map_archive", "included": true, "required_for_221_workflows": true, "sha256": "b0d9b341e1bedaee911125b7d069268b7e107f9da24817460698601488962258"},
+    {"path": "release_assets/maps/123/map_123.zip", "kind": "map_archive", "included": true, "required_for_221_workflows": false, "sha256": "834546dfb6051eb09435b31b160216544adff06e3a64294e8cf394db4dfb18e2"},
+    {"path": "release_assets/scenarios/221/2201010101.json", "kind": "source_scenario", "included": false, "required_for_221_workflows": true, "sha256": null, "copy_from_project_relative_path": "local_data/maps/inbox/2201010101.json"},
+    {"path": "release_assets/models/ppo/capture-v3-final.pt", "kind": "ppo_checkpoint", "included": false, "required_for_221_workflows": true, "sha256": "9f96c4d769a65f24ef9de10f5dd36fefaad09feb6ac64ef4e13466f90a9cde6d", "copy_from_project_relative_path": "local_data/rl/capture-v3-221-20261101-152137-42733/final.pt"}
+  ],
+  "map123_native_runtime": "examples/map123",
+  "map123_native_scenario": "examples/map123/scenario.json",
+  "rules_controller": {"kind": "source_code", "path": "src/wargame_native_engine/training/minimal_teacher.py", "learned_weight_file": null},
+  "external_model_weights_included": false
+}

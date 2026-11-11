@@ -184,9 +184,10 @@ final world under the same authoritative semantics. `replay_verification_status`
 distinguishes `not_run`, `matched`, `mismatched`, and verifier `error`; a false flag
 alone must not be interpreted as proof of nondeterminism. Infrastructure errors
 are retained in `errors`, even when a policy failure was the original stop cause.
-The current adjudication semantics are `/1.3`, including ordinary direct-fire
-out-of-range zero-effect attempts. Do not compare these action spaces blindly
-with historical `/1.2` runs.
+The current adjudication semantics are `native-joint-prestate/1.11`, as declared
+in `src/wargame_native_engine/version.py`. Ordinary direct-fire out-of-range
+zero-effect attempts were introduced under historical `/1.3`. Do not compare
+action spaces across semantics versions blindly, including historical `/1.2` runs.
 
 `semantic_fingerprint` includes manifest, policy/build identity and semantic
 trajectory evidence, but excludes latency, private filesystem paths, random

@@ -74,6 +74,7 @@ from wargame_native_engine.core.boarding_runtime import (
     SourceBoardingIntent,
     advance_source_boarding_transitions,
     sync_mounted_passenger_positions,
+    MOUNTED_POSITION_POLICY, MOUNTED_POSITION_POLICIES,
     apply_source_boarding_intents,
 )
 from wargame_native_engine.core.concealment import (
@@ -301,10 +302,10 @@ class NativeEngine:
                  map_runtime_data: "MapRuntimeData | None" = None,
                  path_planner: PathPlanner | None = None,
                  enable_boarding_type_assignments: bool = True,
-                 mounted_position_policy: str | None = None,
+                 mounted_position_policy: str | None = MOUNTED_POSITION_POLICY,
                  objective_capture_policy: str | Mapping[str, Any] | None = None
                  ) -> None:
-        if mounted_position_policy not in {None, "native-mounted-position-sync/1.0"}:
+        if mounted_position_policy not in MOUNTED_POSITION_POLICIES:
             raise ValueError("unknown mounted position policy")
         self.mounted_position_policy = mounted_position_policy
         self.scenario = scenario
@@ -466,6 +467,8 @@ class NativeEngine:
         self._rng = NativeRNG(self._seed)
         self._world = self.scenario.initial_world()
         self._validate_boarding_snapshot(self._world)
+        if self.mounted_position_policy == MOUNTED_POSITION_POLICY:
+            sync_mounted_passenger_positions(self._world, include_progress=True)
         self._validate_operator_lifecycle_snapshot(self._world)
         self._validate_loitering_attack_snapshot(self._world)
         self._world.elapsed_time_ms = self._world.tick * 1000
@@ -3529,7 +3532,7 @@ class NativeEngine:
         if friendly is None or friendly.get("side") != side:
             raise RegionVisibilityQueryError("actor_not_owned", "actor is not controlled by side")
         source = _record_by_id(source_frame.get("operators"), actor_id, "obj_id")
-        if source is None or source.get("owner") != side:
+        if source is None or not _source_record_has_side(source, side):
             raise RegionVisibilityQueryError("actor_not_owned", "projection lacks own actor evidence")
         template = next((value for value in self.scenario.operators
                          if value.operator_id == actor_id and value.side == side), None)
@@ -3667,12 +3670,12 @@ class NativeEngine:
         source_operator = _record_by_id(
             source_frame.get("operators"), unit_id, "obj_id"
         )
-        if source_operator is None or source_operator.get("owner") != side:
+        if source_operator is None or not _source_record_has_side(source_operator, side):
             raise ValueError("side projection lacks controlled unit evidence")
 
         template = next(
             (value for value in self.scenario.operators
-             if value.operator_id == unit_id),
+             if value.operator_id == unit_id and value.side == side),
             None,
         )
         if template is None:
@@ -3721,7 +3724,8 @@ class NativeEngine:
             target_id = _exact_nonnegative_record_int(
                 value.get("obj_id"), "target_id"
             )
-            if value.get("owner") != side and target_id in visible_ids:
+            if (_source_record_has_side(value, "blue" if side == "red" else "red")
+                    and target_id in visible_ids):
                 source_visible[target_id] = value
         fire_targets = []
         for value in valid_actions:
@@ -4272,7 +4276,9 @@ class NativeEngine:
         self._advance_source_operator_time(delta_time_ms, events)
         self._advance_source_boarding_transitions(delta_time_ms, events)
         if self.mounted_position_policy is not None:
-            sync_mounted_passenger_positions(world)
+            sync_mounted_passenger_positions(
+                world, include_progress=self.mounted_position_policy == MOUNTED_POSITION_POLICY,
+            )
         active_delta_by_mission = (
             self._indirect_fire_service.advance_to_resolution(
                 world, delta_time_ms,
@@ -4513,7 +4519,7 @@ class NativeEngine:
                                  action_sequence: int, action_id: str,
                                  events: list[EngineEvent], *,
                                  weapon_id: int | None = None) -> str | None:
-        if kind == "WEAPON_LOCK" and operator.command_lost:
+        if operator.command_lost:
             return "ACTOR_CONTROL_LOST"
         if not operator.stopped or operator.moving or operator.move_to_stop_remaining_ms > 0:
             return "ACTOR_MUST_BE_STOPPED"
@@ -6503,7 +6509,8 @@ class NativeEngine:
                                               parameters={"weapon_id": weapon_id})
                         values.append(ValidAction(action, ACTION_PRIORITY[action.action_type],
                                                   "source_action_router"))
-                if (not operator.weapon_unfolded and not operator.weapon_locked
+                if (not operator.command_lost
+                        and not operator.weapon_unfolded and not operator.weapon_locked
                         and operator.locked_weapon_id is None):
                     action = EngineAction(side, operator.operator_id,
                                           ActionType.WEAPON_UNFOLD)
@@ -6820,6 +6827,18 @@ def _record_sequence(value: Any, field: str) -> tuple[Mapping[str, Any], ...]:
     return tuple(value)
 
 
+def _source_record_has_side(value: Mapping[str, Any], side: str) -> bool:
+    """Check canonical Source allegiance, never its optional owner relation.
+
+    Imported Source scenarios identify RED/BLUE with exact integer color 0/1.
+    The exporter refreshes this field from canonical side state. ``owner`` is
+    optional source metadata (including object IDs), not a side authority.
+    Callers must also require matching OWN observation and scenario evidence.
+    """
+    color = value.get("color")
+    return type(color) is int and color == {"red": 0, "blue": 1}.get(side)
+
+
 def _record_by_id(
     value: Any,
     expected_id: int,
@@ -6829,6 +6848,8 @@ def _record_by_id(
         item for item in _record_sequence(value, id_field)
         if item.get(id_field) == expected_id
     )
+    if any(type(item.get(id_field)) is not int for item in matches):
+        raise ValueError(f"{id_field} must be an exact int")
     if len(matches) > 1:
         raise ValueError(f"duplicate {id_field}: {expected_id}")
     return None if not matches else matches[0]

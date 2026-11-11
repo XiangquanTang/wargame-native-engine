@@ -1,0 +1,325 @@
+{
+  "source": "review-summary-v2/previous_audit/samples/frames; Map123; selected fields only",
+  "samples": [
+    {
+      "frame_index": 0,
+      "source_frame_sha256": "63895b743d3312e6c7a8f6431e883b92435e7320b6e557688a0fd643fb4e5b26",
+      "unit": {
+        "obj_id": 1,
+        "color": 1,
+        "value": 10,
+        "blood": 3,
+        "max_blood": 3,
+        "carry_weapon_ids": [
+          43,
+          36
+        ],
+        "weapon_cool_time": 0.0,
+        "weapon_unfold_state": 1,
+        "move_state": 0,
+        "stop": 1,
+        "on_board": false,
+        "see_enemy_bop_ids": [],
+        "close_combat": 0,
+        "extra": {
+          "native": {
+            "ammunition_projection": {
+              "missing_pools": [],
+              "source_input": {
+                "0": 30,
+                "100": 0,
+                "101": 0,
+                "102": 0
+              },
+              "source_input_semantics": "INITIAL_INPUT_NOT_CURRENT_STOCK",
+              "status": "UNKNOWN",
+              "unmapped_source_slots": [
+                "100",
+                "101",
+                "102"
+              ],
+              "unrepresented_pools": []
+            },
+            "fatigue_level": 0,
+            "weapon_inventory": {
+              "ammunition_pools": {
+                "0": 30,
+                "100": 0,
+                "101": 0,
+                "102": 0
+              },
+              "operator_id": 1,
+              "weapon_cooldown_remaining_ms": 0,
+              "weapons": [
+                {
+                  "ammunition": 30,
+                  "ammunition_cost": null,
+                  "ammunition_key": "0",
+                  "attack_modes": [
+                    "DIRECT"
+                  ],
+                  "resource_policy": "AMMUNITION_KEY",
+                  "shared_with_weapon_ids": [
+                    36,
+                    43
+                  ],
+                  "weapon_id": 43
+                },
+                {
+                  "ammunition": 30,
+                  "ammunition_cost": null,
+                  "ammunition_key": "0",
+                  "attack_modes": [
+                    "DIRECT"
+                  ],
+                  "resource_policy": "AMMUNITION_KEY",
+                  "shared_with_weapon_ids": [
+                    36,
+                    43
+                  ],
+                  "weapon_id": 36
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "frame_index": 703,
+      "source_frame_sha256": "401a91179fb13fd406ca4d3c24519abb6e10bc8dc2494664a030e78e59552e3d",
+      "unit": {
+        "obj_id": 75,
+        "color": 1,
+        "value": 7,
+        "blood": 3,
+        "max_blood": 3,
+        "carry_weapon_ids": [
+          43,
+          4,
+          54,
+          73
+        ],
+        "weapon_cool_time": 0.0,
+        "weapon_unfold_state": 1,
+        "move_state": 0,
+        "stop": 1,
+        "on_board": false,
+        "see_enemy_bop_ids": [
+          30,
+          32
+        ],
+        "close_combat": 0,
+        "extra": {
+          "native": {
+            "ammunition_projection": {
+              "missing_pools": [],
+              "source_input": {
+                "0": 40,
+                "100": 4,
+                "101": 0,
+                "102": 0
+              },
+              "source_input_semantics": "INITIAL_INPUT_NOT_CURRENT_STOCK",
+              "status": "UNKNOWN",
+              "unmapped_source_slots": [
+                "101",
+                "102"
+              ],
+              "unrepresented_pools": []
+            },
+            "fatigue_level": 0,
+            "movement_locked": false,
+            "weapon_inventory": {
+              "ammunition_pools": {
+                "0": 40,
+                "100": 4,
+                "101": 0,
+                "102": 0
+              },
+              "operator_id": 75,
+              "weapon_cooldown_remaining_ms": 0,
+              "weapons": [
+                {
+                  "ammunition": 40,
+                  "ammunition_cost": null,
+                  "ammunition_key": "0",
+                  "attack_modes": [
+                    "DIRECT"
+                  ],
+                  "resource_policy": "AMMUNITION_KEY",
+                  "shared_with_weapon_ids": [
+                    4,
+                    43,
+                    54
+                  ],
+                  "weapon_id": 43
+                },
+                {
+                  "ammunition": 40,
+                  "ammunition_cost": null,
+                  "ammunition_key": "0",
+                  "attack_modes": [
+                    "DIRECT"
+                  ],
+                  "resource_policy": "AMMUNITION_KEY",
+                  "shared_with_weapon_ids": [
+                    4,
+                    43,
+                    54
+                  ],
+                  "weapon_id": 4
+                },
+                {
+                  "ammunition": 40,
+                  "ammunition_cost": null,
+                  "ammunition_key": "0",
+                  "attack_modes": [
+                    "DIRECT"
+                  ],
+                  "resource_policy": "AMMUNITION_KEY",
+                  "shared_with_weapon_ids": [
+                    4,
+                    43,
+                    54
+                  ],
+                  "weapon_id": 54
+                },
+                {
+                  "ammunition": 4,
+                  "ammunition_cost": null,
+                  "ammunition_key": "100",
+                  "attack_modes": [
+                    "DIRECT",
+                    "GUIDED"
+                  ],
+                  "resource_policy": "AMMUNITION_KEY",
+                  "shared_with_weapon_ids": [],
+                  "weapon_id": 73
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "frame_index": 704,
+      "source_frame_sha256": "265f07cf5452fbe1d9988d2b8f28a834611256c22d388db2150b866badba23f8",
+      "unit": {
+        "obj_id": 75,
+        "color": 1,
+        "value": 7,
+        "blood": 3,
+        "max_blood": 3,
+        "carry_weapon_ids": [
+          43,
+          4,
+          54,
+          73
+        ],
+        "weapon_cool_time": 74.0,
+        "weapon_unfold_state": 1,
+        "move_state": 0,
+        "stop": 1,
+        "on_board": false,
+        "see_enemy_bop_ids": [
+          30,
+          32
+        ],
+        "close_combat": 0,
+        "extra": {
+          "native": {
+            "ammunition_projection": {
+              "missing_pools": [],
+              "source_input": {
+                "0": 40,
+                "100": 4,
+                "101": 0,
+                "102": 0
+              },
+              "source_input_semantics": "INITIAL_INPUT_NOT_CURRENT_STOCK",
+              "status": "UNKNOWN",
+              "unmapped_source_slots": [
+                "101",
+                "102"
+              ],
+              "unrepresented_pools": []
+            },
+            "fatigue_level": 0,
+            "movement_locked": false,
+            "weapon_inventory": {
+              "ammunition_pools": {
+                "0": 40,
+                "100": 3,
+                "101": 0,
+                "102": 0
+              },
+              "operator_id": 75,
+              "weapon_cooldown_remaining_ms": 74000,
+              "weapons": [
+                {
+                  "ammunition": 40,
+                  "ammunition_cost": null,
+                  "ammunition_key": "0",
+                  "attack_modes": [
+                    "DIRECT"
+                  ],
+                  "resource_policy": "AMMUNITION_KEY",
+                  "shared_with_weapon_ids": [
+                    4,
+                    43,
+                    54
+                  ],
+                  "weapon_id": 43
+                },
+                {
+                  "ammunition": 40,
+                  "ammunition_cost": null,
+                  "ammunition_key": "0",
+                  "attack_modes": [
+                    "DIRECT"
+                  ],
+                  "resource_policy": "AMMUNITION_KEY",
+                  "shared_with_weapon_ids": [
+                    4,
+                    43,
+                    54
+                  ],
+                  "weapon_id": 4
+                },
+                {
+                  "ammunition": 40,
+                  "ammunition_cost": null,
+                  "ammunition_key": "0",
+                  "attack_modes": [
+                    "DIRECT"
+                  ],
+                  "resource_policy": "AMMUNITION_KEY",
+                  "shared_with_weapon_ids": [
+                    4,
+                    43,
+                    54
+                  ],
+                  "weapon_id": 54
+                },
+                {
+                  "ammunition": 3,
+                  "ammunition_cost": null,
+                  "ammunition_key": "100",
+                  "attack_modes": [
+                    "DIRECT",
+                    "GUIDED"
+                  ],
+                  "resource_policy": "AMMUNITION_KEY",
+                  "shared_with_weapon_ids": [],
+                  "weapon_id": 73
+                }
+              ]
+            }
+          }
+        }
+      }
+    }
+  ]
+}

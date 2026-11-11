@@ -25,6 +25,7 @@ from wargame_native_engine.core.region_visibility import (
     RegionVisibilityQueryError,
     region_visibility_query_schema,
 )
+from wargame_native_engine.core.tactical_overlay import UnitTacticalOverlay
 from wargame_native_engine.agents.realtime import (
     RealtimeAgentSession,
     RealtimeSeatBinding,
@@ -195,6 +196,8 @@ class GameToolAdapter:
                 "game_region_visibility": self._region_visibility,
                 "game_weapon_catalog": self._weapon_catalog,
                 "game_fire_effect": self._fire_effect,
+                "game_visibility_range": self._visibility_range,
+                "game_attack_range": self._attack_range,
             }
             if not isinstance(name, str) or name not in handlers:
                 raise GameToolError("unknown_tool", "tool name is not allowlisted")
@@ -274,6 +277,68 @@ class GameToolAdapter:
         _keys(args, set())
         view, catalog = self._session.weapon_catalog_snapshot(self._binding)
         return {**self._identity(view), "catalog": catalog}
+
+    def _range_snapshot(self, args: dict) -> tuple[dict[str, Any], UnitTacticalOverlay]:
+        version = _integer(args["observation_version"], "observation_version")
+        actor = _integer(args["actor_id"], "actor_id")
+        view, controller, overlay = self._session.tactical_overlay_snapshot(
+            self._binding, observation_version=version, unit_id=actor,
+        )
+        # The same OWN source projection supplies the engine overlay's origin.
+        # Do not round an interpolated presentation position or inspect a live
+        # unit to recover a hex. The session/engine already validated ownership.
+        source = next(value for value in controller.source_frame["operators"]
+                      if type(value.get("obj_id")) is int and value["obj_id"] == actor)
+        origin = source["cur_hex"]
+        identity = {
+            **self._identity(view),
+            "overlay_schema": overlay.schema,
+            "coordinate_system": "oddr_column_row",
+            "hex_id_encoding": "row * 100 + column",
+            "actor": {
+                "actor_id": actor, "current_hex": origin,
+                "column": origin % 100, "row": origin // 100,
+            },
+        }
+        return identity, overlay
+
+    def _visibility_range(self, args: dict) -> dict:
+        _keys(args, {"observation_version", "actor_id"})
+        identity, overlay = self._range_snapshot(args)
+        return {
+            **identity,
+            "visibility_field": overlay.visibility_field.to_record(),
+            "target_assumptions": {
+                "alive": True, "deployed": True, "concealed": False,
+                "height_m": 0, "empty_fire_exposure_frames": 0,
+            },
+        }
+
+    def _attack_range(self, args: dict) -> dict:
+        _keys(args, {"observation_version", "actor_id", "weapon_id"})
+        weapon_id = _integer(args["weapon_id"], "weapon_id")
+        identity, overlay = self._range_snapshot(args)
+        weapon = next((value for value in overlay.weapon_envelope.weapons
+                       if value.weapon_id == weapon_id), None)
+        if weapon is None:
+            raise GameToolError(
+                "weapon_not_carried", "weapon is not carried by the selected actor",
+            )
+        return {
+            **identity,
+            "weapon_envelope": {
+                "semantics": overlay.weapon_envelope.semantics,
+                **weapon.to_record(),
+            },
+            "readiness_evaluated": False,
+            "authorization": (
+                "geometry only, not legal targets or permission to fire; "
+                "weapon lock, cooldown, transitions, ammunition and target state "
+                "remain subject to authoritative execution validation; "
+                "preview_game_operation may only admit a SHOOT intent, "
+                "and game_command_result reports the execution outcome"
+            ),
+        }
 
     def _fire_effect(self, args: dict) -> dict:
         _keys(
@@ -555,6 +620,35 @@ def function_schemas() -> list[dict[str, Any]]:
                 "hypothesis. Never fires, draws randomness or changes ammunition."
             ),
             "parameters": effect,
+        },
+        {
+            "name": "game_visibility_range",
+            "description": (
+                "Read the complete native/UI visibility field for one own actor: "
+                "hypothetical unconcealed ground PERSONNEL/VEHICLE targets only. "
+                "Does not reveal occupants; use game_region_visibility for other profiles."
+            ),
+            "parameters": {
+                "type": "object", "additionalProperties": False,
+                "required": ["observation_version", "actor_id"],
+                "properties": {"observation_version": integer, "actor_id": integer},
+            },
+        },
+        {
+            "name": "game_attack_range",
+            "description": (
+                "Read one carried weapon's complete native/UI theoretical direct "
+                "ground-fire range+LOS envelope. Ignores readiness and occupancy; "
+                "not legal targets, fire authorization, guided or indirect coverage."
+            ),
+            "parameters": {
+                "type": "object", "additionalProperties": False,
+                "required": ["observation_version", "actor_id", "weapon_id"],
+                "properties": {
+                    "observation_version": integer, "actor_id": integer,
+                    "weapon_id": integer,
+                },
+            },
         },
     ])
     return deepcopy(schemas)

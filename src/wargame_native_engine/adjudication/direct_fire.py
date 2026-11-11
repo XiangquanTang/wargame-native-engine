@@ -5,7 +5,9 @@ from typing import Any, Mapping
 
 from wargame_native_engine.adjudication.dice import DiceRecord, DiceSource
 from wargame_native_engine.adjudication.modifiers import roll_modifiers
-from wargame_native_engine.adjudication.fire_readiness import weapon_posture_failure, weapon_binding_failure
+from wargame_native_engine.adjudication.fire_readiness import (
+    weapon_posture_failure, weapon_binding_failure, weapon_transition_failure,
+)
 from wargame_native_engine.adjudication.outcome import CombatOutcome
 from wargame_native_engine.adjudication.request import (
     ActionLegalityResult,
@@ -54,6 +56,13 @@ class DirectFireAdjudicator:
         )
         binding_failure = weapon_binding_failure(weapon_id=request.weapon.weapon_id,
             locked=request.weapon_locked, locked_weapon_id=request.locked_weapon_id)
+        transition_failure = weapon_transition_failure(
+            transitioning=request.attacker_transitioning,
+            transition_kind=request.attacker.transition_kind,
+            ordinary_direct=request.permits_out_of_range_attempt,
+            locked=request.weapon_locked, locked_weapon_id=request.locked_weapon_id,
+            weapon_id=request.weapon.weapon_id,
+        )
         checks: list[tuple[str, bool, str]] = [
             ("weapon_binding", binding_failure is None, "weapon must match the explicit lock"),
             ("units_alive", request.attacker.alive and request.target.alive,
@@ -76,7 +85,7 @@ class DirectFireAdjudicator:
              "moving direct fire requires a locked weapon"),
             ("weapon_cooled", request.weapon_cooldown_before <= 0,
              "weapon cooldown must have ended"),
-            ("attacker_not_transitioning", not request.attacker_transitioning,
+            ("attacker_not_transitioning", transition_failure is None,
              "attacker state does not allow firing"),
             ("movement_allows_fire", posture_failure != "ATTACKER_MUST_STOP",
              "weapon cannot fire while moving"),

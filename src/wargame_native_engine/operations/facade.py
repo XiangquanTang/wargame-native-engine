@@ -10,7 +10,7 @@ from wargame_native_engine.analysis.analyzer import EightFactorAnalyzer
 from wargame_native_engine.analysis.native_analyzer import NativeEightFactorAnalyzer
 from wargame_native_engine.backends.native import NativeEngineBackend
 from wargame_native_engine.compat.source_frame.contract import (
-    ANALYSIS_SOURCE_CONTRACT, CURRENT_SOURCE_CONTRACT,
+    ANALYSIS_SOURCE_CONTRACT, CURRENT_SOURCE_CONTRACT, SOURCE_ACTION_CONTRACT,
 )
 from wargame_native_engine.compat.source_frame.template import (
     source_frame_template_for_scenario,
@@ -31,6 +31,7 @@ class MatchHandle:
     session_id: str
     red_controller_id: str
     blue_controller_id: str
+    replay_mode: str = "compact"
 
     def bind_controller(
         self, side: str, *, controller_id: str
@@ -64,6 +65,8 @@ class MatchHandle:
         *,
         truncated: bool = False,
         overwrite: bool = False,
+        replay_mode: str | None = None,
+        command_outcomes: list[Mapping[str, Any]] | None = None,
     ):
         """Publish facts and derived evidence through the managed service."""
 
@@ -73,6 +76,8 @@ class MatchHandle:
             str(output_dir),
             truncated=truncated,
             overwrite=overwrite,
+            replay_mode=self.replay_mode if replay_mode is None else replay_mode,
+            command_outcomes=command_outcomes,
         )
 
     def close(self) -> None:
@@ -101,6 +106,7 @@ class ScenarioMatchFactory:
     clock: Any | None = None
     objective_capture_policy: str | Mapping[str, Any] | None = None
     analysis_model: str = "source"
+    replay_mode: str = "compact"
 
     def __post_init__(self) -> None:
         if not isinstance(self.bundle, ScenarioBundle):
@@ -115,6 +121,7 @@ class ScenarioMatchFactory:
             if type(value) is not int or value <= 0:
                 raise ValueError(f"{field_name} must be a positive int")
         _validate_analysis_model(self.analysis_model)
+        _validate_replay_mode(self.replay_mode)
         if type(self.record) is not bool:
             raise TypeError("record must be bool")
 
@@ -135,6 +142,7 @@ class ScenarioMatchFactory:
         clock: Any | None = None,
         objective_capture_policy: str | Mapping[str, Any] | None = None,
         analysis_model: str = "source",
+        replay_mode: str = "compact",
     ) -> "ScenarioMatchFactory":
         """Load one explicit public scenario and optional runtime-map asset."""
 
@@ -154,6 +162,7 @@ class ScenarioMatchFactory:
             clock=clock,
             objective_capture_policy=objective_capture_policy,
             analysis_model=analysis_model,
+            replay_mode=replay_mode,
         )
 
     def __call__(self, seed: int, episode_sequence: int) -> MatchHandle:
@@ -180,6 +189,7 @@ class ScenarioMatchFactory:
             clock=self.clock,
             objective_capture_policy=self.objective_capture_policy,
             analysis_model=self.analysis_model,
+            replay_mode=self.replay_mode,
         )
 
 
@@ -224,8 +234,10 @@ class WargameFacade:
         clock: Any | None = None,
         objective_capture_policy: str | Mapping[str, Any] | None = None,
         analysis_model: str = "source",
+        replay_mode: str = "compact",
     ) -> MatchHandle:
         _validate_analysis_model(analysis_model)
+        _validate_replay_mode(replay_mode)
         bundle = self.catalog.load_scenario(scenario_id)
 
         def environment_factory() -> SourceCompatibleEnvironment:
@@ -237,12 +249,16 @@ class WargameFacade:
                     objective_capture_policy=objective_capture_policy,
                 )),
                 template=source_frame_template_for_scenario(scenario),
-                source_contract=(ANALYSIS_SOURCE_CONTRACT if analysis_model == "native"
-                                 else CURRENT_SOURCE_CONTRACT),
+                source_contract=SOURCE_ACTION_CONTRACT,
             )
 
+        scenario_asset = bundle.scenario.to_dict()
+        map_asset = scenario_asset.pop("map")  # complete native map stored exactly once.
         manager = SessionManager(
             environment_factory,
+            replay_assets={"schema": "native-scenario-split/1.0",
+                           "map": map_asset, "scenario": scenario_asset},
+            retain_analysis_history=replay_mode == "legacy-debug",
             storage_root=self.storage_root / bundle.scenario_identity.scenario_id,
             analyzer_factory=(NativeEightFactorAnalyzer if analysis_model == "native"
                               else EightFactorAnalyzer),
@@ -267,9 +283,15 @@ class WargameFacade:
             descriptor.session_id,
             red_controller_id,
             blue_controller_id,
+            replay_mode,
         )
 
 
 def _validate_analysis_model(value: str) -> None:
     if value not in ("source", "native"):
         raise ValueError("analysis_model must be source or native")
+
+
+def _validate_replay_mode(value: str) -> None:
+    if value not in {"compact", "legacy-debug"}:
+        raise ValueError("replay_mode must be compact or legacy-debug")

@@ -9,11 +9,17 @@ const FACTORS = [
 let currentFrameIndex = 0;
 let requestedFrameIndex = 0;
 let frameCount = 0;
+let frameIndices = [];
+let frameOrdinals = new Map();
 let replayMetadata = null;
 let timelineData = null;
+let analysisModel = null;
+let analysisModelBadge = null;
+let timelineRequestToken = 0;
 let mapData = null;
 let currentFrame = null;
 let currentAnalysis = null;
+let currentAnalysisUnavailableReason = null;
 let currentOwnUnitAnalyses = [];
 let selectedUnitId = null;
 let replayView = "all";
@@ -55,7 +61,31 @@ function replayViewName(view = replayView) {
 }
 
 function frameCacheKey(view, index) {
-  return `${replayPerspective(view)}:${index}`;
+  return `${analysisModel || "recorded"}:${replayPerspective(view)}:${index}`;
+}
+
+function configureFrameSequence(metadata) {
+  const count = metadata.frame_count;
+  if (!Number.isSafeInteger(count) || count <= 0) throw new Error("Replay has no valid frames");
+  const indices = metadata.frame_indices ?? Array.from({length: count}, (_, index) => index);
+  if (!Array.isArray(indices) || indices.length !== count || indices.some((index, ordinal) =>
+      !Number.isSafeInteger(index) || index < 0 || (ordinal > 0 && index <= indices[ordinal - 1]))) {
+    throw new Error("Replay frame indices must be unique, ordered recorded filenames");
+  }
+  frameCount = count; frameIndices = indices.slice();
+  frameOrdinals = new Map(frameIndices.map((index, ordinal) => [index, ordinal]));
+}
+
+function adjacentFrameIndex(index, offset) {
+  const ordinal = frameOrdinals.get(index) ?? 0;
+  return frameIndices[Math.max(0, Math.min(frameCount - 1, ordinal + offset))];
+}
+
+function playbackPosition(index) {
+  const ordinal = frameOrdinals.get(index);
+  return replayMetadata?.frame_indices
+    ? `${ordinal + 1} / ${frameCount} · 文件 Frame ${index}${replayMetadata.sparse_frame_indices ? " · 非连续记录（不补帧）" : ""}`
+    : `${index} / ${frameCount - 1}`;
 }
 
 function clearMapInteraction(clearSelection = true) {
@@ -86,6 +116,8 @@ function renderEvidence() {
   $("actions").textContent = JSON.stringify(currentFrame?.actions ?? [], null, 2);
   $("judge-info").textContent = JSON.stringify(currentFrame?.judge_info ?? [], null, 2);
   $("warnings").textContent = JSON.stringify({
+    ...(replayMetadata?.analysis_status === "unavailable" ? {analysis_status: "unavailable", analysis_note: replayMetadata.analysis_note} : {}),
+    ...(currentAnalysisUnavailableReason ? {analysis_unavailable: currentAnalysisUnavailableReason} : {}),
     frame: currentAnalysis?.warnings ?? [],
     advantage: currentAnalysis?.advantage?.warnings ?? [],
     sides: Object.fromEntries((currentAnalysis?.side_analyses || []).map((side) => [side.side, side.warnings ?? []])),
@@ -102,10 +134,14 @@ function renderGlobalSummary(analysis) {
   const coverage = (side) => typeof side?.coverage === "number" ? `${(side.coverage * 100).toFixed(1)}%` : "UNKNOWN";
   $("analysis-coverage").textContent = analysis
     ? `全局有效单位覆盖率：红 ${coverage(sideByName.red)}（总计 ${sideByName.red?.unit_count ?? 0}） · 蓝 ${coverage(sideByName.blue)}（总计 ${sideByName.blue?.unit_count ?? 0}）`
-    : "本帧全局汇总未加载";
+    : currentAnalysisUnavailableReason ? `本帧分析不可用：${currentAnalysisUnavailableReason}`
+    : replayMetadata?.analysis_status === "unavailable" ? "可选分析不可用 · 仅播放记录事实" : "本帧全局汇总未加载";
   const missing = new Map();
   for (const unit of analysis?.unit_analyses || []) for (const factor of unit.factor_values || []) {
     if (factor.status === "UNKNOWN") for (const field of factor.missing_fields || []) missing.set(field, (missing.get(field) || 0) + 1);
+  }
+  if (analysisModel === "source" && analysis && missing.size && (replayMetadata?.analysis_models || []).includes("native")) {
+    $("analysis-model-note").textContent = "Source 字段缺失，可切换 Native 派生 · 当前仍按 Source 原字段显示 UNKNOWN，未修改录制口径。";
   }
   $("analysis-missing").textContent = !analysis ? "全局八因子缺失字段：UNKNOWN" : missing.size
     ? `全局缺失字段（单位数）：${Array.from(missing, ([field, count]) => `${field} ${count}`).join(" · ")}`
@@ -115,6 +151,7 @@ function renderGlobalSummary(analysis) {
 function clearCurrentFrame() {
   currentFrame = null;
   currentAnalysis = null;
+  currentAnalysisUnavailableReason = null;
   currentOwnUnitAnalyses = [];
   clearMapInteraction();
   renderBattlefield();
@@ -125,8 +162,8 @@ function clearCurrentFrame() {
 }
 
 async function setCurrentFrameIndex(index) {
-  if (!Number.isInteger(index) || index < 0 || index >= frameCount) {
-    showError(`Frame index must be between 0 and ${frameCount - 1}`);
+  if (!Number.isSafeInteger(index) || !frameOrdinals.has(index)) {
+    showError(`Frame ${index} 未记录；仅可跳转已记录的文件编号（不补帧）`);
     return false;
   }
   const view = replayView;
@@ -150,7 +187,10 @@ async function setCurrentFrameIndex(index) {
     }
     let bundle = frameCache.get(key);
     if (!bundle) {
-      const suffix = view === "all" ? "" : `?perspective=${perspective}`;
+      const parameters = [];
+      if (view !== "all") parameters.push(`perspective=${perspective}`);
+      if (analysisModel) parameters.push(`analysis_model=${analysisModel}`);
+      const suffix = parameters.length ? `?${parameters.join("&")}` : "";
       bundle = await requestJson(`/api/frame-bundle/${index}${suffix}`, frameController.signal);
       // Abort is advisory: ignore late responses before they can mutate the cache.
       if (token !== requestToken || view !== replayView) return false;
@@ -182,8 +222,9 @@ async function setCurrentFrameIndex(index) {
     currentFrameIndex = index;
     currentFrame = bundle.frame;
     currentAnalysis = view === "all" ? bundle.analysis : null;
+    currentAnalysisUnavailableReason = view === "all" && bundle.analysis_status === "unavailable" ? bundle.analysis_note : null;
     currentOwnUnitAnalyses = view === "all" ? [] : bundle.own_unit_analyses || [];
-    const selectableUnits = view === "all" ? currentAnalysis?.unit_analyses : currentFrame?.viewer_units;
+    const selectableUnits = view === "all" ? currentAnalysis?.unit_analyses ?? currentFrame?.viewer_units : currentFrame?.viewer_units;
     if (selectedUnitId !== null && !(selectableUnits || []).some((unit) => String(unit.operator_id) === String(selectedUnitId))) {
       selectedUnitId = null;
     }
@@ -196,8 +237,8 @@ async function setCurrentFrameIndex(index) {
       frameCache.delete(key);
       clearCurrentFrame();
       $("frame-index").textContent = String(index);
-      $("playback-position").textContent = `${index} / ${frameCount - 1}`;
-      $("frame-slider").value = String(index);
+      $("playback-position").textContent = playbackPosition(index);
+      $("frame-slider").value = String(frameOrdinals.get(index));
       $("frame-jump").value = String(index);
       $("loading-status").textContent = `${replayViewName(view)} Frame ${index} 读取失败：${error.message}`;
       $("replay-view-status").textContent = `${replayViewName(view)}视角不可用：${error.message}`;
@@ -209,10 +250,10 @@ async function setCurrentFrameIndex(index) {
 
 function renderCurrentFrame() {
   $("frame-index").textContent = String(currentFrameIndex);
-  $("frame-slider").value = String(currentFrameIndex);
+  $("frame-slider").value = String(frameOrdinals.get(currentFrameIndex));
   $("frame-jump").value = String(currentFrameIndex);
   $("cur-step").textContent = formatNumber(currentFrame.time?.cur_step);
-  $("playback-position").textContent = `${currentFrameIndex} / ${frameCount - 1}`;
+  $("playback-position").textContent = playbackPosition(currentFrameIndex);
   renderViewStatus(currentFrame);
   renderEvidence();
   // Only a same-frame, explicitly global summary is allowed alongside side views.
@@ -272,7 +313,7 @@ function isDestroyedUnit(frame, operatorId) {
 
 function renderFactors() {
   const sideView = replayView !== "all";
-  const unit = (sideView ? currentFrame?.viewer_units : currentAnalysis?.unit_analyses || [])
+  const unit = (sideView ? currentFrame?.viewer_units : currentAnalysis?.unit_analyses ?? currentFrame?.viewer_units ?? [])
     ?.find((item) => String(item.operator_id) === String(selectedUnitId));
   const body = $("factor-table"); body.replaceChildren();
   if (!unit) {
@@ -289,7 +330,7 @@ function renderFactors() {
     : recordedUnit?.weapon_locked === true ? " · 已锁定（旧记录未绑定武器）" : "";
   $("selected-unit").textContent = `Unit ${unit.operator_id} · ${String(unit.side || "UNKNOWN").toUpperCase()}${lockLabel}`;
   // Verify both projection ownership and analysis ownership before rendering factors.
-  const factorUnit = !sideView ? unit : unit.side === replayView
+  const factorUnit = !sideView ? (currentAnalysis ? unit : null) : unit.side === replayView
     ? currentOwnUnitAnalyses.find((item) => item.side === replayView && String(item.operator_id) === String(unit.operator_id))
     : null;
   const derivedOwn = sideView && !!factorUnit;
@@ -301,8 +342,9 @@ function renderFactors() {
     : "";
   const identityNote = unit.identity_source === "SCENARIO_DERIVED_IDENTITY"
     ? " · 身份来源：场景静态标签"
+    : unit.identity_source === "RECORDED_CONTACT_IDENTITY" ? " · 身份来源：录像当前帧型号"
     : unit.identity_source === "UNKNOWN" ? " · 身份来源：UNKNOWN" : "";
-  $("unit-validity").textContent = sideView
+  $("unit-validity").textContent = sideView || !factorUnit
     ? `${derivedOwn ? sourceNote : "八因子：UNKNOWN"} · 名称 ${unit.name ?? "UNKNOWN"} · 坐标 ${formatNumber(unit.current_hex)} · 生命 ${formatNumber(unit.blood)}/${formatNumber(unit.max_blood)} · 状态 ${unit.state ?? "UNKNOWN"}${identityNote}${derivedOwn ? ` · valid=${factorUnit.valid} · observed ${factorUnit.observed_factor_count}/8` : ""}`
     : `valid=${unit.valid} · observed ${unit.observed_factor_count}/8`;
   const values = Object.fromEntries((factorUnit?.factor_values || []).map((factor) => [factor.factor_name, factor]));
@@ -345,11 +387,11 @@ async function startPlayback() {
   pausePlayback(); playbackActive = true;
   const generation = playbackGeneration;
   $("play-pause").textContent = "暂停";
-  if (currentFrameIndex >= frameCount - 1) await setCurrentFrameIndex(0);
+  if (frameOrdinals.get(currentFrameIndex) >= frameCount - 1) await setCurrentFrameIndex(frameIndices[0]);
   async function next() {
     if (!playbackActive || generation !== playbackGeneration) return;
-    if (currentFrameIndex >= frameCount - 1) { pausePlayback(); return; }
-    const loaded = await setCurrentFrameIndex(currentFrameIndex + 1);
+    if (frameOrdinals.get(currentFrameIndex) >= frameCount - 1) { pausePlayback(); return; }
+    const loaded = await setCurrentFrameIndex(adjacentFrameIndex(currentFrameIndex, 1));
     if (!playbackActive || generation !== playbackGeneration) return;
     if (!loaded) { pausePlayback(); return; }
     playbackTimer = window.setTimeout(next, 1000 / playbackRate);
@@ -377,17 +419,21 @@ async function initialize() {
       // A frame request can still provide the precise availability/error reason.
       replayPerspectives = null;
     });
-    requestJson("/api/timeline").then((data) => {
-      timelineData = data; timelineChart.setData(data); renderTimeline();
-      $("timeline-status").textContent = "全局曲线 · 点击跳转帧 · 悬停读数 · 键盘左右键逐帧";
-    }).catch((error) => { $("timeline-status").textContent = `曲线读取失败：${error.message}`; });
     requestJson("/api/map").then((data) => {
       mapData = data; initializeMap(); if (currentFrame) renderBattlefield();
     }).catch((error) => { $("map-mode").textContent = `地图读取失败：${error.message}`; });
     replayMetadata = await requestJson("/api/replay");
-    frameCount = replayMetadata.frame_count;
+    configureFrameSequence(replayMetadata);
+    analysisModel = replayMetadata.analysis_model || null;
+    const models = replayMetadata.analysis_models || [];
+    $("analysis-model-control").hidden = models.length < 2;
+    $("analysis-model").value = analysisModel || "source";
+    $("analysis-model-note").textContent = replayMetadata.analysis_note || "按原分析侧文件口径显示。";
+    loadTimeline();
+    $("frame-slider").min = "0";
     $("frame-slider").max = String(frameCount - 1);
-    $("frame-jump").max = String(frameCount - 1);
+    $("frame-jump").min = String(frameIndices[0]);
+    $("frame-jump").max = String(frameIndices[frameCount - 1]);
     const playbackBadge = document.createElement("span");
     playbackBadge.className = "badge yes"; playbackBadge.textContent = "Playback compatible";
     const strictStatus = replayMetadata.strict_replay_evidence_status;
@@ -395,11 +441,46 @@ async function initialize() {
     strictBadge.className = `badge ${strictStatus === "Available" ? "yes" : strictStatus === "Incomplete" ? "warn" : "no"}`;
     strictBadge.textContent = `Strict replay evidence: ${strictStatus}`;
     const modelBadge = document.createElement("span");
-    modelBadge.className = "badge";
-    modelBadge.textContent = `${replayMetadata.model_provenance.model_id} ${replayMetadata.model_provenance.model_version}`;
+    analysisModelBadge = modelBadge;
+    modelBadge.className = "badge"; modelBadge.id = "analysis-model-badge";
+    modelBadge.textContent = replayMetadata.analysis_status === "unavailable" ? "Optional analysis: unavailable"
+      : `${replayMetadata.model_provenance?.model_id ?? "UNKNOWN"} ${replayMetadata.model_provenance?.model_version ?? ""}`;
     $("compatibility").replaceChildren(playbackBadge, strictBadge, modelBadge);
-    await setCurrentFrameIndex(0);
+    await setCurrentFrameIndex(frameIndices[0]);
   } catch (error) { showError(error.message); }
+}
+
+async function loadTimeline() {
+  const token = ++timelineRequestToken;
+  $("timeline-status").textContent = "正在从记录事实计算完整曲线…可继续播放或选择单位";
+  try {
+    const suffix = analysisModel ? `?analysis_model=${analysisModel}` : "";
+    const data = await requestJson(`/api/timeline${suffix}`);
+    if (token !== timelineRequestToken) return;
+    timelineData = data; timelineChart.setData(data); renderTimeline();
+    $("timeline-status").textContent = data.analysis_status === "unavailable"
+      ? "可选分析不可用 · 仅显示已记录帧索引 · 点击或左右键跳转（不补帧）"
+      : `全局曲线${analysisModel ? ` · ${analysisModel === "native" ? "Native 派生" : "Source"}口径` : ""} · 点击跳转帧 · 悬停读数 · 键盘左右键逐帧`;
+  } catch (error) {
+    if (token === timelineRequestToken) $("timeline-status").textContent = `曲线读取失败：${error.message}`;
+  }
+}
+
+async function setAnalysisModel(model) {
+  if (!(replayMetadata?.analysis_models || []).includes(model) || model === analysisModel) return false;
+  pausePlayback();
+  ++requestToken; frameController?.abort();
+  analysisModel = model;
+  frameCache.clear(); clearCurrentFrame();
+  timelineData = null; timelineChart.setData({frame_indices: frameIndices});
+  $("analysis-model").value = model;
+  const provenance = replayMetadata.analysis_model_provenances?.[model];
+  if (analysisModelBadge) analysisModelBadge.textContent = `${provenance?.model_id ?? model} ${provenance?.model_version ?? ""}`;
+  $("analysis-model-note").textContent = model === "native"
+    ? `Native 派生口径 · 从已记录 Native 事实转换；${replayMetadata.original_analysis_model ? `原录制声明 ${replayMetadata.original_analysis_model}` : "原录制分析口径未知"}；缺项保持 UNKNOWN。`
+    : "Source 原字段口径 · 缺项保持 UNKNOWN，不以 Native 值补齐。";
+  loadTimeline();
+  return setCurrentFrameIndex(requestedFrameIndex);
 }
 
 function initializeMap() {
@@ -431,13 +512,13 @@ for (const view of ["all", "red", "blue"]) {
 }
 
 $("reset-map-view").addEventListener("click", () => mapRenderer?.resetView());
-$("previous-frame").addEventListener("click", () => setCurrentFrameIndex(Math.max(0, requestedFrameIndex - 1)));
-$("next-frame").addEventListener("click", () => setCurrentFrameIndex(Math.min(frameCount - 1, requestedFrameIndex + 1)));
+$("previous-frame").addEventListener("click", () => setCurrentFrameIndex(adjacentFrameIndex(requestedFrameIndex, -1)));
+$("next-frame").addEventListener("click", () => setCurrentFrameIndex(adjacentFrameIndex(requestedFrameIndex, 1)));
 $("play-pause").addEventListener("click", () => playbackActive ? pausePlayback() : startPlayback());
 $("frame-slider").addEventListener("input", (event) => {
   pausePlayback(); window.clearTimeout(sliderTimer);
-  const index = Number(event.target.value);
-  sliderTimer = window.setTimeout(() => setCurrentFrameIndex(index), 70);
+  const ordinal = Number(event.target.value);
+  sliderTimer = window.setTimeout(() => setCurrentFrameIndex(frameIndices[ordinal]), 70);
 });
 $("jump-button").addEventListener("click", () => setCurrentFrameIndex(Number($("frame-jump").value)));
 $("playback-speed").addEventListener("change", (event) => {
@@ -445,6 +526,8 @@ $("playback-speed").addEventListener("change", (event) => {
   if (playbackActive) startPlayback();
 });
 window.addEventListener("resize", () => { if (currentFrame) { renderBattlefield(); renderTimeline(); } });
+
+$("analysis-model").addEventListener("change", (event) => setAnalysisModel(event.target.value));
 
 timelineChart = new window.ReplayTimelineChart.TimelineChart($("timeline-chart"), $("timeline-tooltip"), (frame) => {
   pausePlayback(); setCurrentFrameIndex(frame);

@@ -4,8 +4,10 @@ from dataclasses import dataclass
 from enum import IntEnum
 from typing import Any, Mapping, Sequence
 
+from wargame_native_engine.compat.source_frame.action_export import owned_source_action
 from wargame_native_engine.compat.source_frame.contract import (
-    ANALYSIS_SOURCE_CONTRACT, SOURCE_CONTRACT_KEY, is_dynamic_source_contract,
+    SOURCE_ACTION_CONTRACT, SOURCE_CONTRACT_KEY, is_dynamic_source_contract,
+    has_analysis_facts,
 )
 from wargame_native_engine.core.observation import (
     SideObservation,
@@ -169,7 +171,7 @@ class PerspectiveProjector:
                     }
                     if isinstance(inventory, Mapping) and type(inventory.get("command_lost")) is bool:
                         projected["extra"]["native"]["command_lost"] = inventory["command_lost"]
-                    if context.public_metadata.get(SOURCE_CONTRACT_KEY) == ANALYSIS_SOURCE_CONTRACT:
+                    if has_analysis_facts(context.public_metadata.get(SOURCE_CONTRACT_KEY)):
                         facts = source.get("extra", {}).get("native", {}).get("analysis_facts")
                         if isinstance(facts, Mapping):
                             own_facts = json_clone(facts)
@@ -197,8 +199,10 @@ class PerspectiveProjector:
                                                    side, included_ids),
             "actions": [json_clone(value) for value in frame.get("actions", [])
                         if isinstance(value, Mapping)
-                        and str(value.get("side", "")).lower() == side
-                        and value.get("accepted", True) is not False],
+                        and (owned_source_action(value, side, friendly_ids)
+                             if context.public_metadata.get(SOURCE_CONTRACT_KEY) == SOURCE_ACTION_CONTRACT
+                             else str(value.get("side", "")).lower() == side
+                             and value.get("accepted", True) is not False)],
             "judge_info": self._judge_info(frame.get("judge_info", []),
                                              friendly_ids, set(visible_by_id),
                                              side),
@@ -227,8 +231,7 @@ class PerspectiveProjector:
         return {key: json_clone(frame.get(key, defaults[key]))
                 for key in self._TOP_LEVEL}
 
-    @staticmethod
-    def _visible_enemy(value: Any, perspective: Perspective) -> dict[str, Any]:
+    def _visible_enemy(self, value: Any, perspective: Perspective) -> dict[str, Any]:
         x, y = value.position
         current_hex = int(round(y)) * 100 + int(round(x))
         stopped = (
@@ -242,7 +245,8 @@ class PerspectiveProjector:
                      else value.source_type_code),
             "sub_type": (-1 if value.source_subtype_code is None
                          else value.source_subtype_code),
-            "name": (value.canonical_identity or value.subtype or "UNKNOWN"),
+            "name": ((value.display_name if "display_name" in self.policy.enemy_observation_allowlist else None)
+                     or value.canonical_identity or value.subtype or "UNKNOWN"),
             "owner": None,
             "armor": -1, "A1": None, "value": None,
             "cur_hex": current_hex, "cur_pos": 0.0,

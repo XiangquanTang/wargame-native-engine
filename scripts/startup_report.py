@@ -23,7 +23,11 @@ def print_startup(bundle, scenario, args, host, port):
         "los_modes": list(runtime.visibility.mode_order) if runtime else None,
         "output_dir": str(args.output_dir.resolve()),
         "tick_interval_ms": args.tick_interval_ms,
-        "server": f"http://{host}:{port}",
+        "replay_mode": getattr(args, "replay_mode", "compact"),
+        "server": None if host is None else f"http://{host}:{port}",
+        "seat_policies": {side: getattr(args, side + "_policy", "human") for side in ("red", "blue")},
+        "max_ticks": getattr(args, "max_ticks", None),
+        "fast": getattr(args, "fast", False),
     }
     if args.json:
         print(json.dumps({"startup": record, "identity": dict(bundle.public_record())}, ensure_ascii=False, sort_keys=True), flush=True)
@@ -38,6 +42,13 @@ def print_startup(bundle, scenario, args, host, port):
         else:
             print("RUNTIME: scenario geometry/rules (no external movement or LOS table)", flush=True)
         print(f"OUTPUT: {record['output_dir']}", flush=True)
-    print(f"RED:  http://{host}:{port}/red?token={args.red_token}", flush=True)
-    print(f"BLUE: http://{host}:{port}/blue?token={args.blue_token}", flush=True)
+        print(f"REPLAY MODE: {record['replay_mode']}", flush=True)
+        print("POLICIES: " + ", ".join(f"{side}={name}" for side, name in record["seat_policies"].items()), flush=True)
+    if host is not None:
+        print(f"RED:  http://{host}:{port}/red?token={args.red_token}", flush=True)
+        print(f"BLUE: http://{host}:{port}/blue?token={args.blue_token}", flush=True)
+        if any(name != "human" for name in record["seat_policies"].values()):
+            print("规则控制席位为只读观战；human 席位仍可操作。", flush=True)
+    else:
+        print("FAST: 离线加速运行，不启动 HTTP 服务；游戏 tick 间隔不变。", flush=True)
     print("按 Ctrl+C 停止并保存复盘。", flush=True)

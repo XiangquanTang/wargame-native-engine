@@ -1,6 +1,6 @@
 """Versioned current Native facts, not inferred Source compatibility fields.
 
-Only Source contract 1.2 exports this payload. Historical recordings without it
+Source contracts 1.2 and 1.3 export this payload. Historical recordings without it
 must not acquire present-day facts through defaults or template backfilling.
 """
 from __future__ import annotations

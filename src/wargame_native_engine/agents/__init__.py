@@ -9,6 +9,7 @@ from wargame_native_engine.agents.protocol import (
 )
 from wargame_native_engine.agents.random_legal import RandomLegalAgent
 from wargame_native_engine.agents.random_seat import RandomProductSeatAgent
+from wargame_native_engine.agents.simple_capture import SimpleCaptureSeatAgent
 from wargame_native_engine.agents.seat import (
     AgentDecisionContext,
     LocalSeatAgent,
@@ -97,6 +98,7 @@ def __getattr__(name: str):
     raise AttributeError(name)
 
 __all__ = [
+    "SimpleCaptureSeatAgent",
     "Agent",
     "AgentAction",
     "DecisionAgent",

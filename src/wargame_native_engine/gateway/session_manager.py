@@ -45,6 +45,9 @@ from wargame_native_engine.io.serialization import canonical_hash, json_clone
 from wargame_native_engine.io.scenario import native_map_identity_hash
 from wargame_native_engine.movement.models import MovementMode, RoutePlan
 from wargame_native_engine.replay import SourceFrameRecorder
+from wargame_native_engine.replay.compact import (
+    CompactSourceFrameRecorder, CompactReplayReader, package_legacy_recording,
+)
 from wargame_native_engine.session.source_environment import (
     SourceCompatibleEnvironment,
 )
@@ -71,7 +74,7 @@ class _ManagedSession:
     external_id: str
     environment: SourceCompatibleEnvironment
     live: LiveAnalyzedSession
-    recorder: SourceFrameRecorder | None
+    recorder: SourceFrameRecorder | CompactSourceFrameRecorder | None
     seed: int
     step_index: int = 0
     failed: str | None = None
@@ -103,9 +106,13 @@ class SessionManager:
         storage_root: str | Path,
         analyzer_factory: AnalyzerFactory | None = None,
         reuse_planning_world_hash: bool = True,
+        replay_assets: Mapping[str, Any] | None = None,
+        retain_analysis_history: bool = True,
     ) -> None:
         if not callable(environment_factory):
             raise TypeError("environment_factory must be callable")
+        self._replay_assets = json_clone(dict(replay_assets or {}))
+        self._retain_analysis_history = retain_analysis_history
         self._environment_factory = environment_factory
         self._analyzer_factory = analyzer_factory or EightFactorAnalyzer
         if type(reuse_planning_world_hash) is not bool:
@@ -138,17 +145,20 @@ class SessionManager:
             analyzer=self._analyzer_factory(),
             retain_update_timeline=False,
             retain_frame_analyses=False,
+            retain_history=self._retain_analysis_history,
         )
-        recorder: SourceFrameRecorder | None = None
+        recorder: SourceFrameRecorder | CompactSourceFrameRecorder | None = None
         try:
             update = live.setup(seed)
             if record:
-                recorder = SourceFrameRecorder(
-                    self.storage_root / external_id / "facts"
+                recorder = CompactSourceFrameRecorder(
+                    self.storage_root / external_id / "facts",
+                    debug_evidence=self._retain_analysis_history,
                 )
                 recorder.start(
-                    _recorder_metadata(environment, update.green_frame, seed),
+                    _recorder_metadata(environment, update.green_frame, seed, analyzer=live.analyzer),
                     started_at=_STARTED_AT,
+                    assets=self._replay_assets,
                 )
                 recorder.record_initial(
                     update.green_frame,
@@ -179,6 +189,22 @@ class SessionManager:
             truncated=native_result.truncated,
         )
 
+    def enable_debug_recording(self, session_id: str) -> None:
+        """Training protocol opts in at frame zero, never after missing actions."""
+        managed = self._managed(session_id)
+        with managed.lock:
+            self._require_usable(managed)
+            if managed.recorder is None or managed.recorder.debug_evidence:
+                return
+            if managed.step_index != 0 or managed.finalized:
+                raise ValueError("debug recording must be selected before the first step")
+            previous = managed.recorder
+            recorder = CompactSourceFrameRecorder(previous.root.parent / "debug-facts", debug_evidence=True)
+            green = managed.environment.last_bundle.green
+            recorder.start(_recorder_metadata(managed.environment, green, managed.seed, analyzer=managed.live.analyzer), assets=self._replay_assets)
+            recorder.record_initial(green, initial_state_hash=managed.environment.initial_state_hash)
+            managed.recorder = recorder
+
     def descriptor(self, session_id: str) -> SessionDescriptor:
         managed = self._managed(session_id)
         with managed.lock:
@@ -204,6 +230,20 @@ class SessionManager:
             self._require_usable(managed)
             return deepcopy(managed.environment.session.result())
 
+    def training_reward_snapshot(self, session_id: str) -> Mapping[str, object]:
+        """Detached privileged health ledger input; never a controller/actor view.
+
+        Source direct and indirect adjudication synchronize health from discrete
+        blood losses. This does not infer damage from visibility or analysis.
+        """
+        managed = self._managed(session_id)
+        with managed.lock:
+            self._require_usable(managed)
+            world = managed.environment.session.snapshot()['world']
+            return {'sim_time_ms': _managed_sim_time_ms(managed),
+                    'operators': {int(key): {name: row[name] for name in ('side', 'health', 'alive')}
+                                  for key, row in world['operators'].items()}}
+
     def frame_analysis(
         self, session_id: str, frame_index: int
     ) -> FrameAnalysis:
@@ -217,6 +257,9 @@ class SessionManager:
             try:
                 return managed.live.frame_analysis_at(frame_index)
             except IndexError as exc:
+                if (isinstance(managed.recorder, CompactSourceFrameRecorder)
+                        and 0 <= frame_index <= managed.step_index):
+                    return _analyze_compact_frame(managed, frame_index)
                 raise RuntimeError("committed_frame_analysis_missing") from exc
 
     def controller_view(
@@ -810,7 +853,11 @@ class SessionManager:
         truncated: bool = False,
         overwrite: bool = False,
         control_audit_payload: bytes | None = None,
+        replay_mode: str = "compact",
+        command_outcomes: list[Mapping[str, Any]] | None = None,
     ) -> SessionPublication:
+        if replay_mode not in {"compact", "legacy-debug"}:
+            raise ValueError("replay_mode must be compact or legacy-debug")
         managed = self._managed(session_id)
         target = Path(output_dir)
         with managed.lock:
@@ -819,6 +866,8 @@ class SessionManager:
                 raise CommandGatewayError(
                     "recording_disabled", "session has no Recorder"
                 )
+            if replay_mode == "legacy-debug" and not managed.recorder.debug_evidence:
+                raise ValueError("legacy-debug must be selected before the first recorded step")
             done = managed.environment.session.is_terminal()
             if not done and not truncated:
                 raise CommandGatewayError(
@@ -836,6 +885,8 @@ class SessionManager:
             outcome = dict(managed.environment.session.result().to_dict())
             if truncated and not done:
                 outcome["truncated"] = True
+            if replay_mode == "compact" and command_outcomes:
+                managed.recorder._metadata["command_outcomes"] = json_clone(command_outcomes)
             manifest = managed.recorder.finalize(
                 outcome,
                 final_state_hash=str(outcome["world_hash"]),
@@ -844,11 +895,25 @@ class SessionManager:
                 prefix=f".{target.name}.", suffix=".tmp", dir=target.parent,
             ))
             try:
-                replay_path = managed.recorder.package_zip(staging / "replay.zip")
-                managed.live.write_analysis_jsonl(
-                    staging / "frame_analysis.native.jsonl"
-                )
-                if control_audit_payload is not None:
+                if replay_mode == "legacy-debug":
+                    replay_path = package_legacy_recording(managed.recorder, staging / "replay.zip")
+                    if self._retain_analysis_history:
+                        managed.live.write_analysis_jsonl(staging / "frame_analysis.native.jsonl")
+                    else:
+                        # Debug opt-in re-derives analysis only when requested.
+                        from wargame_native_engine.analysis.jsonl import analysis_frames_to_jsonl
+                        with (staging / "frame_analysis.native.jsonl").open("xb") as stream:
+                            for index, (_, frame, _) in enumerate(managed.recorder.iter_records()):
+                                analysis = _analyze_compact_frame(managed, index, frame)
+                                stream.write(analysis_frames_to_jsonl((analysis,)).encode("utf-8"))
+                            stream.flush()
+                            os.fsync(stream.fileno())
+                else:
+                    replay_path = managed.recorder.package_zip(staging / "replay.zip")
+                    # Full streaming reconstruction check before directory publication.
+                    if sum(1 for _ in CompactReplayReader(replay_path).iter_raw_frames()) != manifest["frame_count"]:
+                        raise ValueError("compact publication frame count mismatch")
+                if control_audit_payload is not None and replay_mode == "legacy-debug":
                     _write_bytes(
                         staging / "control_audit.native.jsonl",
                         bytes(control_audit_payload),
@@ -861,14 +926,17 @@ class SessionManager:
             return SessionPublication(
                 output_dir=target,
                 replay_path=target / "replay.zip",
-                analysis_path=target / "frame_analysis.native.jsonl",
+                analysis_path=(target / "frame_analysis.native.jsonl"
+                               if replay_mode == "legacy-debug" else None),
+                replay_format=("native-source-frame-replay/1.0" if replay_mode == "legacy-debug"
+                               else managed.recorder.replay_format),
                 frame_count=int(manifest["frame_count"]),
                 step_count=int(manifest["step_count"]),
                 terminal=outcome.get("terminal", False),
                 truncated=outcome.get("truncated", False),
                 control_audit_path=(
                     None
-                    if control_audit_payload is None
+                    if control_audit_payload is None or replay_mode != "legacy-debug"
                     else target / "control_audit.native.jsonl"
                 ),
             )
@@ -1093,6 +1161,7 @@ def _recorder_metadata(
     environment: SourceCompatibleEnvironment,
     green_frame: Mapping[str, Any],
     seed: int,
+    *, analyzer=None,
 ) -> Mapping[str, Any]:
     native = green_frame["extra"]["native"]
     scenario = environment.session.scenario
@@ -1121,6 +1190,13 @@ def _recorder_metadata(
         "episode_seed": seed,
         "max_ticks": environment.session.max_ticks,
     }
+    if analyzer is not None:
+        from wargame_native_engine.analysis.native_analyzer import NativeEightFactorAnalyzer
+        # Do not mislabel custom analyzers as one of the two supported models.
+        if type(analyzer) is NativeEightFactorAnalyzer:
+            value["analysis_model"] = "native"
+        elif type(analyzer) is EightFactorAnalyzer and analyzer == EightFactorAnalyzer():
+            value["analysis_model"] = "source"
     policy = getattr(environment.session.backend, "mounted_position_policy", None)
     if policy is not None:
         value["mounted_position_policy"] = policy
@@ -1177,3 +1253,16 @@ def _remove_path(path: Path) -> None:
         shutil.rmtree(path)
     else:
         path.unlink()
+
+
+def _analyze_compact_frame(managed: _ManagedSession, frame_index: int, frame=None) -> FrameAnalysis:
+    from wargame_native_engine.analysis.analyzer import GreenFrameAnalysisInput
+    from wargame_native_engine.compat.source_frame.serialization import canonical_green_frame_payload
+    import hashlib
+    if frame is None:
+        frame = managed.recorder.raw_frame(frame_index)
+    return managed.live.analyzer.analyze_green_frame(GreenFrameAnalysisInput(
+        frame_index=frame_index, frame=frame,
+        frame_hash=hashlib.sha256(canonical_green_frame_payload(frame)).hexdigest(),
+        scenario_hash=managed.environment.session.scenario.scenario_hash,
+    ))

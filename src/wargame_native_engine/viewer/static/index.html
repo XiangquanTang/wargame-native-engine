@@ -72,6 +72,8 @@
     <aside class="analysis-panel">
       <section class="panel summary">
         <div class="section-title"><h2>当前帧分析 · 全局</h2></div>
+        <label id="analysis-model-control" hidden>分析口径 <select id="analysis-model"><option value="source">Source 原字段</option><option value="native">Native 记录事实派生</option></select></label>
+        <p id="analysis-model-note" class="analysis-note"></p>
         <p id="analysis-coverage" class="analysis-note">正在读取覆盖率…</p>
         <p id="analysis-missing" class="analysis-note"></p>
         <div class="metric-grid">

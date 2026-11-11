@@ -160,6 +160,7 @@ class NativeDecisionSession:
             raise TypeError("seed must be an exact int")
         if match.gateway.deadline_mode is not DeadlineMode.SYNCHRONOUS:
             raise UnsupportedTrainingDecisionModeError()
+        match.gateway.manager.enable_debug_recording(match.session_id)
         self.match = match
         self.episode_id = episode_id
         self.seed = seed
@@ -1143,6 +1144,7 @@ class NativeMultiSeatEnv:
             output_dir,
             truncated=not self.match.status.terminal,
             overwrite=overwrite,
+            replay_mode="legacy-debug",
         )
 
     def publish_training_package(

@@ -7,7 +7,7 @@ visibility set. They are not “show only red/blue units” filters.
 
 ## Evidence and compatibility
 
-Existing Native Source 1.1/1.2 recordings already contain the needed visibility
+Existing Native Source 1.1/1.2/1.3 recordings already contain the needed visibility
 membership evidence. `NativeEngine._refresh_source_observation` overwrites each
 unit's `see_enemy_bop_ids` after reset/restore/steps. Dead or undeployed observers
 produce empty lists; dead or undeployed targets are excluded. Its
@@ -17,7 +17,7 @@ same union from the current frame's operators and passengers, never prior
 frames, distances, GREEN unit counts, or a newly executed simulation.
 
 This interpretation is enabled only for a validated Native archive with Source
-1.1/1.2 and recognized Source movement and perspective-policy provenance in both
+1.1/1.2/1.3 and recognized Source movement and perspective-policy provenance in both
 manifest and frames. Generic/nonhex or older historical recordings cannot
 establish those semantics. Missing, null, malformed, foreign-side, nonexistent,
 or contradictory visibility references make the relevant side unavailable;
@@ -38,19 +38,28 @@ introduced. Validation stays in the existing single streaming frame pass.
   altitude and alive status. Health, ammunition, movement path/progress, boarding,
   readiness, suppression, native facts and eight-factor analysis stay unknown.
   Enemy contacts do not inherit membership from GREEN's passenger ledger.
-- GREEN template names and type codes are not guaranteed to equal Native live
-  contact identity. They never supply enemy classification. A narrowly gated
-  optional path uses the explicitly loaded Native scenario's public identity:
-  the adjacent `native-realtime-match-summary/1.1` must report an exact boolean
-  strict replay match and bind the exact ZIP hash, scenario hash/ID, seed and
-  final state hash, under known adjudication semantics 1.6. Only currently
-  visible IDs whose side matches the scenario receive
-  `SCENARIO_DERIVED_IDENTITY`. This is publication-reported verification, not
-  verification newly performed by the viewer or original observed identity.
-  Without that complete binding, or for new/unmatched IDs, the enemy remains a
-  generic unknown contact. A scenario hash alone is insufficient because an
-  arbitrary restored snapshot can change subtype. The private identity lookup
-  is never added to the map API or exposed as an enemy roster.
+- Perspective policy **1.2.0** adds only a bounded public `display_name` to
+  current visible-contact evidence. New GREEN recordings include a separate
+  `native-visible-contact-identity/1.0` allowlist derived from current Native
+  identity; replay reads it only after current visibility validation. This avoids
+  stale GREEN template classification and preserves exact tank/vehicle H/M/L
+  labels. Missing, malformed or foreign-side current identity remains UNKNOWN;
+  no private state or scenario fallback fills a broken current record.
+- Exact historical policy **1.1.0** remains readable and strict Source replay
+  uses its original projector/export shape. Historical compact Native archives
+  may use their embedded split scenario only after the computed scenario hash
+  and ID match the archive. Only currently visible, opposite-side IDs with
+  consistent recorded type/subtype receive `SCENARIO_DERIVED_IDENTITY`, marked
+  `HASH_BOUND_EMBEDDED_SCENARIO`. These are **static scenario labels**, not original
+  observed identity or strict replay verification; old recordings cannot prove
+  that an arbitrary restored runtime had unchanged subtype. Missing bindings,
+  missing IDs and contradictory codes stay UNKNOWN. The private lookup is never
+  exposed by the map API or as a hidden-enemy roster.
+- Legacy full archives retain the stronger existing optional scenario path:
+  adjacent `native-realtime-match-summary/1.1` must report an exact boolean
+  strict replay match and bind ZIP hash, scenario hash/ID, seed and final state
+  hash under recognized adjudication semantics. Its verification label remains
+  `PUBLICATION_REPORTED_STRICT_REPLAY_MATCH`, never viewer-performed verification.
 - Derived views do not claim complete side-filtered action/judge evidence. Their
   action and judge arrays are empty and side analysis is null. The UI explicitly
   says global event/audit details are not shown in a side view.

@@ -1,0 +1,24 @@
+name: Self-contained decision contracts
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ['3.10', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install -e '.[dev]'
+      - run: python -m compileall -q src scripts
+      - name: Dependency-light decision contracts
+        env:
+          PYTHONPATH: src:.
+        run: python -m unittest checks.test_candidate_limit_255 checks.test_strategy_jev checks.test_decision_records checks.test_rl_rules_launcher -v

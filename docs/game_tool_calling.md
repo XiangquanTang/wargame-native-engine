@@ -2,7 +2,9 @@
 
 这组函数用于虚拟兵棋引擎。宿主绑定会话和席位，LLM 提供 JSON 参数。三类职责分开：
 
-1. `game_region_visibility` 回答“这个算子能否观察指定区域里的假设目标”。
+1. `game_visibility_range` / `game_attack_range` 直接读取所选己方算子的可视范围、
+   所选武器的理论可打击范围；与前端使用同一份引擎 tactical overlay。
+   `game_region_visibility` 则回答“这个算子能否观察指定区域里的指定假设目标”。
 2. `game_weapon_catalog` 提供武器映射；`game_fire_effect` 估算打击效果。
 3. 操作统一走 `preview_game_operation` → `submit_game_operation` →
    `game_command_result`。
@@ -14,6 +16,9 @@
 查询模块计算只读结果，`ProductOperationService` 处理操作预检和执行。
 
 - 区域查询：`core/region_visibility.py` 中的类型、参数校验与结果。
+- 完整范围：`core/tactical_overlay.py` 为既有引擎/UI 数据契约；
+  `RealtimeAgentSession.tactical_overlay_snapshot` 原子绑定身份与冻结投影，
+  两个新工具只投影其中的字段，不另算 LOS、射程、准备状态或合法目标。
 - 打击查询：`adjudication/fire_effect_query.py`；武器映射：`adjudication/weapon_catalog.py`。
 - 操作意图：`agents/seat.py` 的 `SeatOperation`。
 - 接口入口：`agents/tool_calling.py`；可选 JSON 边界：`agents/tool_transport.py`。
@@ -52,6 +57,17 @@ with TemporaryDirectory() as directory:
         reset = session.reset(seed=42)
         tools = GameToolAdapter(session, reset.red_binding)
         observation = tools.dispatch("game_observation", {})
+        visible_range = tools.dispatch("game_visibility_range", {
+            "observation_version": observation["observation_version"],
+            "actor_id": 1,
+        })
+        attack_range = tools.dispatch("game_attack_range", {
+            "observation_version": observation["observation_version"],
+            "actor_id": 1, "weapon_id": 36,
+        })
+        assert visible_range["actor"]["current_hex"] == 101
+        assert attack_range["weapon_envelope"]["weapon_id"] == 36
+        assert attack_range["readiness_evaluated"] is False
         visibility = tools.dispatch("game_region_visibility", {
             "observation_version": observation["observation_version"],
             "actor_id": 1,
@@ -97,13 +113,17 @@ with TemporaryDirectory() as directory:
         session.close()
 ```
 
-## 八个函数的输入与输出
+## 十个函数的输入与输出
 
 所有响应都经过 JSON 序列化并与内部对象断开引用。查询返回
 `episode_id`、`side`、`observation_version`、tick/frame/time 身份信息。
 
 - `game_observation({})`：当前己方观测、版本及终局标记。
 - `game_capabilities({actor_ids})`：选定己方算子的候选操作。
+- `game_visibility_range({observation_version, actor_id})`：
+  返回完整 `visibility_field`（总格号及 `by_target_domain` 分组），不是敌军清单。
+- `game_attack_range({observation_version, actor_id, weapon_id})`：
+  返回指定已携带武器的 `weapon_envelope`，不混入其它武器范围。
 - `game_region_visibility({observation_version, actor_id, region, target_profile, actor_assertion?})`：
   结果位于 `visibility`，包括 `coverage=all|some|none`、`all_visible`、
   `any_visible`、`visible_count`、`coverage_fraction` 和逐格结果。
@@ -118,6 +138,37 @@ with TemporaryDirectory() as directory:
   提交原样预检的操作，`accepted` 表示已排队。
 - `game_command_result({command_sequence})`：读取本适配器提交的 command 和 executions。
   `APPLIED` 表示命令已交给引擎；长耗时动作的完成状态见 executions。
+
+### 两个完整范围工具：最小封装，复用前端权威结果
+
+只接受上述必填参数，不能传入 `side`、坐标覆盖、分页或截断上限。
+返回 `actor={actor_id,current_hex,column,row}`；`current_hex` 来自同版本己方
+Source 投影，遵循 `row*100+column`，不将移动中的渲染坐标四舍五入。
+外层同时绑定 episode、side、observation_version、tick、frame、sim_time_ms
+和 `overlay_schema`。刷新后旧版本明确拒绝，不能自动把旧查询改绑新帧。
+
+- **可视范围**：`semantics=observable_unconcealed_ground_target`。
+  `hex_ids` 是 `PERSONNEL`、`VEHICLE` 两类范围的并集；精确类别见
+  `by_target_domain`。假设目标存活、已部署、未隐蔽、高度 0、无空射暴露信号。
+  这不是所有目标类型的万能可视范围；空中/隐蔽等不同假设继续使用
+  `game_region_visibility`。观察者可为现有引擎支持的地面、直升机或无人机算子。
+- **可打击范围**：`semantics=theoretical_direct_fire_envelope`。
+  `weapon_envelope` 包含 `weapon_id`、`maximum_range`、`target_domains`、`hex_ids`。
+  这是指定武器按现有地图 LOS 和射程规则得到的**理论地面直射几何包络**，
+  不是引导/间瞄范围，也不保证范围内有目标、可观察目标、命中或能立即开火。
+  `readiness_evaluated=false` 明示未重算锁定、冷却、弹药、过渡等准备状态。
+  已携带但当前不可开火的武器仍可查询几何包络；无适用地面类型时空范围是有效结果。
+  未携带武器报 `weapon_not_carried`，不能借公开武器目录查询它作为己方装备的范围。
+
+实际操作仍走 `game_capabilities` → preview → submit → command result。
+尤其 v22 的射击 preview 可能只接纳己方/目标绑定正确的**意图**；
+`preview.can_execute=true`、submit 的排队回执均不保证武器准备完成，
+锁定武器不匹配、冷却或过渡阻塞仍由原有执行校验拒绝。
+范围工具不生成 preview、不提交命令、不推进时间、不消耗弹药或随机数。
+
+两工具与前端共享 `(side, observation_version, actor_id)` 缓存；同帧连续查询
+可视/武器范围不会重复计算 tactical overlay。只返回完整范围，无静默截断；
+超过宿主响应字节上限时返回 `response_too_large`，由宿主明确调整上限。
 
 ### 区域可见性参数
 
@@ -246,6 +297,7 @@ JSON 输入拒绝重复键、非对象根、非有限数字、无效 Unicode、�
 ```bash
 PYTHONPATH=src python -m unittest discover -s devtools/checks -p 'test_game_tool*.py' -v
 PYTHONPATH=src python -m unittest checks.test_public_interface_contract checks.test_fire_effect_tool_modes -v
+PYTHONPATH=src python -m unittest checks.test_game_range_tools -v
 ```
 
 RL 训练仍使用 `NativeTrainingEnv` 的 decision-v1/v2 与对应

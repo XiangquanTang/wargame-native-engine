@@ -139,21 +139,25 @@
       if (!mapped) {
         return unknownDescriptor(typeCode, subtypeCode);
       }
-      // Source 2_0 is reused across maps for tanks of different weights.
-      // Refine ONLY an already mapped tank using exact public class names.
-      // Never inspect armor, weapon IDs, raw attributes or arbitrary substrings.
-      const tankWeights = { "重型坦克": "heavy", "中型坦克": "medium", "轻型坦克": "light" };
-      const sourceTank = key === "2_0" && mapped.base_symbol === "tank";
-      const weight = sourceTank && Object.hasOwn(tankWeights, viewerUnit.name)
-        ? tankWeights[viewerUnit.name] : null;
-      const modifiers = sourceTank
+      // Source tank/vehicle codes are reused across maps for different weights.
+      // Refine ONLY a mapped platform using an exact public model label.
+      // Never inspect armor, weapons, raw attributes or arbitrary substrings.
+      const sourcePlatform = (key === "2_0" && mapped.base_symbol === "tank")
+        ? "坦克" : (key === "2_1" && mapped.base_symbol === "armored_vehicle") ? "战车" : null;
+      const weights = sourcePlatform ? {
+        [`重型${sourcePlatform}`]: "heavy", [`中型${sourcePlatform}`]: "medium",
+        [`轻型${sourcePlatform}`]: "light",
+      } : {};
+      const weight = sourcePlatform && Object.hasOwn(weights, viewerUnit.name)
+        ? weights[viewerUnit.name] : null;
+      const modifiers = sourcePlatform
         ? [...mapped.modifiers.filter((item) => !item.startsWith("armor_")),
           ...(weight ? [`armor_${weight}`] : [])]
         : [...mapped.modifiers];
       return Object.freeze({
         schema: SYMBOL_SCHEMA,
         key,
-        display_name: sourceTank ? (weight ? viewerUnit.name : "坦克") : mapped.display_name,
+        display_name: sourcePlatform ? (weight ? viewerUnit.name : sourcePlatform) : mapped.display_name,
         base_symbol: mapped.base_symbol,
         modifiers: Object.freeze(modifiers),
         status: "MAPPED",

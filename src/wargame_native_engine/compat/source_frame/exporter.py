@@ -4,10 +4,13 @@ from typing import Any, Mapping
 
 from wargame_native_engine.compat.source_frame.models import SourceFrame
 from wargame_native_engine.compat.source_frame.contract import (
-    LEGACY_SOURCE_CONTRACT, ANALYSIS_SOURCE_CONTRACT, SOURCE_CONTRACT_KEY,
+    LEGACY_SOURCE_CONTRACT, SOURCE_ACTION_CONTRACT, SOURCE_CONTRACT_KEY,
+    has_analysis_facts,
     require_source_contract, is_dynamic_source_contract,
 )
+from wargame_native_engine.compat.source_frame.movement_projection import source_move_state
 from wargame_native_engine.core.world import WorldState
+from wargame_native_engine.rules.mounted_position import MOUNTED_POSITION_POLICY, MOUNTED_POSITION_POLICIES
 from wargame_native_engine.io.serialization import json_clone
 
 
@@ -20,12 +23,18 @@ class SourceFrameExporter:
                adjudication: Mapping[str, Any] | None = None,
                project_objective_control: bool = True,
                source_contract: str = LEGACY_SOURCE_CONTRACT,
+               mounted_position_policy: str | None = None,
+               project_contact_identity: bool = False,
                weapon_inventory: tuple[Mapping[str, Any], ...] = ()) -> dict[str, Any]:
         if type(project_objective_control) is not bool:
             raise TypeError("project_objective_control must be an exact bool")
+        if type(project_contact_identity) is not bool:
+            raise TypeError("project_contact_identity must be an exact bool")
         require_source_contract(source_contract)
+        if mounted_position_policy not in MOUNTED_POSITION_POLICIES:
+            raise ValueError("unknown mounted position policy")
         dynamic = is_dynamic_source_contract(source_contract)
-        if source_contract == ANALYSIS_SOURCE_CONTRACT:
+        if has_analysis_facts(source_contract):
             # Lazy import avoids projection facade / observation startup cycle.
             from wargame_native_engine.projection.analysis_facts import (
                 project_native_analysis_facts,
@@ -59,7 +68,8 @@ class SourceFrameExporter:
                 "basic_speed": state.basic_speed,
                 "speed": state.speed, "altitude": state.altitude,
                 "move_path": list(state.move_path),
-                "move_state": 1 if state.movement_mode == "MARCHING" else 0,
+                "move_state": (source_move_state(state) if source_contract == SOURCE_ACTION_CONTRACT
+                               else 1 if state.movement_mode == "MARCHING" else 0),
                 "stop": int(state.stopped),
                 "move_to_stop_remain_time": (
                     state.move_to_stop_remaining_ms / 1000.0),
@@ -97,6 +107,34 @@ class SourceFrameExporter:
                 "transition_remaining_ms": state.transition_remaining_ms,
                 "cur_pos_millionths": state.cur_pos_millionths,
             }
+            if state.mounted_on is not None and mounted_position_policy == MOUNTED_POSITION_POLICY:
+                carrier = world.operators.get(state.mounted_on)
+                if carrier is None or carrier.passenger_id != operator_id or carrier.side != state.side:
+                    raise ValueError("BOARDING_CARRIER_RELATION_MISMATCH")
+                # This is carried location, not a passenger MOVE. Keep the
+                # passenger route empty and record the carrier segment separately.
+                raw["cur_hex"] = (carrier.current_hex if carrier.current_hex is not None
+                                  else int(round(carrier.y)) * 100 + int(round(carrier.x)))
+                raw["cur_pos"] = carrier.cur_pos
+                raw["move_path"] = []
+                extra["native"]["cur_pos_millionths"] = carrier.cur_pos_millionths
+                extra["native"]["mounted_position"] = {
+                    "policy": mounted_position_policy,
+                    "carrier_id": carrier.operator_id,
+                    "current_hex": raw["cur_hex"],
+                    "movement_target_hex": carrier.segment_to_hex,
+                    "cur_pos_millionths": carrier.cur_pos_millionths,
+                }
+            if project_contact_identity:
+                # Deliberate policy1.2 identification; never export all raw state.
+                from wargame_native_engine.core.observation import contact_identity_record
+                extra["native"]["contact_identity"] = contact_identity_record(state)
+            if source_contract == SOURCE_ACTION_CONTRACT:
+                extra["native"]["movement_projection"] = {
+                    "schema_version": "native-source-movement-export/1.0",
+                    "status": "MAPPED" if raw["move_state"] is not None else "UNMAPPED",
+                    "source_enum": "MoveType:MANEUVER=0,MARCH=1,WALK=2,FLY=3",
+                }
             if dynamic:
                 if state.command_lost or raw.get("lose_control"):
                     extra["native"]["command_lost"] = state.command_lost
@@ -163,7 +201,7 @@ class SourceFrameExporter:
                     "passenger_id": state.passenger_id,
                     "movement_locked": state.movement_locked,
                 })
-            if source_contract == ANALYSIS_SOURCE_CONTRACT:
+            if has_analysis_facts(source_contract):
                 extra["native"]["analysis_facts"] = project_native_analysis_facts(state)
             if state.lifecycle_profile_id is not None:
                 extra["native"].update({

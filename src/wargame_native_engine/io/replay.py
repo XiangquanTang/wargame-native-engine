@@ -525,6 +525,9 @@ def replay_source_archive(scenario: NativeScenario, source: str | Path, *,
         SourceCompatibleEnvironment,
     )
 
+    from wargame_native_engine.observations.perspective import PerspectiveProjector
+    from wargame_native_engine.rules.perspective import recorded_perspective_policy
+
     frame_iterator = archive.iter_frames()
     _, _, initial_frame = next(frame_iterator)
     environment = SourceCompatibleEnvironment(
@@ -543,6 +546,7 @@ def replay_source_archive(scenario: NativeScenario, source: str | Path, *,
             ),
         )),
         template=initial_frame,
+        projector=PerspectiveProjector(recorded_perspective_policy(manifest)),
         engine_version=manifest.get("engine_version", ENGINE_VERSION),
         source_contract=source_contract,
     )
@@ -1035,6 +1039,7 @@ def _classic_action_records(result: StepResult) -> list[Mapping[str, Any]]:
 
 def _mounted_position_policy(record):
     policy = record.get("mounted_position_policy")
-    if policy not in {None, "native-mounted-position-sync/1.0"}:
+    from wargame_native_engine.rules.mounted_position import MOUNTED_POSITION_POLICIES
+    if policy not in MOUNTED_POSITION_POLICIES:
         raise ValueError("unknown mounted position policy")
     return policy

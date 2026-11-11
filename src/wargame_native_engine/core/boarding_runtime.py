@@ -25,6 +25,8 @@ from wargame_native_engine.core.boarding import (
 )
 from wargame_native_engine.core.event import EventType
 from wargame_native_engine.core.world import WorldState
+
+from wargame_native_engine.rules.mounted_position import MOUNTED_POSITION_POLICY, MOUNTED_POSITION_POLICIES
 from wargame_native_engine.rules.boarding import BoardingAuthority
 
 
@@ -52,7 +54,8 @@ def apply_source_boarding_intents(
 ) -> Iterator[SourceBoardingEvent]:
     """Apply accepted relation changes and create active transitions."""
 
-    transitions = list(world.boarding_transitions)
+    transitions = list(normalize_boarding_transitions(world.boarding_transitions))
+    used_ids = {item.transition_id for item in transitions}
     for intent in sorted(
         intents,
         key=lambda item: item.routed.action_sequence,
@@ -63,11 +66,18 @@ def apply_source_boarding_intents(
         profile = authority.profile(request.profile_id)
         if profile is None:
             raise RuntimeError("BOARDING_PROFILE_UNAVAILABLE")
+        # Action IDs identify reusable command content, not executions. Keep the
+        # historical ID for the first execution (old snapshots/replays), then
+        # allocate from retained history, including this batch. No hidden counter
+        # or randomness: restoring the same world reproduces the same IDs.
+        base_id = boarding_transition_id(request.action_id, intent.transition_type)
+        transition_id = base_id
+        occurrence = 2
+        while transition_id in used_ids:
+            transition_id = f"{base_id}-{occurrence}"
+            occurrence += 1
         transition = BoardingTransition(
-            transition_id=boarding_transition_id(
-                request.action_id,
-                intent.transition_type,
-            ),
+            transition_id=transition_id,
             transition_type=intent.transition_type,
             actor_id=request.actor_id,
             carrier_id=request.carrier_id,
@@ -80,6 +90,10 @@ def apply_source_boarding_intents(
             authority_version=request.authority_version,
             authority_hash=request.authority_hash,
         )
+        # Unique execution IDs must not legitimize simultaneous transitions for
+        # the same carrier/passenger. Validate before changing their relation.
+        normalize_boarding_transitions((*transitions, transition))
+        used_ids.add(transition_id)
         carrier.movement_locked = True
         if intent.transition_type is BoardingTransitionType.BOARD:
             carrier.passenger_id = passenger.operator_id
@@ -113,11 +127,12 @@ def apply_source_boarding_intents(
     world.boarding_transitions = normalize_boarding_transitions(transitions)
 
 
-def sync_mounted_passenger_positions(world: WorldState) -> None:
+def sync_mounted_passenger_positions(world: WorldState, *, include_progress: bool = False) -> None:
     """Carry coordinates with the explicit relation; passengers stay off-map.
 
-    This runs only inside the unified engine's movement advancement. It does
-    not create a passenger MOVE, grant visibility, or change deployment.
+    The legacy policy calls this after movement; the current policy also
+    initializes carried coordinates on reset and includes segment progress.
+    It never creates a passenger MOVE, grants visibility, or changes deployment.
     """
     for passenger in sorted(world.operators.values(), key=lambda item: item.operator_id):
         if passenger.mounted_on is None or not passenger.alive:
@@ -126,6 +141,11 @@ def sync_mounted_passenger_positions(world: WorldState) -> None:
         if carrier is None or carrier.passenger_id != passenger.operator_id or carrier.side != passenger.side:
             raise RuntimeError("BOARDING_CARRIER_RELATION_MISMATCH")
         passenger.x, passenger.y = carrier.x, carrier.y
+        if include_progress:
+            # current_hex is the independent occupancy slot, not the carried
+            # location: keep it None and never copy the carrier's active route
+            # or segment timers (which would execute a second movement task).
+            passenger.cur_pos_millionths = carrier.cur_pos_millionths
 
 
 def advance_source_boarding_transitions(

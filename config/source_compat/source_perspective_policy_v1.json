@@ -1,6 +1,6 @@
 {
   "policy_id": "native-source-perspectives",
-  "policy_version": "1.1.0",
+  "policy_version": "1.2.0",
   "schema_version": "source-perspective-policy/1.1",
   "perspectives": {
     "RED": 0,
@@ -68,7 +68,8 @@
     "altitude",
     "alive",
     "destroyed",
-    "motion_state"
+    "motion_state",
+    "display_name"
   ],
   "visible_enemy_hidden_fields": [
     "health",

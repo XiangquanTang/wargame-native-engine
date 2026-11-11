@@ -11,8 +11,8 @@ dist/
 .idea/
 .DS_Store
 local_data/
+.update-backups/
 reports/
-tests/
 .pytest_cache/
 .coverage*
 logs/
@@ -22,9 +22,17 @@ outputs/
 output/
 artifacts/
 *.log
-
-# Keep developer-only material local in the streamlined GitHub release.
-/checks/
-/devtools/
-/.github/
-/benchmarks/*.py
+# release_assets contains explicitly approved publishable map/model inputs.
+# Do not copy unrelated local caches, credentials or model directories here.
+# Large/private model or archive files are ignored except the approved assets.
+*.pt
+*.pth
+*.safetensors
+*.bin
+*.zip
+*.npz
+*.npy
+!release_assets/models/ppo/capture-v3-final.pt
+!release_assets/maps/221/map_221.zip
+!release_assets/maps/123/map_123.zip
+!examples/map123/123see.npz

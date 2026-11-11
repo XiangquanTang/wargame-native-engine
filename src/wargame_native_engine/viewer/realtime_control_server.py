@@ -2,8 +2,8 @@
 
 The HTTP layer admits only high-level :class:`SeatOperation` descriptions.
 It never stages frozen action identifiers and never advances the simulation.
-``RealtimeAgentSession`` owns command admission and its background thread is
-the sole fixed-tick authority.
+``RealtimeAgentSession`` owns command admission. Its background loop or the
+explicit policy host is the sole fixed-tick authority; HTTP never advances time.
 """
 
 from __future__ import annotations
@@ -86,6 +86,7 @@ class RealtimeDualControlHTTPServer(ThreadingHTTPServer):
         blue_token: str,
         map_data: Mapping[str, object],
         weapon_profiles: Mapping[str | int, object] | None = None,
+        seat_policies: Mapping[str, str] | None = None,
     ) -> None:
         if not isinstance(session, RealtimeAgentSession):
             raise TypeError("session must be a RealtimeAgentSession")
@@ -99,6 +100,11 @@ class RealtimeDualControlHTTPServer(ThreadingHTTPServer):
             raise ValueError("RED and BLUE tokens must differ")
         self.map_data = dict(map_data)
         self.weapon_profiles = deepcopy(dict(weapon_profiles or {}))
+        self.seat_policies = {"red": "human", "blue": "human"}
+        for side, name in (seat_policies or {}).items():
+            if side not in self.seat_policies or name not in {"human", "simple-capture"}:
+                raise ValueError("unsupported seat policy")
+            self.seat_policies[side] = name
         self._previews: dict[str, _StoredRealtimePreview] = {}
         self._execute_requests: dict[
             str, tuple[str, dict[str, object]]
@@ -136,8 +142,8 @@ class RealtimeDualControlHTTPServer(ThreadingHTTPServer):
             summary.pending_command_count, summary.last_command,
         )
 
-    @staticmethod
     def _status_record(
+        self,
         side: str,
         seat_view: RealtimeSeatView | RealtimeStatusSnapshot,
         controller_view: ControllerView | RealtimeStatusSnapshot,
@@ -149,6 +155,7 @@ class RealtimeDualControlHTTPServer(ThreadingHTTPServer):
         can_operate = (
             not ended
             and lifecycle is RealtimeLifecycleState.ACCEPTING
+            and getattr(self, "seat_policies", {}).get(side, "human") == "human"
         )
         if ended:
             state = "TERMINAL"
@@ -171,6 +178,7 @@ class RealtimeDualControlHTTPServer(ThreadingHTTPServer):
             "winner": controller_view.winner,
             "outcome": controller_view.outcome,
             "can_operate": can_operate,
+            "seat_policy": getattr(self, "seat_policies", {}).get(side, "human"),
             "pending_command_count": pending_count,
             "last_command": (
                 None
@@ -182,6 +190,13 @@ class RealtimeDualControlHTTPServer(ThreadingHTTPServer):
                 }
             ),
         }
+
+    def require_human_control(self, side: str) -> None:
+        if getattr(self, "seat_policies", {}).get(side, "human") != "human":
+            raise CommandGatewayError(
+                "seat_policy_controlled",
+                "this seat is controlled by simple-capture; browser is read-only",
+            )
 
     def store_preview(
         self,
@@ -216,6 +231,7 @@ class RealtimeDualControlHTTPServer(ThreadingHTTPServer):
         request_id: str,
         confirm_partial: bool,
     ) -> dict[str, object]:
+        self.require_human_control(binding.seat)
         with self._adapter_lock:
             cached = self._execute_requests.get(request_id)
             if cached is not None:
@@ -303,9 +319,18 @@ class RealtimeDualControlRequestHandler(BaseHTTPRequestHandler):
             if path == "/api/product/bootstrap":
                 side, binding = self._seat(_one(query, "token"))
                 include_map = _bootstrap_include_map(query)
+                overlay_unit_id = (
+                    _exact_nonnegative_int(
+                        _one(query, "overlay_unit_id"), "overlay_unit_id",
+                    )
+                    if "overlay_unit_id" in query else None
+                )
                 self._send_json(
                     HTTPStatus.OK,
-                    self._bootstrap(side, binding, include_map=include_map),
+                    self._bootstrap(
+                        side, binding, include_map=include_map,
+                        overlay_unit_id=overlay_unit_id,
+                    ),
                 )
                 return
             if path == "/api/product/status":
@@ -375,21 +400,15 @@ class RealtimeDualControlRequestHandler(BaseHTTPRequestHandler):
                     body["observation_version"], "observation_version"
                 )
                 unit_id = _exact_nonnegative_int(body["unit_id"], "unit_id")
-                overlay = self.server.realtime_session.tactical_overlay(
-                    binding,
-                    observation_version=version,
-                    unit_id=unit_id,
-                )
-                seat_view, controller_view = (
-                    self.server.realtime_session.controller_snapshot(binding)
-                )
-                if seat_view.observation_version != version:
-                    raise RealtimeAgentSessionError(
-                        "tactical_overlay_observation_stale",
-                        "tactical overlay requires the latest observation version",
+                seat_view, controller_view, overlay = (
+                    self.server.realtime_session.tactical_overlay_snapshot(
+                        binding,
+                        observation_version=version,
+                        unit_id=unit_id,
                     )
+                )
                 record = overlay.to_record()
-                record["observation_version"] = version
+                record["observation_version"] = seat_view.observation_version
                 record["frame_index"] = seat_view.frame_index
                 record["confirmed_contacts"] = _confirmed_contacts(
                     side,
@@ -413,7 +432,8 @@ class RealtimeDualControlRequestHandler(BaseHTTPRequestHandler):
                     raise ValueError(
                         "realtime operation preview has missing or unsupported fields"
                     )
-                _side, binding = self._seat(body["token"])
+                side, binding = self._seat(body["token"])
+                self.server.require_human_control(side)
                 version = _exact_nonnegative_int(
                     body["observation_version"], "observation_version"
                 )
@@ -489,10 +509,19 @@ class RealtimeDualControlRequestHandler(BaseHTTPRequestHandler):
         binding: RealtimeSeatBinding,
         *,
         include_map: bool = True,
+        overlay_unit_id: int | None = None,
     ) -> dict[str, object]:
-        seat_view, controller_view = self.server.realtime_session.controller_snapshot(
-            binding
-        )
+        overlay = None
+        if overlay_unit_id is None:
+            seat_view, controller_view = self.server.realtime_session.controller_snapshot(
+                binding
+            )
+        else:
+            seat_view, controller_view, overlay, base = (
+                self.server.realtime_session.current_tactical_overlay_snapshot(
+                    binding, unit_id=overlay_unit_id,
+                )
+            )
         scene = self._scene(side, controller_view, include_map=include_map)
         frame = scene.get("frame")
         if not isinstance(frame, Mapping):
@@ -516,7 +545,7 @@ class RealtimeDualControlRequestHandler(BaseHTTPRequestHandler):
                 ).get("mission_areas", [])
             ),
         }
-        return {
+        result = {
             "session_id": self.server.realtime_session.episode_id,
             "side": side,
             "control_mode": "realtime",
@@ -529,6 +558,22 @@ class RealtimeDualControlRequestHandler(BaseHTTPRequestHandler):
                 side, seat_view, controller_view,
             ),
         }
+        if overlay is not None:
+            record = overlay.to_record()
+            record["observation_version"] = seat_view.observation_version
+            record["frame_index"] = seat_view.frame_index
+            record["confirmed_contacts"] = _confirmed_contacts(
+                side, overlay_unit_id, controller_view,
+            )
+            capabilities = build_human_capabilities(
+                base, controller_view, [overlay_unit_id],
+                weapon_profiles=self.server.weapon_profiles,
+            )
+            capabilities["observation_version"] = seat_view.observation_version
+            capabilities["frame_index"] = seat_view.frame_index
+            result["tactical_overlay"] = record
+            result["capabilities"] = capabilities
+        return result
 
     def _scene(
         self, side: str, view: ControllerView, *, include_map: bool = True,
@@ -714,6 +759,7 @@ def create_realtime_dual_control_server(
     blue_token: str,
     map_data: Mapping[str, object],
     weapon_profiles: Mapping[str | int, object] | None = None,
+    seat_policies: Mapping[str, str] | None = None,
     host: str = "127.0.0.1",
     port: int = 8003,
 ) -> RealtimeDualControlHTTPServer:
@@ -726,6 +772,7 @@ def create_realtime_dual_control_server(
         blue_token=blue_token,
         map_data=map_data,
         weapon_profiles=weapon_profiles,
+        seat_policies=seat_policies,
     )
 
 

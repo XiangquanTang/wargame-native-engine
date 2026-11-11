@@ -5,6 +5,9 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from wargame_native_engine.compat.source_frame.mapping import SourceMappings
+from wargame_native_engine.compat.source_frame.contract import (
+    SOURCE_ACTION_CONTRACT, SOURCE_CONTRACT_KEY,
+)
 from wargame_native_engine.compat.source_frame.models import (
     SourceControlPoint, SourceFrame, SourceIndirectPoint, SourceLandmarks,
     SourceScoreState, SourceTimeState, SourceUnitState,
@@ -46,9 +49,13 @@ class SourceFrameImporter:
     def from_dict(self, value: Mapping[str, Any], *, source_hash: str) -> SourceFrame:
         time = _mapping(value["time"], "time")
         warnings: list[str] = []
-        operators = tuple(self._unit(item, False, warnings)
+        extra = value.get("extra")
+        native = extra.get("native") if isinstance(extra, Mapping) else None
+        allow_unknown_movement = (isinstance(native, Mapping)
+            and native.get(SOURCE_CONTRACT_KEY) == SOURCE_ACTION_CONTRACT)
+        operators = tuple(self._unit(item, False, warnings, allow_unknown_movement)
                           for item in _sequence(value["operators"], "operators"))
-        passengers = tuple(self._unit(item, True, warnings)
+        passengers = tuple(self._unit(item, True, warnings, allow_unknown_movement)
                            for item in _sequence(value["passengers"], "passengers"))
         ids = [item.obj_id for item in operators + passengers]
         if len(ids) != len(set(ids)):
@@ -82,6 +89,8 @@ class SourceFrameImporter:
         operators: dict[int, OperatorState] = {}
         records: list[dict[str, Any]] = []
         for source in sorted(frame.all_units, key=lambda item: item.obj_id):
+            if "move_state" in source.raw and source.raw["move_state"] is None:
+                raise ValueError("cannot convert unknown Source move_state to Native movement mode")
             side = self.mappings.side(source.color)
             domain = self.mappings.domain(source.type_code)
             armor = self.mappings.armor(source.armor_code)
@@ -166,7 +175,7 @@ class SourceFrameImporter:
 
     @staticmethod
     def _unit(value: Any, passenger: bool,
-              warnings: list[str]) -> SourceUnitState:
+              warnings: list[str], allow_unknown_movement: bool = False) -> SourceUnitState:
         item = _mapping(value, "unit")
         required = {"obj_id", "color", "type", "sub_type", "name", "armor",
                     "cur_hex", "blood", "max_blood"}
@@ -189,6 +198,19 @@ class SourceFrameImporter:
             normalized_observe_distance = ()
         else:
             normalized_observe_distance = tuple(float(value) for value in observe_distance)
+        move_state = item.get("move_state", 0)
+        if move_state is None and allow_unknown_movement:
+            extra = item.get("extra")
+            native = extra.get("native") if isinstance(extra, Mapping) else None
+            projection = native.get("movement_projection") if isinstance(native, Mapping) else None
+            if (not isinstance(projection, Mapping)
+                    or projection.get("schema_version") != "native-source-movement-export/1.0"
+                    or projection.get("status") != "UNMAPPED"):
+                raise ValueError("null move_state requires explicit UNMAPPED movement projection")
+            warnings.append(f"unit {item['obj_id']} move_state is UNKNOWN; Native mode preserved separately")
+            marching = False  # No marching proof; NOT a NORMAL-mode assertion.
+        else:
+            marching = int(move_state) == 1  # Preserve historical input validation.
         return SourceUnitState(
             obj_id=int(item["obj_id"]), color=int(item["color"]),
             type_code=int(item["type"]), sub_type_code=int(item["sub_type"]),
@@ -198,7 +220,7 @@ class SourceFrameImporter:
             blood=blood, max_blood=max_blood,
             basic_speed=float(item.get("basic_speed", 0.0)),
             speed=float(item.get("speed", 0.0)), altitude=float(item.get("altitude", 0.0)),
-            stopped=bool(item.get("stop", 0)), marching=int(item.get("move_state", 0)) == 1,
+            stopped=bool(item.get("stop", 0)), marching=marching,
             suppressed=False, keep_code=int(item.get("keep", 0)),
             close_combat=bool(item.get("close_combat", 0)), alive=blood > 0,
             carry_weapon_ids=tuple(int(value) for value in item.get("carry_weapon_ids", [])),

@@ -100,3 +100,14 @@ For Python integrations, set `analysis_model="native"` on
 `ScenarioMatchFactory`, `ScenarioMatchFactory.from_path`, or
 `WargameFacade.create_match`. Session publication recomputes the selected model
 from its recorded facts and verifies exact agreement before publishing.
+
+## Compact viewer projections (0.4.23.1)
+
+Compact playback now derives analysis on demand without creating an analysis
+sidecar. A recorded `analysis_model` takes priority. For old compact archives
+without this declaration, the viewer may select the existing Native analyzer
+when a matching versioned Native contract and complete first-frame facts support
+it; this is visibly labelled a **playback-derived Native choice**, not evidence
+of the original online analyzer. Source remains separately selectable and keeps
+its missing inputs unknown. This limited viewer selection does not change the
+explicit `--analysis-model` contract of the independent generators above.

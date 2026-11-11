@@ -272,7 +272,7 @@ function statusText() {
       WEAPON_LOCKED_TO_OTHER_WEAPON: "仅可使用已锁定武器，切换前须解除锁定。",
       WEAPON_UNLOCK_REQUIRED: "请先解除锁定。",
       WEAPON_ID_REQUIRED: "请选择具体武器。",
-      ACTOR_CONTROL_LOST: "算子失控，无法锁定或解锁。",
+      ACTOR_CONTROL_LOST: "算子失控，无法锁定、解锁或展开武器。",
       WEAPON_NOT_LOCKED: "机动射击需要先锁定武器；请停车完成锁定后再机动。",
       WEAPON_ON_COOLDOWN: "所选武器仍在冷却。",
     };
@@ -379,9 +379,18 @@ function renderToolbar() {
   const singleSelected = selectedUnitIds.size === 1;
   $("toggle-visibility-overlay").textContent = visibilityOverlayEnabled ? "隐藏可见区域" : "可见区域";
   $("toggle-weapon-envelope").textContent = weaponEnvelopeEnabled ? "隐藏打击范围" : "打击范围";
-  $("overlay-status").textContent = overlayLoading ? "范围加载中…" : overlayError ||
-    (weaponEnvelopeEnabled && !Number.isInteger(selectedWeaponIds.get(selectedIds()[0]))
-      && directFireWeapons().length > 1 ? "请选择武器" : "");
+  const overlayCounts = [];
+  if (tacticalOverlay && visibilityOverlayEnabled) {
+    overlayCounts.push(`可见 ${tacticalOverlayHexes("visibility").length} 格`);
+  }
+  const chooseWeapon = weaponEnvelopeEnabled
+    && !Number.isInteger(selectedWeaponIds.get(selectedIds()[0]))
+    && directFireWeapons().length > 1;
+  if (tacticalOverlay && weaponEnvelopeEnabled && !chooseWeapon) {
+    overlayCounts.push(`打击 ${tacticalOverlayHexes("weapon").length} 格`);
+  }
+  $("overlay-status").textContent = overlayLoading ? "范围加载中…" : overlayError
+    || [...overlayCounts, ...(chooseWeapon ? ["请选择武器"] : [])].join(" · ");
   $("overlay-status").hidden = !$("overlay-status").textContent;
   $("toggle-visibility-overlay").disabled = !singleSelected;
   $("toggle-weapon-envelope").disabled = !singleSelected;
@@ -658,18 +667,76 @@ function installStaticMap(state) {
   }
 }
 
+function selectedOverlayUnitId() {
+  return current?.control_mode === "realtime" && current?.product_status?.can_operate !== false
+    && selectedIds().length === 1
+    && (visibilityOverlayEnabled || weaponEnvelopeEnabled) ? selectedIds()[0] : null;
+}
+
+function validateOverlaySnapshot(next, unitId) {
+  const result = next.tactical_overlay;
+  const version = next.observation_version;
+  const frameIndex = next.product_status?.frame_index;
+  const sameVersion = (value) => value
+    && value.observation_version === version && value.frame_index === frameIndex;
+  if (!Number.isInteger(version) || !Number.isInteger(frameIndex)
+      || next.scene?.frame?.frame_index !== frameIndex
+      || !sameVersion(next.product_status)
+      || !sameVersion(result) || result.unit_id !== unitId
+      || !sameVersion(next.capabilities)) {
+    throw new Error("范围与场景版本不一致，请重试");
+  }
+  return result;
+}
+
+function cacheTacticalOverlay(result) {
+  tacticalOverlayCache.clear();
+  tacticalOverlayCache.set(JSON.stringify([
+    current.session_id, current.side, current.product_status.frame_index,
+    current.observation_version, result.unit_id,
+  ]), result);
+  tacticalOverlay = result;
+  overlayLoading = false;
+  overlayError = null;
+}
+
 async function loadDisplayState() {
+  const requestedSessionId = current?.session_id;
+  const requestedSide = current?.side;
+  const contextUnchanged = () => requestedSessionId === current?.session_id
+    && requestedSide === current?.side;
   const includeMap = !cachedStaticMap(current);
-  let next = await requestJson(
-    `/api/product/bootstrap?token=${encodeURIComponent(token)}`
-      + `&include_map=${includeMap ? "1" : "0"}`,
-  );
+  const overlayUnitId = selectedOverlayUnitId();
+  const overlayQuery = overlayUnitId === null ? "" : `&overlay_unit_id=${overlayUnitId}`;
+  let next;
+  try {
+    next = await requestJson(
+      `/api/product/bootstrap?token=${encodeURIComponent(token)}`
+        + `&include_map=${includeMap ? "1" : "0"}${overlayQuery}`,
+    );
+  } catch (error) {
+    const sceneOnlyErrors = [
+      "actor_not_owned", "tactical_overlay_query_rejected",
+      "realtime_session_ended", "realtime_session_stopping", "realtime_session_published",
+      "realtime_session_not_accepting", "realtime_session_failed_reset_required",
+      "realtime_session_closed",
+    ];
+    if (overlayUnitId === null || !sceneOnlyErrors.includes(error.code)) throw error;
+    // Actor removal or a terminal/stopping session must not prevent the final
+    // scene/status from refreshing and invalidating obsolete controls.
+    next = await requestJson(
+      `/api/product/bootstrap?token=${encodeURIComponent(token)}`
+        + `&include_map=${includeMap ? "1" : "0"}`,
+    );
+  }
+  if (!contextUnchanged()) return next;
   if (installStaticMap(next)) return next;
 
   if (staticMapContext && !cachedStaticMap(next)) clearStaticMapContext();
   next = await requestJson(
     `/api/product/bootstrap?token=${encodeURIComponent(token)}&include_map=1`,
   );
+  if (!contextUnchanged()) return next;
   if (!installStaticMap(next)) {
     clearStaticMapContext();
     throw new Error("当前会话的静态地图缺失（完整地图重取失败）");
@@ -703,6 +770,42 @@ function clearOperation({ clearSelection = false } = {}) {
   render();
 }
 
+function applyCapabilities(nextCapabilities) {
+  capabilities = nextCapabilities;
+  const pinnedDirectFire = selectedCapability === "DIRECT_FIRE" && draftOperation?.kind === "SHOOT";
+  if (selectedCapability && !capabilityUI.findCapability(capabilities, selectedCapability)
+      && !pinnedDirectFire) {
+    clearOperation();
+    $("tool-instruction").textContent = "该操作当前不可用，请重新选择。";
+    return;
+  }
+  for (const [unitId, weaponId] of selectedWeaponIds) {
+    const weapons = selectedCapability === "WEAPON_LOCK"
+      ? capabilityUI.lockWeapons(capabilities, unitId)
+      : selectedCapability === "DIRECT_FIRE"
+        ? (capabilityUI.directFireUnit(capabilities, unitId)?.weapons || [])
+        : capabilityUI.directFireWeapons(capabilities, unitId);
+    if (!weapons.some((weapon) => Number(weapon.weapon_id) === weaponId)) {
+      advanceInteractionEpoch();
+      selectedWeaponIds.delete(unitId);
+      targetUnitId = null;
+      operationPreview = null;
+      draftOperation = null;
+      previewNeedsRefresh = false;
+      executeRequestId = null;
+    } else if (pinnedDirectFire && !capabilityUI.directFireWeapons(
+      capabilities, unitId,
+    ).some((weapon) => Number(weapon.weapon_id) === weaponId)) {
+      // Polling cannot replace a user's pinned weapon or target. A changed
+      // lock invalidates confirmation freshness, not the submitted intent.
+      previewNeedsRefresh = true;
+      executeRequestId = null;
+      $("tool-instruction").textContent = "所选武器当前受锁定限制；原目标已保留，确认时重新校验。";
+    }
+  }
+  lastError = null;
+}
+
 async function loadCapabilities({ expectedEpoch = interactionEpoch } = {}) {
   const requestedActorIds = selectedIds();
   if (!current || !selectedUnitIds.size) {
@@ -722,49 +825,25 @@ async function loadCapabilities({ expectedEpoch = interactionEpoch } = {}) {
     render();
     return;
   }
+  const requestedSessionId = current.session_id;
+  const requestedSide = current.side;
+  const requestedVersion = current.observation_version;
+  const stillCurrent = () => expectedEpoch === interactionEpoch
+    && requestedSessionId === current?.session_id && requestedSide === current?.side
+    && requestedVersion === current?.observation_version
+    && JSON.stringify(requestedActorIds) === JSON.stringify(selectedIds());
   try {
     const nextCapabilities = await requestJson("/api/product/capabilities", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ token, actor_ids: requestedActorIds }),
     });
-    if (expectedEpoch !== interactionEpoch
-        || JSON.stringify(requestedActorIds) !== JSON.stringify(selectedIds())) return;
-    capabilities = nextCapabilities;
-    const pinnedDirectFire = selectedCapability === "DIRECT_FIRE" && draftOperation?.kind === "SHOOT";
-    if (selectedCapability && !capabilityUI.findCapability(capabilities, selectedCapability)
-        && !pinnedDirectFire) {
-      clearOperation();
-      $("tool-instruction").textContent = "该操作当前不可用，请重新选择。";
-      return;
-    }
-    for (const [unitId, weaponId] of selectedWeaponIds) {
-      const weapons = selectedCapability === "WEAPON_LOCK"
-        ? capabilityUI.lockWeapons(capabilities, unitId)
-        : selectedCapability === "DIRECT_FIRE"
-          ? (capabilityUI.directFireUnit(capabilities, unitId)?.weapons || [])
-          : capabilityUI.directFireWeapons(capabilities, unitId);
-      if (!weapons.some((weapon) => Number(weapon.weapon_id) === weaponId)) {
-        advanceInteractionEpoch();
-        selectedWeaponIds.delete(unitId);
-        targetUnitId = null;
-        operationPreview = null;
-        draftOperation = null;
-        previewNeedsRefresh = false;
-        executeRequestId = null;
-      } else if (pinnedDirectFire && !capabilityUI.directFireWeapons(
-        capabilities, unitId,
-      ).some((weapon) => Number(weapon.weapon_id) === weaponId)) {
-        // Polling cannot replace a user's pinned weapon or target. A changed
-        // lock invalidates confirmation freshness, not the submitted intent.
-        previewNeedsRefresh = true;
-        executeRequestId = null;
-        $("tool-instruction").textContent = "所选武器当前受锁定限制；原目标已保留，确认时重新校验。";
-      }
-    }
-    lastError = null;
+    if (!stillCurrent()) return;
+    if (Number.isInteger(nextCapabilities.observation_version)
+        && nextCapabilities.observation_version < current.observation_version) return;
+    applyCapabilities(nextCapabilities);
   } catch (error) {
-    if (expectedEpoch !== interactionEpoch) return;
+    if (!stillCurrent()) return;
     capabilities = null;
     lastError = `无法读取单位操作：${error.message}`;
   }
@@ -796,33 +875,67 @@ async function loadTacticalOverlay({ force = false } = {}) {
   overlayLoading = true;
   tacticalOverlay = null;
   render();
+  const stillCurrent = () => requestEpoch === overlayRequestEpoch
+    && current?.session_id === sessionId && current?.side === side
+    && current?.product_status?.frame_index === frameIndex
+    && current?.observation_version === observationVersion
+    && selectedIds().length === 1 && selectedIds()[0] === unitId;
   try {
-    const result = await requestJson("/api/product/tactical-overlay", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        token,
-        observation_version: observationVersion,
-        unit_id: unitId,
-      }),
-    });
-    if (requestEpoch !== overlayRequestEpoch
-        || current?.session_id !== sessionId || current?.side !== side
-        || current?.product_status?.frame_index !== frameIndex
-        || current?.observation_version !== observationVersion
-        || selectedIds().length !== 1
-        || selectedIds()[0] !== unitId) return;
-    if (result.unit_id !== unitId || result.observation_version !== observationVersion
-        || result.frame_index !== frameIndex) throw new Error("范围数据已过期，请重试");
-    tacticalOverlayCache.set(cacheKey, result);
+    let result;
+    let resultCacheKey = cacheKey;
+    try {
+      result = await requestJson("/api/product/tactical-overlay", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          token,
+          observation_version: observationVersion,
+          unit_id: unitId,
+        }),
+      });
+      if (!stillCurrent()) return;
+      if (result.unit_id !== unitId || result.observation_version !== observationVersion
+          || result.frame_index !== frameIndex) throw new Error("范围数据已过期，请重试");
+    } catch (error) {
+      if (!stillCurrent()) return;
+      if (!["tactical_overlay_observation_stale", "observation_version_stale"].includes(error.code)
+          || current.control_mode !== "realtime") throw error;
+      // One bounded recovery read, not bootstrap -> capabilities -> retry.
+      // That sequence can always miss the next Tick on a slow connection.
+      // The server instead captures the scene, weapon choices and mask together.
+      const next = await requestJson(
+        `/api/product/bootstrap?token=${encodeURIComponent(token)}`
+          + `&include_map=${cachedStaticMap(current) ? "0" : "1"}`
+          + `&overlay_unit_id=${unitId}`,
+      );
+      if (!stillCurrent()) return;
+      result = validateOverlaySnapshot(next, unitId);
+      if (next.session_id !== sessionId || next.side !== side
+          || next.observation_version < observationVersion) {
+        throw new Error("范围与场景版本不一致，请重试");
+      }
+      if (!installStaticMap(next)) throw new Error("范围场景缺少静态地图，请刷新页面");
+      applyDisplayState(next);
+      if (selectedIds().length !== 1 || selectedIds()[0] !== unitId) return;
+      applyCapabilities(next.capabilities);
+      tacticalOverlayCache.clear();
+      resultCacheKey = JSON.stringify([
+        sessionId, side, next.product_status.frame_index, next.observation_version, unitId,
+      ]);
+    }
+    tacticalOverlayCache.set(resultCacheKey, result);
     tacticalOverlay = result;
     overlayLoading = false;
   } catch (error) {
     if (requestEpoch !== overlayRequestEpoch) return;
     overlayLoading = false;
     overlayError = `范围不可用：${error.message}`;
+  } finally {
+    if (requestEpoch === overlayRequestEpoch) {
+      overlayLoading = false;
+      render();
+    }
   }
-  render();
 }
 
 async function toggleTacticalOverlay(kind) {
@@ -1259,9 +1372,67 @@ async function executeOperation() {
   }
 }
 
+// Apply the dynamic scene as one versioned unit. Overlay recovery uses the same
+// reconciliation as polling, so a newer mask can never paint an older scene.
+function applyDisplayState(next) {
+  const frameChanged = lastFrameIndex !== null
+    && next.product_status.frame_index !== lastFrameIndex;
+  const contextChanged = current && (next.session_id !== current.session_id || next.side !== current.side);
+  const observationChanged = current
+    && next.observation_version !== current.observation_version;
+  if (contextChanged) {
+    // Never carry a draft or uncertain submission into another session/seat.
+    pendingSubmission = null;
+    selectedUnitIds.clear();
+    capabilities = null;
+    activeTool = null;
+    selectedCapability = null;
+    operationPreview = null;
+    draftOperation = null;
+    previewNeedsRefresh = false;
+    executeRequestId = null;
+    targetHex = null;
+    targetUnitId = null;
+    selectedWeaponIds.clear();
+    selectedGuidedPlatform = null;
+    selectedIndirectOption = null;
+    advanceInteractionEpoch();
+  }
+  lastFrameIndex = next.product_status.frame_index;
+  current = next;
+  if ((observationChanged || frameChanged) && operationPreview) {
+    previewNeedsRefresh = true;
+    executeRequestId = null;
+    // Consent remains scoped to the pinned intent and accepted unit subset.
+    // Fresh preview below resets it if that subset changes.
+    $("tool-instruction").textContent = "目标已固定，确认时校验";
+  }
+  if (targetUnitId !== null && ["SHOOT", "GUIDED_FIRE", "INDIRECT_FIRE"].includes(activeTool)
+      && (!unitById(targetUnitId) || unitById(targetUnitId).destroyed
+          || unitById(targetUnitId).alive === false)) {
+    advanceInteractionEpoch();
+    targetUnitId = null;
+    targetHex = null;
+    operationPreview = null;
+    draftOperation = null;
+    previewNeedsRefresh = false;
+    executeRequestId = null;
+  }
+  lastStateReadError = null;
+  const retained = selectedIds().filter((unitId) => (
+    isFriendlySelectable(unitById(unitId))
+  ));
+  const selectionInvalidated = retained.length !== selectedUnitIds.size;
+  if (selectionInvalidated) reconcileInteractionDraft();
+  return { frameChanged, contextChanged, observationChanged, selectionInvalidated };
+}
+
 async function refresh() {
   if (isRefreshing) return;
   const refreshEpoch = interactionEpoch;
+  const refreshOverlayEpoch = overlayRequestEpoch;
+  const refreshSessionId = current?.session_id;
+  const refreshSide = current?.side;
   isRefreshing = true;
   try {
     let next;
@@ -1269,6 +1440,7 @@ async function refresh() {
       const productStatus = await requestJson(
         `/api/product/status?token=${encodeURIComponent(token)}`,
       );
+      if (refreshSessionId !== current?.session_id || refreshSide !== current?.side) return;
       if (productStatus.frame_index === lastFrameIndex
           && productStatus.observation_version === current.observation_version
           && String(productStatus.perspective).toLowerCase() === current.side) {
@@ -1280,56 +1452,26 @@ async function refresh() {
       }
     }
     next = await loadDisplayState();
-    const frameChanged = lastFrameIndex !== null
-      && next.product_status.frame_index !== lastFrameIndex;
-    const contextChanged = current && (next.session_id !== current.session_id || next.side !== current.side);
-    const observationChanged = current
-      && next.observation_version !== current.observation_version;
-    if (contextChanged) {
-      // Never carry a draft or uncertain submission into another session/seat.
-      pendingSubmission = null;
-      selectedUnitIds.clear();
-      capabilities = null;
-      activeTool = null;
-      selectedCapability = null;
-      operationPreview = null;
-      draftOperation = null;
-      previewNeedsRefresh = false;
-      executeRequestId = null;
-      targetHex = null;
-      targetUnitId = null;
-      selectedWeaponIds.clear();
-      selectedGuidedPlatform = null;
-      selectedIndirectOption = null;
-      advanceInteractionEpoch();
-    }
-    lastFrameIndex = next.product_status.frame_index;
-    current = next;
-    if ((observationChanged || frameChanged) && operationPreview) {
-      previewNeedsRefresh = true;
-      executeRequestId = null;
-      // Consent remains scoped to the pinned intent and accepted unit subset.
-      // Fresh preview below resets it if that subset changes.
-      $("tool-instruction").textContent = "目标已固定，确认时校验";
-    }
-    if (targetUnitId !== null && ["SHOOT", "GUIDED_FIRE", "INDIRECT_FIRE"].includes(activeTool)
-        && (!unitById(targetUnitId) || unitById(targetUnitId).destroyed
-            || unitById(targetUnitId).alive === false)) {
-      advanceInteractionEpoch();
-      targetUnitId = null;
-      targetHex = null;
-      operationPreview = null;
-      draftOperation = null;
-      previewNeedsRefresh = false;
-      executeRequestId = null;
-    }
-    lastStateReadError = null;
-    const retained = selectedIds().filter((unitId) => (
-      isFriendlySelectable(unitById(unitId))
-    ));
-    const selectionInvalidated = retained.length !== selectedUnitIds.size;
-    if (selectionInvalidated) reconcileInteractionDraft();
-    if (frameChanged || observationChanged || contextChanged) {
+    if (refreshSessionId !== current?.session_id || refreshSide !== current?.side) return;
+    // A slower read must not roll back a newer coherent overlay snapshot.
+    if (current && next.session_id === current.session_id && next.side === current.side
+        && next.observation_version < current.observation_version) return;
+    const snapshotUnitId = selectedOverlayUnitId();
+    const matchingOverlay = refreshOverlayEpoch === overlayRequestEpoch
+      && snapshotUnitId !== null && next.tactical_overlay
+      && next.session_id === current?.session_id && next.side === current?.side
+      && next.tactical_overlay.unit_id === snapshotUnitId
+      ? validateOverlaySnapshot(next, snapshotUnitId) : null;
+    const { frameChanged, contextChanged, observationChanged, selectionInvalidated }
+      = applyDisplayState(next);
+    if (matchingOverlay && !selectionInvalidated && selectedOverlayUnitId() === snapshotUnitId) {
+      // Cancel older pending reads before installing all three matching pieces.
+      overlayRequestEpoch += 1;
+      applyCapabilities(next.capabilities);
+      cacheTacticalOverlay(matchingOverlay);
+      lastNotice = null;
+      render();
+    } else if (frameChanged || observationChanged || contextChanged) {
       lastNotice = null;
       invalidateTacticalOverlay({ clearCache: true });
       if (selectionInvalidated || refreshEpoch === interactionEpoch) {
